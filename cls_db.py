@@ -2,11 +2,32 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.9
+Version : 2.10
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.10 (July 2026) — read-only feed for cls_parallel_export.py (parallel-
+  run sync-health checkpoint, on-demand, not scheduled). Purely additive,
+  ZERO schema change — reads existing activity_log + leads columns only.
+
+  NEW get_latest_stage_and_owner_changes() — for every lead with at
+    least one 'stage_change' and/or 'assignment_change' row in
+    activity_log, returns that lead's identity (cls_id, full_name,
+    phone_raw, email_raw), its CURRENT current_stage/lead_owner, and
+    the MOST RECENT row of each change type (actor, prev_value,
+    new_value, created_at — NULL for whichever type never happened).
+    "Most recent" uses activity_id (autoincrement) as the tiebreaker,
+    same as get_activity_log_for_lead()'s existing ORDER BY. Leads with
+    NEITHER activity type are excluded — nothing to compare a sync
+    outcome against, so they'd just be noise in both drift counts.
+    Deliberately does NOT decide reverted/pending/clean itself — that
+    "has enough time passed for Job B to run" policy is time-sensitive
+    and belongs in the caller (cls_parallel_export.py), not baked into
+    a DB-layer read. This is the ONLY DB access cls_parallel_export.py
+    makes — it never opens sqlite3 directly, per the centralized-access
+    rule.
+
 v2.9  (July 2026) — NEW 'manager' role (oversight tier), for
   app.py v0.9.5. Config-not-code and ZERO schema migration:
 
@@ -593,6 +614,12 @@ WHAT IT PROVIDES
   get_reengaged_leads(...)      -> list counterpart to get_reengaged_count(CRM)
   get_due_by_kind(kind)         -> get_due_today() filtered to one kind   (CRM)
   get_all_users()               -> email->full_name lookup for display   (CRM)
+
+  --- v2.10 addition — parallel-run sync-health checkpoint ---
+  get_latest_stage_and_owner_changes() -> per-lead latest stage_change +
+                                           assignment_change vs current
+                                           state, for drift detection
+                                           (cls_parallel_export.py, manual)
 
 ONE-TIME SETUP
 --------------
@@ -1806,6 +1833,72 @@ def get_todays_activity_counts(actor_email=None):
         for r in rows:
             result[METRIC_MAP[r["activity_type"]]] = r["c"]
         return result
+    finally:
+        conn.close()
+
+
+def get_latest_stage_and_owner_changes():
+    """
+    (v2.10) Read-only feed for cls_parallel_export.py — measures how
+    often a CRM-side stage or owner change gets silently reverted by
+    Job B's next Sell.do sync. For every lead that has AT LEAST ONE
+    'stage_change' and/or 'assignment_change' row in activity_log,
+    returns its identity, CURRENT current_stage/lead_owner, and the
+    MOST RECENT row of each change type (actor, prev_value, new_value,
+    created_at — NULL for whichever type this lead never had logged).
+
+    "Most recent" is activity_id (autoincrement) MAX per (cls_id,
+    activity_type) — the same tiebreaker get_activity_log_for_lead()
+    already sorts by (created_at DESC, activity_id DESC), since
+    created_at alone (second-granularity) can tie.
+
+    Leads with NEITHER activity type are excluded entirely — there is
+    no CRM-side change to compare against for them, so including them
+    would just be noise in both the stage-drift and owner-drift counts.
+
+    Deliberately returns raw data only — it does NOT decide reverted /
+    pending / clean. That comparison needs "has enough time passed for
+    Job B to have run since this change," which is a time-sensitive
+    policy call that belongs in the caller (cls_parallel_export.py),
+    not baked into a DB-layer read. This is the ONLY database access
+    cls_parallel_export.py makes; it never opens sqlite3 directly.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT
+                l.cls_id, l.full_name, l.phone_raw, l.email_raw,
+                l.current_stage, l.lead_owner,
+                sc.actor      AS stage_change_actor,
+                sc.prev_value AS stage_change_prev,
+                sc.new_value  AS stage_change_new,
+                sc.created_at AS stage_change_at,
+                ac.actor      AS owner_change_actor,
+                ac.prev_value AS owner_change_prev,
+                ac.new_value  AS owner_change_new,
+                ac.created_at AS owner_change_at
+            FROM leads l
+            LEFT JOIN (
+                SELECT a.cls_id, a.actor, a.prev_value, a.new_value, a.created_at
+                FROM activity_log a
+                WHERE a.activity_type = 'stage_change'
+                  AND a.activity_id = (
+                      SELECT MAX(a2.activity_id) FROM activity_log a2
+                      WHERE a2.cls_id = a.cls_id AND a2.activity_type = 'stage_change'
+                  )
+            ) sc ON sc.cls_id = l.cls_id
+            LEFT JOIN (
+                SELECT a.cls_id, a.actor, a.prev_value, a.new_value, a.created_at
+                FROM activity_log a
+                WHERE a.activity_type = 'assignment_change'
+                  AND a.activity_id = (
+                      SELECT MAX(a2.activity_id) FROM activity_log a2
+                      WHERE a2.cls_id = a.cls_id AND a2.activity_type = 'assignment_change'
+                  )
+            ) ac ON ac.cls_id = l.cls_id
+            WHERE sc.cls_id IS NOT NULL OR ac.cls_id IS NOT NULL
+        """).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
