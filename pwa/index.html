@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="theme-color" content="#0F1923">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CLS">
+<title>CLS Command Center</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+/* ── TOKENS ─────────────────────────────────────────────── */
+:root {
+  --navy:    #0F1923;
+  --navy2:   #1A2535;
+  --navy3:   #243047;
+  --line:    #2E3D52;
+  --muted:   #6B7F99;
+  --ink:     #D6E0EE;
+  --ink2:    #F0F4FA;
+  --amber:   #E08C2B;
+  --amber-d: #B86F1A;
+  --green:   #27AE60;
+  --red:     #E53E3E;
+  --blue:    #2F80ED;
+  --ql:      #2F80ED;   /* QualifiedLead */
+  --sc:      #E08C2B;   /* Schedule */
+  --cr:      #27AE60;   /* CompleteRegistration */
+}
+
+/* ── RESET ───────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 15px; -webkit-tap-highlight-color: transparent; }
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--navy);
+  color: var(--ink);
+  min-height: 100dvh;
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}
+
+/* ── HEADER ─────────────────────────────────────────────── */
+header {
+  background: var(--navy2);
+  border-bottom: 1px solid var(--line);
+  padding: 14px 16px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.logo {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--amber);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.logo span { color: var(--muted); }
+.refresh-btn {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-family: 'Inter', sans-serif;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: border-color .15s, color .15s;
+}
+.refresh-btn:active { color: var(--ink); border-color: var(--amber); }
+.refresh-icon { font-size: 14px; line-height: 1; }
+
+/* ── MAIN WRAP ───────────────────────────────────────────── */
+main { padding: 16px; max-width: 480px; margin: 0 auto; }
+
+/* ── SECTION LABEL ───────────────────────────────────────── */
+.section-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  margin-top: 20px;
+}
+.section-label:first-of-type { margin-top: 4px; }
+
+/* ── PIPELINE BAR (signature element) ───────────────────── */
+.pipeline {
+  background: var(--navy2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: relative;
+}
+.pipe-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  position: relative;
+  z-index: 1;
+}
+.pipe-dot {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  border: 2px solid var(--line);
+  background: var(--navy3);
+  transition: all .3s;
+}
+.pipe-dot.healthy { border-color: var(--green); background: rgba(39,174,96,.12); }
+.pipe-dot.stale   { border-color: var(--red);   background: rgba(229,62,62,.12); }
+.pipe-dot.unknown { border-color: var(--line);  background: var(--navy3); }
+.pipe-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: .05em;
+}
+.pipe-time {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  min-height: 14px;
+}
+.pipe-time.ok  { color: var(--green); }
+.pipe-time.bad { color: var(--red); }
+
+/* connector lines between nodes */
+.pipe-connector {
+  flex: 0 0 28px;
+  height: 2px;
+  background: var(--line);
+  position: relative;
+  top: -18px; /* align with dot centre */
+  border-radius: 1px;
+  transition: background .3s;
+}
+.pipe-connector.lit { background: var(--green); }
+
+/* ── SUMMARY CARDS ───────────────────────────────────────── */
+.cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.cards .card-wide { grid-column: 1 / -1; }
+.card {
+  background: var(--navy2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px 12px;
+}
+.card-value {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--ink2);
+}
+.card-wide .card-value { font-size: 32px; }
+.card-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 5px;
+  font-weight: 500;
+  letter-spacing: .03em;
+}
+.card-accent { border-left: 3px solid; }
+.card-accent.ql { border-color: var(--ql); }
+.card-accent.sc { border-color: var(--sc); }
+.card-accent.cr { border-color: var(--cr); }
+.card-accent.today { border-color: var(--amber); }
+
+/* ── EVENTS LIST ─────────────────────────────────────────── */
+.events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.event-row {
+  background: var(--navy2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px 14px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 10px;
+  border-left: 3px solid transparent;
+}
+.event-row.ql { border-left-color: var(--ql); }
+.event-row.sc { border-left-color: var(--sc); }
+.event-row.cr { border-left-color: var(--cr); }
+.event-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+.event-dot.ql { background: var(--ql); }
+.event-dot.sc { background: var(--sc); }
+.event-dot.cr { background: var(--cr); }
+.event-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.event-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.event-meta b { color: var(--ink); font-weight: 500; }
+.event-time {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+  padding-top: 2px;
+}
+.event-phone {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.pill {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.pill-lg  { background: rgba(47,128,237,.18); color: #7DB8F7; }
+.pill-h   { background: rgba(107,127,153,.15); color: var(--muted); }
+
+/* ── PROJECT TILES ───────────────────────────────────────── */
+.tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.tile {
+  background: var(--navy2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 14px 12px;
+}
+.tile-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.tile-count {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 24px;
+  font-weight: 500;
+  color: var(--ink2);
+  line-height: 1;
+}
+.tile-today {
+  font-size: 11px;
+  color: var(--amber);
+  margin-top: 4px;
+  font-weight: 500;
+}
+
+/* ── FOOTER ─────────────────────────────────────────────── */
+footer {
+  margin: 24px 16px 8px;
+  text-align: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: .04em;
+}
+
+/* ── LOADING / ERROR STATES ─────────────────────────────── */
+.state-msg {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.state-msg .icon { font-size: 32px; margin-bottom: 12px; }
+.state-msg h3 { color: var(--ink); font-size: 15px; margin-bottom: 6px; }
+.spin {
+  display: inline-block;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── LAST UPDATED BANNER ─────────────────────────────────── */
+.updated-bar {
+  background: var(--navy3);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.updated-bar .ok   { color: var(--green); }
+.updated-bar .stale { color: var(--amber); }
+
+/* ── RESPONSIVE ─────────────────────────────────────────── */
+@media (max-width: 360px) {
+  .cards { grid-template-columns: 1fr; }
+  .tiles { grid-template-columns: 1fr; }
+  .card-value { font-size: 22px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">CLS <span>/ Asian Properties</span></div>
+  <button class="refresh-btn" id="refreshBtn" aria-label="Refresh data">
+    <span class="refresh-icon" id="refreshIcon">↻</span> Refresh
+  </button>
+</header>
+
+<div id="root">
+  <div class="state-msg">
+    <div class="icon"><span class="spin">↻</span></div>
+    <h3>Loading…</h3>
+    <p>Fetching snapshot from Cloudflare KV</p>
+  </div>
+</div>
+
+<script>
+// ── CONFIG ─────────────────────────────────────────────────
+const MAX_EVENTS   = 25;
+const STALE_MINS   = 150;   // >2.5 hrs = stale (2-hr cadence + buffer)
+const EVENT_COLORS = {
+  QualifiedLead       : 'ql',
+  Schedule            : 'sc',
+  CompleteRegistration: 'cr',
+};
+const EVENT_LABELS = {
+  QualifiedLead       : 'Qualified Lead',
+  Schedule            : 'Site Scheduled',
+  CompleteRegistration: 'Registered',
+};
+const JOB_NODES = [
+  { key: 'meta_fetch',  label: 'Job A', icon: '⬇', desc: 'Meta Fetch'  },
+  { key: 'selldo_sync', label: 'Job B', icon: '⟳', desc: 'Sell.do Sync'},
+  { key: 'capi_fire',   label: 'Job C', icon: '⚡', desc: 'CAPI Fire'   },
+];
+
+// ── HELPERS ────────────────────────────────────────────────
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function minutesAgo(tsStr) {
+  if (!tsStr) return Infinity;
+  // handles "YYYY-MM-DD HH:MM:SS" from Python
+  const d = new Date(tsStr.replace(' ', 'T') + '+05:30'); // IST
+  return (Date.now() - d.getTime()) / 60000;
+}
+
+function fmtAge(tsStr) {
+  if (!tsStr) return '—';
+  const mins = minutesAgo(tsStr);
+  if (mins < 2)   return 'just now';
+  if (mins < 60)  return `${Math.floor(mins)}m ago`;
+  const hrs = mins / 60;
+  if (hrs < 24)   return `${hrs.toFixed(1)}h ago`;
+  return `${Math.floor(hrs/24)}d ago`;
+}
+
+function fmtTime(tsStr) {
+  if (!tsStr) return '';
+  const parts = tsStr.split(' ');
+  if (parts.length < 2) return tsStr;
+  const [date, time] = parts;
+  const today = new Date().toISOString().slice(0,10);
+  const timeShort = time.slice(0,5); // HH:MM
+  return date === today ? timeShort : `${date.slice(5)} ${timeShort}`;
+}
+
+// ── RENDER ─────────────────────────────────────────────────
+function render(snap) {
+  const root = document.getElementById('root');
+
+  // ── 1. Last-updated bar ──
+  const genMins = minutesAgo(snap.generated_at);
+  const staleClass = genMins > STALE_MINS ? 'stale' : 'ok';
+  const updatedBar = `
+    <div class="updated-bar">
+      <span>Last updated</span>
+      <span class="${staleClass}">${fmtAge(snap.generated_at)}</span>
+    </div>`;
+
+  // ── 2. Pipeline bar ──
+  const flags = snap.job_flags || {};
+  let pipelineNodes = '';
+  let connectors = [];
+  JOB_NODES.forEach((node, i) => {
+    const flagData = flags[node.key];
+    const ts   = flagData ? flagData.last_completed : null;
+    const fresh = flagData ? flagData.fresh : false;
+    const cls  = ts ? (fresh ? 'healthy' : 'stale') : 'unknown';
+    const timeClass = ts ? (fresh ? 'ok' : 'bad') : '';
+    const ageStr = ts ? fmtAge(ts) : 'no data';
+    connectors.push(fresh);
+    pipelineNodes += `
+      <div class="pipe-node">
+        <div class="pipe-dot ${cls}">${node.icon}</div>
+        <div class="pipe-label">${node.label}</div>
+        <div class="pipe-time ${timeClass}">${esc(ageStr)}</div>
+      </div>`;
+    if (i < JOB_NODES.length - 1) {
+      const litClass = (fresh && (flags[JOB_NODES[i+1].key] ? flags[JOB_NODES[i+1].key].fresh : false)) ? 'lit' : '';
+      pipelineNodes += `<div class="pipe-connector ${litClass}"></div>`;
+    }
+  });
+  const pipeline = `<div class="pipeline">${pipelineNodes}</div>`;
+
+  // ── 3. Summary cards ──
+  const c = snap.cards || {};
+  const l = snap.leads || {};
+  const cards = `
+    <div class="cards">
+      <div class="card card-wide card-accent today">
+        <div class="card-value">${c.total_events ?? '—'}</div>
+        <div class="card-label">Total CAPI Events · ${c.events_today ?? 0} today</div>
+      </div>
+      <div class="card card-accent ql">
+        <div class="card-value" style="color:var(--ql)">${c.qualified_lead ?? '—'}</div>
+        <div class="card-label">Qualified Leads</div>
+      </div>
+      <div class="card card-accent sc">
+        <div class="card-value" style="color:var(--sc)">${c.schedule ?? '—'}</div>
+        <div class="card-label">Site Scheduled</div>
+      </div>
+      <div class="card card-accent cr" style="grid-column:1/-1">
+        <div class="card-value" style="color:var(--cr)">${c.complete_reg ?? '—'}</div>
+        <div class="card-label">Registered · ${l.total_leads ?? 0} leads in registry</div>
+      </div>
+    </div>`;
+
+  // ── 4. Events list (last MAX_EVENTS) ──
+  const events = (snap.events || []).slice(0, MAX_EVENTS);
+  let eventsHtml = '';
+  if (events.length === 0) {
+    eventsHtml = '<div class="state-msg" style="padding:24px 0"><p>No events yet.</p></div>';
+  } else {
+    events.forEach(e => {
+      const cls   = EVENT_COLORS[e.meta_event] || 'ql';
+      const label = EVENT_LABELS[e.meta_event] || e.meta_event;
+      const pill  = e.used_leadgen
+        ? '<span class="pill pill-lg">leadgen</span>'
+        : '<span class="pill pill-h">hashed</span>';
+      const bucket = esc(e.project_bucket || e.project || '—');
+      const prev   = e.prev_stage ? ` ← ${esc(e.prev_stage)}` : '';
+      eventsHtml += `
+        <div class="event-row ${cls}">
+          <div class="event-dot ${cls}"></div>
+          <div>
+            <div class="event-name">${esc(e.full_name || '—')}${pill}</div>
+            <div class="event-meta"><b>${label}</b>${prev}</div>
+            <div class="event-meta">${bucket} · ${esc(e.crm_stage)}</div>
+            <div class="event-phone">${esc(e.phone_norm || '')}</div>
+          </div>
+          <div class="event-time">${fmtTime(e.fired_at)}</div>
+        </div>`;
+    });
+  }
+  const eventsList = `<div class="events-list">${eventsHtml}</div>`;
+
+  // ── 5. Project tiles ──
+  const tiles = (snap.project_tiles || []);
+  let tilesHtml = tiles.map(t => `
+    <div class="tile">
+      <div class="tile-name">${esc(t.name)}</div>
+      <div class="tile-count">${t.total}</div>
+      <div class="tile-today">${t.today > 0 ? `+${t.today} today` : 'none today'}</div>
+    </div>`).join('');
+  if (!tilesHtml) tilesHtml = '<div style="color:var(--muted);font-size:13px">No project data yet.</div>';
+
+  // ── Assemble ──
+  root.innerHTML = `
+    <main>
+      ${updatedBar}
+
+      <div class="section-label">Pipeline health</div>
+      ${pipeline}
+
+      <div class="section-label">Summary</div>
+      ${cards}
+
+      <div class="section-label">Recent events · last ${events.length}</div>
+      ${eventsList}
+
+      <div class="section-label">By project</div>
+      <div class="tiles">${tilesHtml}</div>
+    </main>
+    <footer>CLS · Asian Properties · Hyderabad</footer>`;
+}
+
+// ── FETCH & LOAD ────────────────────────────────────────────
+async function load(isRefresh = false) {
+  const btn  = document.getElementById('refreshBtn');
+  const icon = document.getElementById('refreshIcon');
+
+  if (isRefresh) {
+    icon.classList.add('spin');
+    btn.disabled = true;
+  }
+
+  try {
+    const res = await fetch('/api/snapshot', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const snap = await res.json();
+    render(snap);
+  } catch (err) {
+    document.getElementById('root').innerHTML = `
+      <div class="state-msg">
+        <div class="icon">⚠</div>
+        <h3>Could not load snapshot</h3>
+        <p>${esc(err.message)}</p>
+        <p style="margin-top:8px;font-size:11px;color:var(--muted)">
+          Check that cls_snapshot.py ran recently and Cloudflare KV is reachable.
+        </p>
+      </div>`;
+  } finally {
+    icon.classList.remove('spin');
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', () => load(true));
+load();
+
+// ── SERVICE WORKER ──────────────────────────────────────────
+// Actively unregister any existing service worker. For an internal
+// ops tool, always-fresh data beats offline caching, and a stale
+// cached shell causes confusing "old version after deploy" bugs.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(regs => {
+    regs.forEach(reg => reg.unregister());
+  });
+}
+</script>
+</body>
+</html>

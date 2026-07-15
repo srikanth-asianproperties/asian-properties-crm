@@ -1,0 +1,62 @@
+{# settings_whatsapp.html (v0.9.1) — admin CRUD for WhatsApp templates.
+   One template per project (project is the unique title). Saving an
+   existing project overwrites it; a new project name adds one. #}
+{% extends "base.html" %}
+{% block title %}WhatsApp Templates{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+<h2 style="margin-top:10px;">WhatsApp Templates</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  One message per project. When a salesperson taps WhatsApp on a lead, they pick a
+  project here and it opens WhatsApp pre-filled with this message.
+  Use <code>{name}</code> for the lead's name and <code>{project}</code> for the project name —
+  they'll be filled in automatically.
+</p>
+
+{# ── Add / edit form ── #}
+<div class="card" style="margin-top:16px;">
+  <h3 style="margin-top:0; font-size:16px;">Add or update a template</h3>
+  <form method="post" action="{{ url_for('whatsapp_template_save') }}">
+    <div class="field-label">Project (template title) *</div>
+    <input list="projectList" type="text" name="project" required placeholder="e.g. Naishka" style="width:100%; margin-bottom:14px;">
+    <datalist id="projectList">
+      {% for p in projects %}<option value="{{ p }}">{% endfor %}
+    </datalist>
+
+    <div class="field-label">Message *</div>
+    <textarea name="message_body" required placeholder="Hi {name}, thank you for your interest in {project}. Here are the details..."
+              style="width:100%; min-height:120px; padding:10px 12px; border:1.5px solid var(--line); border-radius:8px; font-family:inherit; font-size:14px; resize:vertical;"></textarea>
+
+    <div style="margin-top:12px;">
+      <button type="submit" class="btn btn-primary">Save template</button>
+    </div>
+  </form>
+</div>
+
+{# ── Existing templates ── #}
+<h3 style="margin-top:24px; font-size:16px;">Existing templates ({{ templates|length }})</h3>
+{% if templates %}
+<div style="display:flex; flex-direction:column; gap:12px;">
+  {% for t in templates %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+      <strong style="font-size:15px;">{{ t.project }}</strong>
+      <form method="post" action="{{ url_for('whatsapp_template_delete', template_id=t.template_id) }}"
+            onsubmit="return confirm('Delete the WhatsApp template for {{ t.project }}? This cannot be undone.');">
+        <button type="submit" class="btn" style="color:var(--red); border-color:#F3C9C9; padding:5px 12px; font-size:13px;">Delete</button>
+      </form>
+    </div>
+    <div style="white-space:pre-wrap; font-size:14px; color:var(--ink); margin-top:8px; background:var(--paper); padding:10px 12px; border-radius:8px;">{{ t.message_body }}</div>
+    <div style="font-size:12px; color:var(--ink-soft); margin-top:6px;">
+      To edit: retype this project name above with the new message and save — it overwrites this one.
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty-state">
+  <p>No templates yet. Add one above — start with your most-used project.</p>
+</div>
+{% endif %}
+{% endblock %}

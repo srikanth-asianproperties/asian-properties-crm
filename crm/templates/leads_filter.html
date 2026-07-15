@@ -1,0 +1,249 @@
+{# leads_filter.html (v0.7) — dedicated filter screen (items 8 of
+   Srikanth's spec). His spec described a two-pane "list of categories
+   on the left, options revealed per category" layout — that's a
+   desktop pattern that doesn't fit a phone-width screen, so this
+   builds it as an ACCORDION instead: tap a category to expand its
+   options directly below it, same proven pattern as lead_detail.html's
+   card accordion. Same spirit (categorized, one thing open at a time),
+   adapted for mobile-first. Flagging this adaptation explicitly rather
+   than silently reinterpreting the spec.
+
+   One GET form, submitted once via "Apply Filters" at the bottom —
+   not per-category — so every selection across every category applies
+   together in a single request, same as the old top-bar form did. #}
+{% extends "base.html" %}
+{% block title %}Filter Leads{% endblock %}
+
+{% block content %}
+<style>
+.filter-accordion-item {
+  border:1px solid var(--line);
+  border-radius:10px;
+  margin-top:10px;
+  overflow:hidden;
+  background:var(--card);
+}
+.filter-accordion-header {
+  width:100%; display:flex; justify-content:space-between; align-items:center;
+  background:transparent; border:none; padding:14px 16px;
+  font-size:15px; font-weight:700; text-align:left; cursor:pointer;
+  color:var(--ink); font-family:inherit;
+}
+.filter-accordion-header .fa-current { color:var(--blue); font-weight:400; font-size:13px; margin-left:6px; }
+.filter-accordion-chevron { color:var(--ink-soft); transition:transform .15s ease; font-size:13px; }
+.filter-accordion-item.open .filter-accordion-chevron { transform:rotate(180deg); }
+.filter-accordion-body { display:none; padding:0 16px 16px 16px; border-top:1px solid var(--line); }
+.filter-accordion-item.open .filter-accordion-body { display:block; padding-top:12px; }
+
+.opt-row { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:14px; cursor:pointer; }
+.opt-row input { cursor:pointer; }
+</style>
+
+<a href="{{ url_for('leads_list') }}" style="font-size:14px;">← Back to leads</a>
+<h2 style="margin-top:10px; margin-bottom:14px;">Filter Leads</h2>
+
+<form method="get" action="{{ url_for('leads_list') }}" id="filterForm">
+  <input type="hidden" name="q" value="{{ filters.q }}">
+
+  <div id="filterAccordion">
+
+    {# ── DATE RANGE ── #}
+    <div class="filter-accordion-item{% if filters.date_from or filters.date_to %} open{% endif %}" data-fa="date">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('date')">
+        <span>Date Range{% if filters.date_from or filters.date_to %}<span class="fa-current"> · set</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <div class="field-label">From</div>
+        <input type="date" name="date_from" value="{{ filters.date_from }}" style="width:100%; margin-bottom:10px;">
+        <div class="field-label">To</div>
+        <input type="date" name="date_to" value="{{ filters.date_to }}" style="width:100%;">
+      </div>
+    </div>
+
+    {# ── SORT BY ── #}
+    <div class="filter-accordion-item" data-fa="sort">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('sort')">
+        <span>Sort By<span class="fa-current"> · {{ sort_labels.get(filters.sort_by, sort_labels['recent']) }}</span></span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        {% for key, label in sort_labels.items() %}
+        <label class="opt-row">
+          <input type="radio" name="sort_by" value="{{ key }}" {% if filters.sort_by == key %}checked{% endif %}>
+          {{ label }}
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── PIPELINE STAGE ── #}
+    <div class="filter-accordion-item{% if filters.stage %} open{% endif %}" data-fa="stage">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('stage')">
+        <span>Pipeline Stage{% if filters.stage %}<span class="fa-current"> · {{ filters.stage }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="stage" value="" {% if not filters.stage %}checked{% endif %}> All stages</label>
+        {% for s in stages %}
+        <label class="opt-row"><input type="radio" name="stage" value="{{ s }}" {% if filters.stage == s %}checked{% endif %}> {{ s }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── STAGE CHANGE REASON ── #}
+    <div class="filter-accordion-item{% if filters.stage_reason %} open{% endif %}" data-fa="reason">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('reason')">
+        <span>Stage Change Reason{% if filters.stage_reason %}<span class="fa-current"> · {{ filters.stage_reason }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="stage_reason" value="" {% if not filters.stage_reason %}checked{% endif %}> Any / not set</label>
+        {% for r in stage_reasons %}
+        <label class="opt-row"><input type="radio" name="stage_reason" value="{{ r }}" {% if filters.stage_reason == r %}checked{% endif %}> {{ r }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── CAMPAIGN ── #}
+    <div class="filter-accordion-item{% if filters.campaign %} open{% endif %}" data-fa="campaign">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('campaign')">
+        <span>Campaign{% if filters.campaign %}<span class="fa-current"> · {{ filters.campaign }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <input type="text" name="campaign" value="{{ filters.campaign }}" placeholder="e.g. FB_Naishka_July" style="width:100%;">
+      </div>
+    </div>
+
+    {# ── PROJECT ── #}
+    <div class="filter-accordion-item{% if filters.project %} open{% endif %}" data-fa="project">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('project')">
+        <span>Project{% if filters.project %}<span class="fa-current"> · {{ filters.project }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="project" value="" {% if not filters.project %}checked{% endif %}> All projects</label>
+        {% for p in projects %}
+        <label class="opt-row"><input type="radio" name="project" value="{{ p }}" {% if filters.project == p %}checked{% endif %}> {{ p }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── SOURCE ── #}
+    <div class="filter-accordion-item{% if filters.source %} open{% endif %}" data-fa="source">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('source')">
+        <span>Source{% if filters.source %}<span class="fa-current"> · {{ filters.source }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="source" value="" {% if not filters.source %}checked{% endif %}> All sources</label>
+        {% for s in source_options %}
+        <label class="opt-row"><input type="radio" name="source" value="{{ s }}" {% if filters.source == s %}checked{% endif %}> {{ s }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── SUB-SOURCE ── #}
+    <div class="filter-accordion-item{% if filters.sub_source %} open{% endif %}" data-fa="subsource">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('subsource')">
+        <span>Sub-source{% if filters.sub_source %}<span class="fa-current"> · {{ filters.sub_source }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="sub_source" value="" {% if not filters.sub_source %}checked{% endif %}> Any</label>
+        {% for s in sub_source_options %}
+        <label class="opt-row"><input type="radio" name="sub_source" value="{{ s }}" {% if filters.sub_source == s %}checked{% endif %}> {{ s }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── BUDGET ── #}
+    <div class="filter-accordion-item{% if filters.budget %} open{% endif %}" data-fa="budget">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('budget')">
+        <span>Budget{% if filters.budget %}<span class="fa-current"> · {{ filters.budget }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="budget" value="" {% if not filters.budget %}checked{% endif %}> Any</label>
+        {% for b in budget_options %}
+        <label class="opt-row"><input type="radio" name="budget" value="{{ b }}" {% if filters.budget == b %}checked{% endif %}> {{ b }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── CONFIGURATION (multi-select) ── #}
+    <div class="filter-accordion-item{% if filters.configuration %} open{% endif %}" data-fa="config">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('config')">
+        <span>Configuration{% if filters.configuration %}<span class="fa-current"> · {{ filters.configuration|join(', ') }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        {% for c in configuration_options %}
+        <label class="opt-row"><input type="checkbox" name="configuration" value="{{ c }}" {% if c in filters.configuration %}checked{% endif %}> {{ c }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── PROPERTY TYPE (multi-select) ── #}
+    <div class="filter-accordion-item{% if filters.property_type %} open{% endif %}" data-fa="ptype">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('ptype')">
+        <span>Property Type{% if filters.property_type %}<span class="fa-current"> · {{ filters.property_type|join(', ') }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        {% for p in property_type_options %}
+        <label class="opt-row"><input type="checkbox" name="property_type" value="{{ p }}" {% if p in filters.property_type %}checked{% endif %}> {{ p }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── FACING (multi-select) ── #}
+    <div class="filter-accordion-item{% if filters.facing %} open{% endif %}" data-fa="facing">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('facing')">
+        <span>Facing{% if filters.facing %}<span class="fa-current"> · {{ filters.facing|join(', ') }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        {% for d in facing_options %}
+        <label class="opt-row"><input type="checkbox" name="facing" value="{{ d }}" {% if d in filters.facing %}checked{% endif %}> {{ d }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% if can_view_all_owners and owner_options %}
+    {# ── OWNER (oversight roles: admin + manager) ── #}
+    <div class="filter-accordion-item{% if filters.owner %} open{% endif %}" data-fa="owner">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('owner')">
+        <span>Owner{% if filters.owner %}<span class="fa-current"> · {{ filters.owner }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="owner" value="" {% if not filters.owner %}checked{% endif %}> Everyone</label>
+        {% for o in owner_options %}
+        <label class="opt-row"><input type="radio" name="owner" value="{{ o }}" {% if filters.owner == o %}checked{% endif %}> {{ o }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+  <div class="write-form-row" style="margin-top:20px; margin-bottom:24px;">
+    <button type="submit" class="btn btn-primary">Apply Filters</button>
+    <a href="{{ url_for('leads_list', q=filters.q) }}" class="btn">Clear All</a>
+  </div>
+</form>
+
+<script>
+function toggleFA(name){
+  document.querySelectorAll('.filter-accordion-item').forEach(function(item){
+    if (item.dataset.fa === name) {
+      item.classList.toggle('open');
+    } else {
+      item.classList.remove('open');
+    }
+  });
+}
+</script>
+{% endblock %}

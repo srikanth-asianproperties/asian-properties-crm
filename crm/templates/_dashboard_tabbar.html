@@ -1,0 +1,30 @@
+{# _dashboard_tabbar.html (v0.6) — shared bottom icon tab bar for the
+   3 dashboard pages (Stats / Today's Performance / Pipeline Analysis).
+   Included (not extended) by dashboard.html, dashboard_today.html,
+   dashboard_pipeline.html — each passes active_tab so the current tab
+   renders highlighted. One file so the 3 pages can't visually drift
+   apart from each other over time.
+
+   Reuses the SAME .action-bar / .action-btn classes already defined
+   in base.html for lead_detail.html's bottom action bar, so this
+   looks and feels identical to that pattern rather than inventing a
+   second one. .active is new here (scoped, additive) — lead_detail's
+   buttons never carry it, so this can't affect that page's styling. #}
+<style>
+.action-btn.active { color: var(--blue); font-weight: 700; }
+</style>
+
+<div class="action-bar">
+  <a class="action-btn{% if active_tab == 'stats' %} active{% endif %}" href="{{ url_for('dashboard') }}" title="Stats">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="12" width="4" height="9"/><rect x="10" y="7" width="4" height="14"/><rect x="17" y="3" width="4" height="18"/></svg>
+    Stats
+  </a>
+  <a class="action-btn{% if active_tab == 'today' %} active{% endif %}" href="{{ url_for('dashboard_today') }}" title="Today's Performance">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+    Today
+  </a>
+  <a class="action-btn{% if active_tab == 'pipeline' %} active{% endif %}" href="{{ url_for('dashboard_pipeline') }}" title="Pipeline Analysis">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18M6 12h12M10 19h4"/></svg>
+    Pipeline
+  </a>
+</div>

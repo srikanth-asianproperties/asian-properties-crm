@@ -1,0 +1,890 @@
+{# lead_detail.html v6 (July 2026) — manager role (app.py v0.9.5).
+   Splits the old single `restricted` flag into two:
+     • restricted — contact-info-ONLY view (unchanged; salesperson on a
+       lead that isn't theirs). Managers are NOT restricted.
+     • can_write  — whether WRITE controls render (owner or admin). A
+       manager viewing a lead they don't own sees the FULL read view
+       (activity, visits, follow-ups, notes) with NO write UI, so nothing
+       can 403 on submit. For every pre-v0.9.5 user can_write == (not
+       restricted), so existing admins/salespeople are unaffected. Write
+       gates below moved from `not restricted` → `can_write`; data-display
+       gates stay on `restricted`.
+
+   v5 carryover (v0.9.3): NEW "ACTIONS" button (blue) next to the Change-stage dropdown, opening
+   a modal with 4 items: Edit name/phone, Edit property details, Reassign
+   owner — all 3 MOVED here from the Contact info card, forms/routes
+   unchanged — plus a NEW 4th item, Site Visit Conducted (walk-in: an
+   existing, in-touch lead who visited a project without prior
+   scheduling — collects project/conducted-on/notes, posts to
+   add_walkin_site_visit). "Change source (admin only)" was deliberately
+   LEFT in Contact info — only the 3 named items were moved.
+
+   v4 carryover: Danger zone stripped to just the delete button, CAPI/
+   Email history as accordion cards, phone display via fmt_phone.
+   v3 carryover: 12-hour timestamps, editable name/phone, universal
+   reassign-to-anyone (no longer admin-only), auto-submitting stage
+   dropdown with a Lost/Unqualified reason-capture flow, checkbox-based
+   property fields (configuration/property_type/facing are multi-select
+   as of cls_db v2.3/v2.5), and "Contact" renamed to "Contact info". #}
+{% extends "base.html" %}
+{% block title %}{{ lead.full_name or 'Lead' }}{% endblock %}
+
+{% block content %}
+<style>
+/* v2 — accordion + score badge. Self-contained here since base.html's
+   shared stylesheet isn't part of this edit. Falls back gracefully if
+   --ink/--border/--blue etc. aren't defined there (uses safe defaults). */
+.score-badge {
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:28px; height:22px; padding:0 7px; border-radius:11px;
+  font-size:13px; font-weight:700; color:#fff; line-height:1;
+  vertical-align:middle;
+}
+.score-badge.score-hot  { background:var(--red, #D64545); }
+.score-badge.score-warm { background:#E0A030; }
+.score-badge.score-cold { background:var(--ink-soft, #8A8A8A); }
+
+.accordion-item {
+  border:1px solid var(--border, #E2E2E2);
+  border-radius:10px;
+  margin-top:12px;
+  overflow:hidden;
+  background:var(--card-bg, #fff);
+}
+.accordion-header {
+  width:100%; display:flex; justify-content:space-between; align-items:center;
+  background:transparent; border:none; padding:14px 16px;
+  font-size:16px; font-weight:700; text-align:left; cursor:pointer;
+  color:var(--ink, #1a1a1a); font-family:inherit;
+}
+.accordion-header .count { color:var(--ink-soft, #8A8A8A); font-weight:400; font-size:14px; margin-left:6px; }
+.accordion-chevron { color:var(--ink-soft, #8A8A8A); transition:transform .15s ease; font-size:14px; }
+.accordion-item.open .accordion-chevron { transform:rotate(180deg); }
+.accordion-body { display:none; padding:0 16px 16px 16px; border-top:1px solid var(--border, #E2E2E2); }
+.accordion-item.open .accordion-body { display:block; padding-top:14px; }
+
+.activity-filter-icons { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+.af-icon {
+  border:1px solid var(--border, #E2E2E2); background:#fff; border-radius:20px;
+  padding:6px 12px; font-size:13px; cursor:pointer; color:var(--ink, #1a1a1a);
+  display:inline-flex; align-items:center; gap:6px; font-family:inherit;
+}
+.af-icon.active { background:var(--blue, #2D6CDF); color:#fff; border-color:var(--blue, #2D6CDF); }
+
+/* v3 — Lost/Unqualified reason panel + checkbox option rows, self-contained */
+.opt-row { display:flex; align-items:center; gap:8px; padding:5px 0; font-size:14px; cursor:pointer; }
+.opt-row input { cursor:pointer; }
+#reasonPanel { margin-top:12px; padding:12px; border:1px solid var(--border, #E2E2E2); border-radius:8px; background:var(--paper, #F7F8FA); }
+
+/* v0.9 — restricted (non-owner) view: grayed-out, non-expandable cards */
+.accordion-item.disabled-card { opacity:0.55; }
+.accordion-item.disabled-card .accordion-header { cursor:not-allowed; }
+.accordion-item.disabled-card .accordion-chevron { display:none; }
+
+/* v0.9.3 — ACTIONS button + modal. Edit name/phone, Edit property
+   details, and Reassign owner moved here from the Contact info card;
+   Site Visit Conducted (walk-in) is new. Self-contained, same
+   safe-default CSS-variable-fallback pattern as the rest of this file. */
+.btn-actions {
+  background:var(--blue, #2D6CDF); color:#fff; border:none;
+  padding:9px 18px; border-radius:8px; font-weight:700; font-size:14px;
+  cursor:pointer; font-family:inherit; white-space:nowrap;
+}
+.modal-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000;
+  display:none; align-items:flex-start; justify-content:center;
+  padding:24px 16px; overflow-y:auto;
+}
+.modal-overlay.open { display:flex; }
+.modal-box {
+  background:var(--card-bg, #fff); border-radius:12px; max-width:480px;
+  width:100%; padding:20px; margin-top:32px; position:relative;
+}
+.modal-box h3 { margin-top:0; margin-bottom:14px; padding-right:24px; }
+.modal-close {
+  position:absolute; top:14px; right:16px; background:none; border:none;
+  font-size:22px; line-height:1; cursor:pointer; color:var(--ink-soft, #8A8A8A);
+  font-family:inherit;
+}
+</style>
+
+{% set ACTIVITY_BUCKETS = {
+  'site_visit_scheduled'   : 'site_visit',
+  'site_visit_conducted'   : 'site_visit',
+  'site_visit_rescheduled' : 'site_visit',
+  'site_visit_cancelled'   : 'site_visit',
+  'site_visit_no_show'     : 'site_visit',
+  'follow_up_scheduled'    : 'follow_up',
+  'follow_up_completed'    : 'follow_up',
+  'follow_up_postponed'    : 'follow_up',
+  'follow_up_cancelled'    : 'follow_up',
+  'note'                   : 'note',
+  'stage_change'           : 'stage_change',
+  'assignment_change'      : 'assignment_change',
+  'contact_info_updated'   : 'contact_info',
+} %}
+
+<a href="{{ url_for('leads_list') }}" style="font-size:14px;">← Back to leads</a>
+
+{% if restricted %}
+<div style="background:#FBEAEA; color:var(--red); border:1px solid #F3C9C9; padding:12px 16px; border-radius:8px; font-size:14px; font-weight:600; margin-top:12px;">
+  ⚠️ You are not the owner of this lead — you have view access to Contact info only. No other action is available on this lead.
+</div>
+{% elif not can_write %}
+{# v0.9.5 — manager (oversight) viewing a lead they don't own: full read,
+   no writes. #}
+<div style="background:#EFEAF7; color:#5B3FA0; border:1px solid #D9CEEE; padding:12px 16px; border-radius:8px; font-size:14px; font-weight:600; margin-top:12px;">
+  👁 Supervisor view — this lead is assigned to {{ lead.lead_owner or 'another team member' }}. You can see everything on it, but changes are made by the assigned owner.
+</div>
+{% endif %}
+
+<h2 style="margin-bottom:4px;">
+  {{ lead.full_name or '(no name)' }}
+  <span style="font-size:14px; color:var(--ink-soft); font-weight:400;">#{{ lead.crm_lead_no or '—' }}</span>
+</h2>
+<span class="badge stage-{{ (lead.current_stage or 'other')|replace(' ', '') }}">
+  {{ lead.current_stage or 'Unknown' }}
+</span>
+{% if lead.current_stage == 'Opportunity' and lead.opportunity_temperature %}
+<span class="temp-badge temp-{{ lead.opportunity_temperature }}">{{ lead.opportunity_temperature }}</span>
+{% endif %}
+<span class="score-badge score-{{ lead.lead_score_band|lower }}" title="Lead score">{{ lead.lead_score }}</span>
+
+{% if can_write %}
+<div style="display:flex; align-items:flex-start; gap:10px; margin-top:10px; flex-wrap:wrap;">
+  {% if allowed_next_stages %}
+  <form method="post" action="{{ url_for('change_lead_stage', cls_id=lead.cls_id) }}" id="stageForm" style="margin:0; flex:1; min-width:220px;">
+    {# v3 — item 14: no more "Update stage" button. Selecting a stage
+       auto-submits IMMEDIATELY, EXCEPT for Lost/Unqualified — those two
+       pause here for a required reason (item 15/16) before anything is
+       submitted. That's the one deliberate exception to "auto-submit on
+       select," not an oversight. #}
+    <select name="new_stage" id="stageSelect" required onchange="handleStageSelect(this)">
+      <option value="" disabled selected>Change stage to…</option>
+      {% for s in allowed_next_stages %}
+      <option value="{{ s }}">{{ s }}</option>
+      {% endfor %}
+    </select>
+
+    <div id="reasonPanel" style="display:none;">
+      <div class="field-label" id="reasonPanelTitle">Reason</div>
+      <div id="reasonOptions"></div>
+      <textarea name="reason_notes" id="reasonNotes" placeholder="Brief explanation (required)" style="margin-top:8px; width:100%;"></textarea>
+      <div class="write-form-row" style="margin-top:10px;">
+        <button type="submit" class="btn btn-primary">Confirm — Update Stage</button>
+        <button type="button" class="btn" onclick="cancelStageChange()">Cancel</button>
+      </div>
+    </div>
+  </form>
+  {% endif %}
+
+  <button type="button" class="btn-actions" onclick="openActionsModal()">ACTIONS</button>
+</div>
+
+<!-- ═══════════════ ACTIONS MODAL (v0.9.3) — Edit name/phone, Edit
+     property details, Reassign owner (all 3 moved here from Contact
+     info), plus NEW Site Visit Conducted (walk-in) ═══════════════ -->
+<div class="modal-overlay" id="actionsModal">
+  <div class="modal-box">
+    <button type="button" class="modal-close" onclick="closeActionsModal()" aria-label="Close">&times;</button>
+    <h3>Actions</h3>
+
+    <details class="write-toggle">
+      <summary>Edit name / phone</summary>
+      <form method="post" action="{{ url_for('update_contact_info_route', cls_id=lead.cls_id) }}" class="write-form">
+        <div class="field-label" style="margin-top:10px;">Name</div>
+        <input type="text" name="full_name" value="{{ lead.full_name or '' }}" placeholder="Full name">
+
+        <div class="field-label" style="margin-top:10px;">Phone</div>
+        <input type="tel" name="phone_raw" value="{{ lead.phone_raw or '' }}" placeholder="e.g. +91 98765 43210">
+        <div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">
+          Correcting this can affect future Sell.do sync matching for this lead — every change is logged below in Activity History.
+        </div>
+
+        <div class="write-form-row">
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </details>
+
+    <details class="write-toggle" style="margin-top:10px;">
+      <summary>Edit property details</summary>
+      <form method="post" action="{{ url_for('update_property_details_route', cls_id=lead.cls_id) }}" class="write-form">
+        <div class="field-label" style="margin-top:10px;">Funding source</div>
+        <select name="funding_source">
+          <option value="">— Unchanged / not set —</option>
+          {% for f in funding_sources %}
+          <option value="{{ f }}" {% if lead.funding_source == f %}selected{% endif %}>{{ f }}</option>
+          {% endfor %}
+        </select>
+
+        <div class="field-label" style="margin-top:10px;">Budget</div>
+        <select name="budget">
+          <option value="">— Unchanged / not set —</option>
+          {% for b in budget_options %}
+          <option value="{{ b }}" {% if lead.budget == b %}selected{% endif %}>{{ b }}</option>
+          {% endfor %}
+        </select>
+
+        <div class="field-label" style="margin-top:10px;">Property type <span style="font-weight:400; text-transform:none;">(select any that apply)</span></div>
+        {% set current_ptypes = (lead.property_type or '').split(',')|map('trim')|list %}
+        {% for p in property_types %}
+        <label class="opt-row"><input type="checkbox" name="property_type" value="{{ p }}" {% if p in current_ptypes %}checked{% endif %}> {{ p }}</label>
+        {% endfor %}
+
+        <div class="field-label" style="margin-top:10px;">Configuration <span style="font-weight:400; text-transform:none;">(select any that apply)</span></div>
+        {% set current_configs = (lead.configuration or '').split(',')|map('trim')|list %}
+        {% for c in configurations %}
+        <label class="opt-row"><input type="checkbox" name="configuration" value="{{ c }}" {% if c in current_configs %}checked{% endif %}> {{ c }}</label>
+        {% endfor %}
+
+        <div class="field-label" style="margin-top:10px;">Facing <span style="font-weight:400; text-transform:none;">(select any that apply)</span></div>
+        {% set current_facings = (lead.facing or '').split(',')|map('trim')|list %}
+        {% for d in facing_options %}
+        <label class="opt-row"><input type="checkbox" name="facing" value="{{ d }}" {% if d in current_facings %}checked{% endif %}> {{ d }}</label>
+        {% endfor %}
+
+        <div class="field-label" style="margin-top:10px;">Campaign</div>
+        <input type="text" name="campaign" value="{{ lead.campaign or '' }}" placeholder="e.g. FB_Naishka_July">
+
+        <div class="write-form-row">
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </details>
+
+    <details class="write-toggle" style="margin-top:10px;">
+      <summary>Reassign owner</summary>
+      <form method="post" action="{{ url_for('assign_lead', cls_id=lead.cls_id) }}" class="write-form">
+        <select name="new_owner" required>
+          <option value="" disabled {% if not lead.lead_owner %}selected{% endif %}>Choose an owner…</option>
+          {% for o in owner_options %}
+          <option value="{{ o }}" {% if lead.lead_owner == o %}selected{% endif %}>{{ o }}</option>
+          {% endfor %}
+        </select>
+        <div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">
+          The new owner sees a badge next to "Leads" until they open this lead.
+        </div>
+        <div class="write-form-row">
+          <button type="submit" class="btn btn-primary">Reassign</button>
+        </div>
+      </form>
+    </details>
+
+    <details class="write-toggle" style="margin-top:10px;">
+      <summary>Site Visit Conducted</summary>
+      {# v0.9.3 — item 4: for an existing, in-touch lead who walked into a
+         project WITHOUT a prior scheduled visit. Posts straight to
+         cls_db.log_walkin_site_visit() — a status='conducted' row is
+         written directly, no open 'scheduled' slot involved. Same
+         date+time-input-combined-via-JS pattern as "+ Schedule a site
+         visit" below, for consistency. #}
+      <form method="post" action="{{ url_for('add_walkin_site_visit', cls_id=lead.cls_id) }}" class="write-form">
+        <div class="field-label" style="margin-top:10px;">Project</div>
+        <select name="project" required>
+          <option value="" disabled selected>Choose a project…</option>
+          {% for p in project_buckets %}
+          <option value="{{ p }}">{{ p }}</option>
+          {% endfor %}
+        </select>
+
+        <div class="field-label" style="margin-top:10px;">Conducted on</div>
+        <div class="write-form-row">
+          <input type="date" id="visitConductedDate" required>
+          <input type="time" id="visitConductedTime" required>
+          <input type="hidden" name="conducted_at" id="visitConductedAt">
+        </div>
+
+        <div class="field-label" style="margin-top:10px;">Notes</div>
+        <textarea name="notes" placeholder="Feedback from the visit (optional)"></textarea>
+
+        <div class="write-form-row" style="margin-top:10px;">
+          <button type="submit" class="btn btn-primary"
+                  onclick="document.getElementById('visitConductedAt').value = document.getElementById('visitConductedDate').value + ' ' + document.getElementById('visitConductedTime').value;">
+            Submit
+          </button>
+        </div>
+      </form>
+    </details>
+
+  </div>
+</div>
+{% endif %}
+
+<div id="leadAccordion">
+
+  <!-- ═══════════════ CARD 1 — CONTACT INFO (closed by default, v3) ═══════════════ -->
+  <div class="accordion-item" data-card="contact">
+    <button type="button" class="accordion-header" onclick="toggleCard('contact')">
+      <span>Contact info</span>
+      <span class="accordion-chevron">▾</span>
+    </button>
+    <div class="accordion-body">
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 4px 20px;">
+        <div>
+          <div class="field-label">Name</div>
+          <div class="field-value">{{ lead.full_name or '(no name)' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Phone</div>
+          <div class="field-value">
+            {% if lead.phone_norm %}
+              <a href="tel:+91{{ lead.phone_norm }}" onclick="logCallTap();">{{ lead.phone_norm|fmt_phone }}</a>
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+        <div>
+          <div class="field-label">Email</div>
+          <div class="field-value">{{ lead.email_raw or '—' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Project</div>
+          <div class="field-value">{{ lead.project_bucket }} <span style="color:var(--ink-soft); font-size:12px;">({{ lead.project or 'raw: —' }})</span></div>
+        </div>
+        <div>
+          <div class="field-label">Owner</div>
+          <div class="field-value">{{ lead.lead_owner or '—' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Source</div>
+          <div class="field-value">{{ lead.source or '—' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Match tier</div>
+          <div class="field-value">{{ lead.match_tier or '—' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Stage updated</div>
+          <div class="field-value">{{ lead.stage_updated_at|ampm or '—' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Last CLS update</div>
+          <div class="field-value">{{ lead.cls_updated_at|ampm or '—' }}</div>
+        </div>
+        {% if lead.selldo_url %}
+        <div>
+          <div class="field-label">Sell.do profile</div>
+          <div class="field-value"><a href="{{ lead.selldo_url }}" target="_blank" rel="noopener">Open in Sell.do ↗</a></div>
+        </div>
+        {% endif %}
+        {% if lead.lead_source_detail %}
+        <div>
+          <div class="field-label">Source detail</div>
+          <div class="field-value">{{ lead.lead_source_detail }}</div>
+        </div>
+        {% endif %}
+        <div>
+          <div class="field-label">Budget</div>
+          <div class="field-value">{{ lead.budget or '—' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Facing</div>
+          <div class="field-value">{{ lead.facing or '—' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Funding</div>
+          <div class="field-value">{{ lead.funding_source or '—' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Property type</div>
+          <div class="field-value">{{ lead.property_type or '—' }}</div>
+        </div>
+        <div>
+          <div class="field-label">Configuration</div>
+          <div class="field-value">{{ lead.configuration or '—' }}</div>
+        </div>
+        {% if lead.campaign %}
+        <div>
+          <div class="field-label">Campaign</div>
+          <div class="field-value">{{ lead.campaign }}</div>
+        </div>
+        {% endif %}
+      </div>
+
+      {% if can_write %}
+      {% if current_user.role == 'admin' and lead.lead_source_detail %}
+      <details class="write-toggle" style="margin-top:14px;">
+        <summary>Change source (admin only)</summary>
+        <form method="post" action="{{ url_for('update_lead_source', cls_id=lead.cls_id) }}" class="write-form">
+          <select name="source_detail" required>
+            {% for s in source_options %}
+            <option value="{{ s }}" {% if lead.lead_source_detail == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+          <div class="write-form-row">
+            <button type="submit" class="btn btn-primary">Update source</button>
+          </div>
+        </form>
+      </details>
+      {% endif %}
+      <div style="font-size:12px; color:var(--ink-soft); margin-top:14px;">
+        Edit name/phone, property details, and reassign owner have moved to the
+        <strong>ACTIONS</strong> button above.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ═══════════════ CARD 2 — ACTIVITY HISTORY ═══════════════ -->
+  <div class="accordion-item{% if restricted %} disabled-card{% endif %}" data-card="activity">
+    <button type="button" class="accordion-header" {% if not restricted %}onclick="toggleCard('activity')"{% else %}disabled title="Not your lead"{% endif %}>
+      <span>Activity History {% if not restricted %}<span class="count">({{ activity_log|length }})</span>{% endif %}</span>
+      <span class="accordion-chevron">▾</span>
+    </button>
+    {% if not restricted %}
+    <div class="accordion-body">
+      <div class="activity-filter-icons">
+        <button type="button" class="af-icon active" data-filter="all" onclick="filterActivity('all', this)">🗂️ All</button>
+        <button type="button" class="af-icon" data-filter="site_visit" onclick="filterActivity('site_visit', this)">📅 Site Visit</button>
+        <button type="button" class="af-icon" data-filter="follow_up" onclick="filterActivity('follow_up', this)">⏰ Follow-up</button>
+        <button type="button" class="af-icon" data-filter="note" onclick="filterActivity('note', this)">📝 Notes</button>
+        <button type="button" class="af-icon" data-filter="stage_change" onclick="filterActivity('stage_change', this)">🔄 Stage</button>
+        <button type="button" class="af-icon" data-filter="assignment_change" onclick="filterActivity('assignment_change', this)">👤 Assignment</button>
+      </div>
+
+      {% if activity_log %}
+      <div id="activityItems">
+        {% for a in activity_log %}
+        <div class="activity-item" data-bucket="{{ ACTIVITY_BUCKETS.get(a.activity_type, 'other') }}">
+          {% if a.activity_type == 'note' %}
+            <div>📝 {{ a.description }}</div>
+          {% elif a.activity_type == 'stage_change' %}
+            <div>🔄 Stage changed: <strong>{{ a.prev_value }}</strong> → <strong>{{ a.new_value }}</strong></div>
+          {% elif a.activity_type == 'assignment_change' %}
+            <div>👤 Reassigned: <strong>{{ a.prev_value or '(unassigned)' }}</strong> → <strong>{{ a.new_value }}</strong></div>
+          {% elif a.activity_type == 'site_visit_scheduled' %}
+            <div>📅 Site visit scheduled for {{ a.new_value|ampm }}{% if a.description %} — {{ a.description }}{% endif %}</div>
+          {% elif a.activity_type == 'site_visit_conducted' %}
+            <div>✅ Site visit conducted — {{ a.description }}</div>
+          {% elif a.activity_type == 'site_visit_rescheduled' %}
+            <div>🔁 Site visit rescheduled: {{ a.prev_value|ampm }} → {{ a.new_value|ampm }} — {{ a.description }}</div>
+          {% elif a.activity_type == 'site_visit_cancelled' %}
+            <div>❌ Site visit cancelled — {{ a.description }}</div>
+          {% elif a.activity_type == 'site_visit_no_show' %}
+            <div>🚫 Didn't visit — {{ a.description }}</div>
+          {% elif a.activity_type == 'follow_up_scheduled' %}
+            <div>⏰ Follow-up scheduled for {{ a.new_value|ampm }}{% if a.description %} — {{ a.description }}{% endif %}</div>
+          {% elif a.activity_type == 'follow_up_completed' %}
+            <div>✅ Follow-up completed — {{ a.description }}</div>
+          {% elif a.activity_type == 'follow_up_postponed' %}
+            <div>🔁 Follow-up postponed: {{ a.prev_value|ampm }} → {{ a.new_value|ampm }} — {{ a.description }}</div>
+          {% elif a.activity_type == 'follow_up_cancelled' %}
+            <div>❌ Follow-up cancelled — {{ a.description }}</div>
+          {% elif a.activity_type == 'call_attempted' %}
+            <div>📞 Called (tapped from CRM)</div>
+          {% elif a.activity_type == 'lead_created_manual' %}
+            <div>➕ Lead created manually — started at {{ a.new_value|ampm }}</div>
+          {% elif a.activity_type == 'source_changed' %}
+            <div>🏷️ Source changed: <strong>{{ a.prev_value or '(none)' }}</strong> → <strong>{{ a.new_value }}</strong></div>
+          {% elif a.activity_type == 'property_details_updated' %}
+            <div>🏠 Property details updated — {{ a.description }}</div>
+          {% elif a.activity_type == 'contact_info_updated' %}
+            <div>✏️ Contact info updated — {{ a.description }}</div>
+          {% else %}
+            <div>{{ a.activity_type }}</div>
+          {% endif %}
+          <div class="activity-meta">{{ a.actor_name }} · {{ a.created_at|ampm }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="color:var(--ink-soft); font-size:14px;">No activity logged for this lead yet.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ═══════════════ CARD 3 — SITE VISITS & FOLLOW-UPS ═══════════════ -->
+  <div class="accordion-item{% if restricted %} disabled-card{% endif %}" data-card="visits">
+    <button type="button" class="accordion-header" {% if not restricted %}onclick="toggleCard('visits')"{% else %}disabled title="Not your lead"{% endif %}>
+      <span>Site Visits &amp; Follow-ups</span>
+      <span class="accordion-chevron">▾</span>
+    </button>
+    {% if not restricted %}
+    <div class="accordion-body">
+
+      {% if site_visits %}
+      <div class="field-label" style="margin-top:0; font-weight:700; font-size:14px; text-transform:none; letter-spacing:normal; color:var(--ink);">Site Visits</div>
+      {% for v in site_visits %}
+      <div class="activity-item">
+        <div>
+          {{ v.scheduled_at|ampm }}
+          {% if v.status == 'conducted' %}
+            <span class="badge" style="background:var(--green);">Conducted</span>
+          {% elif v.status == 'cancelled' %}
+            <span class="badge" style="background:var(--ink-soft);">Cancelled</span>
+          {% elif v.status == 'no_show' %}
+            <span class="badge" style="background:var(--red);">Didn't Visit</span>
+          {% elif v.missed %}
+            <span class="badge" style="background:var(--red);">Missed</span>
+          {% else %}
+            <span class="badge" style="background:var(--blue);">Scheduled</span>
+          {% endif %}
+        </div>
+        {% if v.notes %}<div class="activity-meta">Scheduled note: {{ v.notes }}</div>{% endif %}
+        {% if v.outcome_reason %}<div class="activity-meta">Outcome: {{ v.outcome_reason }}</div>{% endif %}
+        {% if can_write and v.status == 'scheduled' %}
+        <details class="write-toggle" style="margin-top:6px;">
+          <summary>Update this visit</summary>
+          <form method="post" action="{{ url_for('update_site_visit_route', cls_id=lead.cls_id, visit_id=v.visit_id) }}" class="write-form">
+            <select name="action" required onchange="var d=this.closest('form').querySelector('.reschedule-date'); var show = this.value === 'rescheduled'; d.style.display = show ? 'block' : 'none'; d.querySelectorAll('input[type=date],input[type=time]').forEach(function(el){el.required = show;});">
+              <option value="" disabled selected>Outcome…</option>
+              <option value="conducted">Conducted</option>
+              <option value="rescheduled">Rescheduled</option>
+              <option value="cancelled">Cancelled</option>
+              <option value="no_show">Didn't Visit</option>
+            </select>
+            <div class="reschedule-date write-form-row" style="display:none; margin-top:8px;">
+              <input type="date" onchange="this.form.new_scheduled_at.value = this.form.querySelector('input[type=date]').value + ' ' + this.form.querySelector('input[type=time]').value;">
+              <input type="time" onchange="this.form.new_scheduled_at.value = this.form.querySelector('input[type=date]').value + ' ' + this.form.querySelector('input[type=time]').value;">
+              <input type="hidden" name="new_scheduled_at">
+            </div>
+            <textarea name="reason" placeholder="Reason (required)" required style="margin-top:8px;"></textarea>
+            <div class="write-form-row">
+              <button type="submit" class="btn btn-primary">Submit</button>
+            </div>
+          </form>
+        </details>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% endif %}
+
+      {% if can_write %}
+      <details class="write-toggle" id="siteVisitForm">
+        <summary>+ Schedule a site visit</summary>
+        <form method="post" action="{{ url_for('add_site_visit', cls_id=lead.cls_id) }}" class="write-form">
+          <div class="write-form-row">
+            <input type="date" id="siteVisitDate" required>
+            <input type="time" id="siteVisitTime" required>
+            <input type="hidden" name="scheduled_at" id="siteVisitScheduledAt">
+          </div>
+          <textarea name="notes" placeholder="Optional notes (e.g. bring brochure)"></textarea>
+          <div class="write-form-row">
+            <button type="submit" class="btn btn-primary" onclick="document.getElementById('siteVisitScheduledAt').value = document.getElementById('siteVisitDate').value + ' ' + document.getElementById('siteVisitTime').value;">Schedule</button>
+          </div>
+        </form>
+      </details>
+      {% endif %}
+
+      {% if follow_ups %}
+      <div class="field-label" style="margin-top:20px; font-weight:700; font-size:14px; text-transform:none; letter-spacing:normal; color:var(--ink);">Follow-ups</div>
+      {% for f in follow_ups %}
+      <div class="activity-item">
+        <div>
+          {{ f.scheduled_at|ampm }}
+          {% if f.status == 'completed' %}
+            <span class="badge" style="background:var(--green);">Completed</span>
+          {% elif f.status == 'cancelled' %}
+            <span class="badge" style="background:var(--ink-soft);">Cancelled</span>
+          {% elif f.missed %}
+            <span class="badge" style="background:var(--red);">Missed</span>
+          {% else %}
+            <span class="badge" style="background:var(--blue);">Scheduled</span>
+          {% endif %}
+        </div>
+        {% if f.notes %}<div class="activity-meta">Scheduled note: {{ f.notes }}</div>{% endif %}
+        {% if f.outcome_reason %}<div class="activity-meta">Outcome: {{ f.outcome_reason }}</div>{% endif %}
+        {% if can_write and f.status == 'scheduled' %}
+        <details class="write-toggle" style="margin-top:6px;">
+          <summary>Update this follow-up</summary>
+          <form method="post" action="{{ url_for('update_follow_up_route', cls_id=lead.cls_id, followup_id=f.followup_id) }}" class="write-form">
+            <select name="action" required onchange="var d=this.closest('form').querySelector('.reschedule-date'); var show = this.value === 'postponed'; d.style.display = show ? 'block' : 'none'; d.querySelectorAll('input[type=date],input[type=time]').forEach(function(el){el.required = show;});">
+              <option value="" disabled selected>Outcome…</option>
+              <option value="completed">Completed</option>
+              <option value="postponed">Postponed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <div class="reschedule-date write-form-row" style="display:none; margin-top:8px;">
+              <input type="date" onchange="this.form.new_scheduled_at.value = this.form.querySelector('input[type=date]').value + ' ' + this.form.querySelector('input[type=time]').value;">
+              <input type="time" onchange="this.form.new_scheduled_at.value = this.form.querySelector('input[type=date]').value + ' ' + this.form.querySelector('input[type=time]').value;">
+              <input type="hidden" name="new_scheduled_at">
+            </div>
+            <textarea name="reason" placeholder="Reason (required)" required style="margin-top:8px;"></textarea>
+            <div class="write-form-row">
+              <button type="submit" class="btn btn-primary">Submit</button>
+            </div>
+          </form>
+        </details>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% endif %}
+
+      {% if can_write %}
+      <details class="write-toggle" id="followUpForm">
+        <summary>+ Schedule a follow-up</summary>
+        <form method="post" action="{{ url_for('add_follow_up', cls_id=lead.cls_id) }}" class="write-form">
+          <div class="write-form-row">
+            <input type="date" id="followUpDate" required>
+            <input type="time" id="followUpTime" required>
+            <input type="hidden" name="scheduled_at" id="followUpScheduledAt">
+          </div>
+          <textarea name="notes" placeholder="Optional notes"></textarea>
+          <div class="write-form-row">
+            <button type="submit" class="btn btn-primary" onclick="document.getElementById('followUpScheduledAt').value = document.getElementById('followUpDate').value + ' ' + document.getElementById('followUpTime').value;">Schedule</button>
+          </div>
+        </form>
+      </details>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ═══════════════ CARD 4 — NOTES ═══════════════ -->
+  {% set note_entries = activity_log|selectattr('activity_type', 'equalto', 'note')|list %}
+  <div class="accordion-item{% if restricted %} disabled-card{% endif %}" data-card="notes">
+    <button type="button" class="accordion-header" {% if not restricted %}onclick="toggleCard('notes')"{% else %}disabled title="Not your lead"{% endif %}>
+      <span>Notes {% if not restricted %}<span class="count">({{ note_entries|length }})</span>{% endif %}</span>
+      <span class="accordion-chevron">▾</span>
+    </button>
+    {% if not restricted %}
+    <div class="accordion-body">
+      {% if can_write %}
+      <form method="post" action="{{ url_for('add_lead_note', cls_id=lead.cls_id) }}" class="write-form">
+        <textarea name="note_text" placeholder="Add a note about this lead…" required></textarea>
+        <div class="write-form-row">
+          <button type="submit" class="btn btn-primary">Add note</button>
+        </div>
+      </form>
+      {% endif %}
+
+      {% if note_entries %}
+      <div style="margin-top:16px;">
+        {% for a in note_entries %}
+        <div class="activity-item">
+          <div>📝 {{ a.description }}</div>
+          <div class="activity-meta">{{ a.actor_name }} · {{ a.created_at|ampm }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="color:var(--ink-soft); font-size:14px; margin-top:12px;">No notes yet.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+
+<!-- ═══════════════ ADMIN-ONLY — CAPI/Email history, now accordion cards (v0.9.2), same toggleCard() pattern as the rest ═══════════════ -->
+{% if current_user.role == 'admin' %}
+<div class="accordion-item" data-card="capi">
+  <button type="button" class="accordion-header" onclick="toggleCard('capi')">
+    <span>CAPI fire history <span class="count">({{ events|length }})</span></span>
+    <span class="accordion-chevron">▾</span>
+  </button>
+  <div class="accordion-body">
+    {% if events %}
+    <table class="leads">
+      <thead>
+        <tr><th>Fired at</th><th>Prev stage</th><th>Stage</th><th>Meta event</th><th>Value (₹)</th></tr>
+      </thead>
+      <tbody>
+        {% for e in events %}
+        <tr>
+          <td data-label="Fired at">{{ e.fired_at }}</td>
+          <td data-label="Prev stage">{{ e.prev_stage or '—' }}</td>
+          <td data-label="Stage">{{ e.crm_stage }}</td>
+          <td data-label="Meta event">{{ e.meta_event }}</td>
+          <td data-label="Value">₹{{ "{:,}".format(e.value_inr) if e.value_inr else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--ink-soft); font-size:14px;">No CAPI events fired for this lead yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="accordion-item" data-card="email">
+  <button type="button" class="accordion-header" onclick="toggleCard('email')">
+    <span>Email history <span class="count">({{ comms|length }})</span></span>
+    <span class="accordion-chevron">▾</span>
+  </button>
+  <div class="accordion-body">
+    {% if comms %}
+    <table class="leads">
+      <thead>
+        <tr><th>Sent at</th><th>Stage</th><th>Day</th><th>Template</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {% for c in comms %}
+        <tr>
+          <td data-label="Sent at">{{ c.sent_at }}</td>
+          <td data-label="Stage">{{ c.drip_stage }}</td>
+          <td data-label="Day">Day {{ c.day_number }}</td>
+          <td data-label="Template">{{ c.template_key }}</td>
+          <td data-label="Status">{{ c.status }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--ink-soft); font-size:14px;">No drip emails sent to this lead yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<form method="post" action="{{ url_for('delete_lead_route', cls_id=lead.cls_id) }}" style="margin-top:16px;"
+      onsubmit="return confirm('Permanently delete lead #{{ lead.crm_lead_no }} ({{ lead.full_name or 'no name' }}) and ALL its data? This cannot be undone.');">
+  <button type="submit" class="btn" style="background:var(--red); color:#fff; border-color:var(--red);">Delete this lead permanently</button>
+</form>
+{% endif %}
+
+<div class="action-bar">
+  <button type="button" class="action-btn{% if not can_write %} disabled{% endif %}" {% if not can_write %}disabled title="Not your lead"{% else %}onclick="openCardAndScroll('visits', 'siteVisitForm');" title="Schedule a site visit"{% endif %}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/></svg>
+    Site Visit
+  </button>
+  <button type="button" class="action-btn{% if not can_write %} disabled{% endif %}" {% if not can_write %}disabled title="Not your lead"{% else %}onclick="openCardAndScroll('visits', 'followUpForm');" title="Schedule a follow-up"{% endif %}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2"/><path d="M9 2h6"/></svg>
+    Follow-up
+  </button>
+  {% if lead.phone_norm and can_write %}
+  <a class="action-btn" href="tel:+91{{ lead.phone_norm }}" title="Call {{ lead.full_name }}" onclick="logCallTap();">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+    Call
+  </a>
+  {% else %}
+  <button class="action-btn disabled" disabled title="{% if not can_write %}Not your lead{% else %}No phone number on file{% endif %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+    Call
+  </button>
+  {% endif %}
+  <button class="action-btn disabled" disabled title="Deferred — not built yet, per your instruction">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg>
+    Email
+  </button>
+  {% if lead.phone_norm and can_write %}
+  <a class="action-btn" href="{{ url_for('whatsapp_picker', cls_id=lead.cls_id) }}" title="Send WhatsApp">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+    WhatsApp
+  </a>
+  {% else %}
+  <button class="action-btn disabled" disabled title="{% if not can_write %}Not your lead{% else %}No phone number on file{% endif %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+    WhatsApp
+  </button>
+  {% endif %}
+</div>
+
+<script>
+// v0.3 — fire-and-forget call-attempt logging. Does not wait for or
+// care about the response; the tel: link handoff proceeds regardless.
+// See cls_db.py v1.9's log_call_tap() for what this can and can't
+// actually capture (timestamp only — never duration or answered-status).
+function logCallTap() {
+  fetch("{{ url_for('call_tap', cls_id=lead.cls_id) }}", { method: "POST" }).catch(function(){});
+}
+
+// v0.9.3 — ACTIONS modal open/close. Closing via the × button, a
+// backdrop click, or Escape all just remove the .open class; nothing
+// inside submits on its own (each <details> form still needs its own
+// Save/Submit tap, same as before the move).
+function openActionsModal() {
+  document.getElementById('actionsModal').classList.add('open');
+}
+function closeActionsModal() {
+  document.getElementById('actionsModal').classList.remove('open');
+}
+document.addEventListener('DOMContentLoaded', function () {
+  var overlay = document.getElementById('actionsModal');
+  if (overlay) {
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) { closeActionsModal(); }
+    });
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeActionsModal(); }
+  });
+});
+
+// v2 — accordion: exactly one card open at a time. Clicking the
+// currently-open card's header closes it; clicking any other opens it
+// and closes the rest.
+function toggleCard(name) {
+  document.querySelectorAll('.accordion-item').forEach(function(item){
+    if (item.dataset.card === name) {
+      item.classList.toggle('open');
+    } else {
+      item.classList.remove('open');
+    }
+  });
+}
+
+// v2 — force a specific card open (used by the bottom action-bar's
+// quick "Site Visit"/"Follow-up" buttons so they still jump straight
+// to the right form, same as before the accordion existed).
+function openCard(name) {
+  document.querySelectorAll('.accordion-item').forEach(function(item){
+    item.classList.toggle('open', item.dataset.card === name);
+  });
+}
+
+function openCardAndScroll(cardName, detailsId) {
+  openCard(cardName);
+  var d = document.getElementById(detailsId);
+  if (d) { d.open = true; }
+  // Small delay lets the accordion body finish expanding before we
+  // measure its position to scroll to it.
+  setTimeout(function(){
+    if (d) { d.scrollIntoView({behavior: 'smooth', block: 'center'}); }
+  }, 60);
+}
+
+// v2 — Activity History filter icons. Client-side only, no reload:
+// each activity item already carries its bucket in data-bucket
+// (computed server-side from ACTIVITY_BUCKETS above).
+function filterActivity(bucket, btn) {
+  document.querySelectorAll('.af-icon').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  document.querySelectorAll('#activityItems .activity-item').forEach(function(item){
+    item.style.display = (bucket === 'all' || item.dataset.bucket === bucket) ? '' : 'none';
+  });
+}
+
+// v3 — item 14 + 15/16: auto-submit the stage dropdown immediately
+// EXCEPT for Lost/Unqualified, which pause here for a required reason
+// (radio, one of cls_db's LOST_REASONS/UNQUALIFIED_REASONS) plus a
+// free-text note, both enforced again server-side by cls_db.
+// update_lead_stage() — this client-side gate is a UX convenience,
+// not the actual enforcement point.
+var LOST_REASONS = {{ lost_reasons|tojson }};
+var UNQUALIFIED_REASONS = {{ unqualified_reasons|tojson }};
+
+function handleStageSelect(sel) {
+  var stage = sel.value;
+  var panel = document.getElementById('reasonPanel');
+  var optsDiv = document.getElementById('reasonOptions');
+  var title = document.getElementById('reasonPanelTitle');
+  var notes = document.getElementById('reasonNotes');
+
+  if (stage === 'Lost' || stage === 'Unqualified') {
+    var list = stage === 'Lost' ? LOST_REASONS : UNQUALIFIED_REASONS;
+    title.textContent = stage + ' reason (required)';
+    optsDiv.innerHTML = list.map(function(r){
+      var esc = r.replace(/"/g, '&quot;');
+      return '<label class="opt-row"><input type="radio" name="reason_code" value="' + esc + '" required> ' + r + '</label>';
+    }).join('');
+    panel.style.display = 'block';
+    notes.required = true;
+  } else {
+    panel.style.display = 'none';
+    optsDiv.innerHTML = '';
+    notes.required = false;
+    sel.form.submit();
+  }
+}
+
+function cancelStageChange() {
+  document.getElementById('stageSelect').value = '';
+  document.getElementById('reasonPanel').style.display = 'none';
+  document.getElementById('reasonOptions').innerHTML = '';
+  document.getElementById('reasonNotes').required = false;
+}
+</script>
+{% endblock %}

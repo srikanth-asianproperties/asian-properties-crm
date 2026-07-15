@@ -1,0 +1,51 @@
+{# dashboard.html (v0.6) — "Stats" tab of the 3-tab dashboard (Stats /
+   Today's Performance / Pipeline Analysis). Content is UNCHANGED from
+   the pre-v0.6 single-page dashboard (the same 4 cards); only the
+   bottom tab bar is new. Kept at the /dashboard route/filename so
+   every existing url_for('dashboard') link elsewhere still works. #}
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:0;">Stats</h2>
+
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;">
+
+  <a href="{{ url_for('leads_list', stage='Incoming', fields_submitted=1) }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div class="field-label">New Enquiries</div>
+    <div style="font-size:34px; font-weight:700; color:var(--green); margin:6px 0;">{{ new_enquiries_count }}</div>
+    <div style="font-size:13px; color:var(--ink-soft);">Still in Incoming &middot; tap to view</div>
+  </a>
+
+  <a href="{{ url_for('reengaged_list') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div class="field-label">Reengaged <span style="text-transform:none; font-weight:400;">(approx.)</span></div>
+    <div style="font-size:34px; font-weight:700; color:var(--blue); margin:6px 0;">{{ reengaged_count }}</div>
+    <div style="font-size:13px; color:var(--ink-soft);">Directional, not exact &middot; tap to view</div>
+  </a>
+
+  <a href="{{ url_for('due_list', kind='follow_up') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div class="field-label">Follow-ups Due</div>
+    <div style="font-size:34px; font-weight:700; color:var(--amber); margin:6px 0;">{{ follow_up_due_count }}</div>
+    <div style="font-size:13px; color:var(--ink-soft);">Due today or overdue &middot; tap to view</div>
+  </a>
+
+  <a href="{{ url_for('due_list', kind='site_visit') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div class="field-label">Site Visits Due</div>
+    <div style="font-size:34px; font-weight:700; color:var(--amber); margin:6px 0;">{{ site_visit_due_count }}</div>
+    <div style="font-size:13px; color:var(--ink-soft);">Due today or overdue &middot; tap to view</div>
+  </a>
+
+</div>
+
+<p style="font-size:13px; color:var(--ink-soft); margin-top:18px; max-width:560px;">
+  "Reengaged" counts existing leads touched again this week — it can't yet tell
+  a genuine new inquiry apart from a routine stage sync, so treat it as a
+  signal, not a precise count.
+</p>
+
+<div style="margin-top:24px;">
+  <a href="{{ url_for('leads_list') }}" class="btn btn-primary">View all leads →</a>
+</div>
+
+{% include "_dashboard_tabbar.html" %}
+{% endblock %}

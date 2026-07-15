@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Site Visits Due' if kind == 'site_visit' else 'Follow-ups Due' }}{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:0;">
+  {{ 'Site Visits Due' if kind == 'site_visit' else 'Follow-ups Due' }}
+  <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ items|length }})</span>
+</h2>
+
+{% if items %}
+<div class="lead-card-list">
+  {% for item in items %}
+  <a href="{{ url_for('lead_detail', cls_id=item.cls_id) }}" class="lead-card">
+    <div class="lead-card-head">
+      <span class="lead-card-no">#{{ item.crm_lead_no or '—' }}</span>
+      <span class="lead-card-name">{{ item.full_name or '(no name)' }}</span>
+      {% if item.missed %}
+        <span class="badge" style="background:var(--red);">Missed</span>
+      {% else %}
+        <span class="badge" style="background:var(--blue);">Today</span>
+      {% endif %}
+    </div>
+    <div class="lead-card-grid">
+      <span class="lc-field"><span class="lc-label">Scheduled</span> {{ item.scheduled_at }}</span>
+      {% if item.notes %}<span class="lc-field"><span class="lc-label">Notes</span> {{ item.notes }}</span>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty-state">
+  <p><strong>Nothing due here right now.</strong></p>
+</div>
+{% endif %}
+
+<div style="margin-top:24px;">
+  <a href="{{ url_for('dashboard') }}" class="btn">← Back to Dashboard</a>
+</div>
+{% endblock %}

@@ -1,0 +1,102 @@
+{# leads_list.html (v0.7) — top filter bar removed per Srikanth's spec.
+   Header is now just "Leads (N)" + Add lead. Filter/Search/Fields
+   moved to the bottom icon bar (_leads_list_actionbar.html) — Filter
+   and Search open dedicated full-screen panels; Fields stays an
+   in-place popover, just relocated. #}
+{% extends "base.html" %}
+{% block title %}Leads{% endblock %}
+
+{% block content %}
+<style>
+/* v0.5 — lead score badge. Self-contained here since base.html's
+   shared stylesheet isn't part of this edit. */
+.score-badge {
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:26px; height:20px; padding:0 6px; border-radius:10px;
+  font-size:12px; font-weight:700; color:#fff; line-height:1;
+}
+.score-badge.score-hot  { background:var(--red); }
+.score-badge.score-warm { background:#E0A030; }
+.score-badge.score-cold { background:var(--ink-soft); }
+</style>
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+  <h2 style="margin:0;">Leads <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ result.total }})</span></h2>
+  <a href="{{ url_for('new_lead') }}" class="btn btn-primary">+ Add lead</a>
+</div>
+
+{% if owner_unlinked_warning %}
+<div style="background:#FDEDED; color:var(--red); border:1px solid #F5C6C6; padding:12px 16px; border-radius:8px; font-size:14px; margin:16px 0;">
+  Your account isn't linked to a Sell.do owner name yet, so no leads are showing.
+  Ask your admin to set this — it's a one-line fix via <code>create_admin.py</code>.
+</div>
+{% endif %}
+
+{% if filters.q or filters.stage or filters.project or filters.owner or filters.date_from or filters.date_to
+      or filters.stage_reason or filters.campaign or filters.source or filters.sub_source or filters.budget
+      or filters.configuration or filters.property_type or filters.facing %}
+<div style="display:flex; align-items:center; gap:8px; margin:14px 0; font-size:13px; color:var(--ink-soft); flex-wrap:wrap;">
+  <span>Filters active{% if filters.q %} · searching "{{ filters.q }}"{% endif %}</span>
+  <a href="{{ url_for('leads_list') }}" class="btn" style="padding:4px 12px; font-size:12px;">Clear all</a>
+</div>
+{% endif %}
+
+{% if result.rows %}
+<div class="lead-card-list" style="margin-bottom:16px;">
+  {% for lead in result.rows %}
+  <div class="lead-card">
+    <a href="{{ url_for('lead_detail', cls_id=lead.cls_id) }}" class="lead-card-stretch" aria-label="View {{ lead.full_name or 'lead' }}"></a>
+    <div class="lead-card-head">
+      <span class="lead-card-no">#{{ lead.crm_lead_no or '—' }}</span>
+      <span class="lead-card-name">{{ lead.full_name or '(no name)' }}</span>
+      <span class="score-badge score-{{ lead.lead_score_band|lower }}" title="Lead score: {{ lead.lead_score }}">
+        {{ lead.lead_score }}
+      </span>
+      <span class="badge stage-{{ (lead.current_stage or 'other')|replace(' ', '') }}">
+        {{ lead.current_stage or 'Unknown' }}
+      </span>
+    </div>
+    <div class="lead-card-grid">
+      {% if 'phone' in active_fields and lead.phone_norm %}
+      <span class="lc-field"><span class="lc-label">Ph</span>
+        <a href="tel:+91{{ lead.phone_norm }}" class="lead-card-phone">{{ lead.phone_norm|fmt_phone }}</a>
+      </span>
+      {% endif %}
+      {% if 'project' in active_fields %}
+      <span class="lc-field"><span class="lc-label">Project</span> {{ lead.project_bucket }}</span>
+      {% endif %}
+      {% if 'owner' in active_fields %}
+      <span class="lc-field"><span class="lc-label">Owner</span> {{ lead.lead_owner or '—' }}</span>
+      {% endif %}
+      {% if 'source' in active_fields %}
+      <span class="lc-field"><span class="lc-label">Source</span> {{ lead.source or '—' }}</span>
+      {% endif %}
+      {% if 'updated' in active_fields %}
+      <span class="lc-field"><span class="lc-label">Upd</span> {{ lead.cls_updated_at.split(' ')[0] if lead.cls_updated_at else '—' }}</span>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty-state">
+  <p><strong>No leads match these filters.</strong></p>
+  <p>Try the Filter or Search icons below to adjust or clear them.</p>
+</div>
+{% endif %}
+
+{% if result.total_pages > 1 %}
+<div style="display:flex; justify-content:center; gap:10px; margin-top:16px; align-items:center;">
+  {% set base_args = filters.copy() %}
+  {% set _ = base_args.update({'fields_submitted': 1, 'fields': active_fields}) %}
+  {% if result.page > 1 %}
+    <a class="btn" href="{{ url_for('leads_list', page=result.page-1, **base_args) }}">← Previous</a>
+  {% endif %}
+  <span style="color:var(--ink-soft); font-size:14px;">Page {{ result.page }} of {{ result.total_pages }}</span>
+  {% if result.page < result.total_pages %}
+    <a class="btn" href="{{ url_for('leads_list', page=result.page+1, **base_args) }}">Next →</a>
+  {% endif %}
+</div>
+{% endif %}
+
+{% include "_leads_list_actionbar.html" %}
+{% endblock %}

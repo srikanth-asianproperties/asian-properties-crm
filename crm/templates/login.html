@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Log in{% endblock %}
+
+{% block content %}
+<div style="max-width:360px; margin: 60px auto 0;">
+  <div class="card">
+    <h2 style="margin-top:0; margin-bottom:4px;">APX</h2>
+    <p style="color:var(--ink-soft); margin-top:0; font-size:14px;">Asian Properties CRM</p>
+
+    {% if error %}
+      <p style="background:#FDEDED; color:var(--red); border:1px solid #F5C6C6; padding:10px 12px; border-radius:8px; font-size:14px;">
+        {{ error }}
+      </p>
+    {% endif %}
+
+    <form method="POST" style="display:flex; flex-direction:column; gap:12px;">
+      <div>
+        <div class="field-label">Email</div>
+        <input type="email" name="email" required autofocus style="width:100%;">
+      </div>
+      <div>
+        <div class="field-label">Password</div>
+        <input type="password" name="password" required style="width:100%;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="margin-top:6px;">Log in</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

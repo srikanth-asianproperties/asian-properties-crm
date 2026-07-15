@@ -1,0 +1,10 @@
+# APX CRM — requirements.txt
+# v2  (July 2026) — added waitress for production hardening (app.py v0.1.5)
+#
+# v1  (July 2026) — original: Flask + python-dotenv only
+#
+# Install: pip install -r requirements.txt
+
+Flask
+python-dotenv
+waitress

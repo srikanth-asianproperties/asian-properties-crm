@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{% block title %}Dashboard{% endblock %} · Asian Properties CRM</title>
+
+<!-- PWA app-shell plumbing -->
+<link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+<meta name="theme-color" content="#1F2A44">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Asian Properties">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --navy: #1F2A44;
+    --navy-light: #2B3A5C;
+    --paper: #F7F8FA;
+    --card: #FFFFFF;
+    --line: #E3E6EC;
+    --ink: #1B2430;
+    --ink-soft: #5B6472;
+    --blue: #2F80ED;
+    --amber: #E08C2B;
+    --green: #27AE60;
+    --red: #D64545;
+    --gray: #8A93A3;
+  }
+  *{ box-sizing: border-box; }
+  html, body{ height: 100%; }
+  body{
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  a{ color: var(--blue); text-decoration: none; }
+  a:hover{ text-decoration: underline; }
+  a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible{
+    outline: 2px solid var(--blue); outline-offset: 2px;
+  }
+
+  header.appbar{
+    background: var(--navy);
+    color: #fff;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header.appbar .menu-btn{
+    background: none; border: none; color: #fff; padding: 4px;
+    cursor: pointer; display: flex; align-items: center;
+  }
+  header.appbar .brand{
+    font-family: 'Playfair Display', Georgia, serif;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    font-size: 19px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header.appbar .brand-logo{
+    height: 30px;
+    width: auto;
+    display: block;
+  }
+
+  .nav-scrim{
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.35);
+    z-index: 19;
+  }
+  .nav-scrim.show{ display: block; }
+
+  .nav-drawer{
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    width: 260px;
+    background: #fff;
+    z-index: 20;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 2px 0 12px rgba(0,0,0,0.15);
+  }
+  .nav-drawer.open{ transform: translateX(0); }
+  .drawer-user{
+    display: flex; align-items: center; gap: 10px;
+    padding: 20px 16px; border-bottom: 1px solid var(--line);
+  }
+  .drawer-avatar{
+    width: 40px; height: 40px; border-radius: 50%;
+    background: var(--navy); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px; flex-shrink: 0;
+  }
+  .drawer-link{
+    display: block; padding: 14px 20px;
+    color: var(--ink); font-size: 15px;
+  }
+  .drawer-link:hover{ background: var(--paper); text-decoration: none; }
+  .drawer-link.active{ background: #EAF0FC; color: var(--blue); font-weight: 600; border-right: 3px solid var(--blue); }
+  .drawer-divider{ height: 1px; background: var(--line); margin: 8px 0; }
+  .drawer-footer{ margin-top: auto; padding: 16px 20px; font-size: 12px; color: var(--ink-soft); }
+
+  /* Sell.do-style bottom action bar — used on lead detail, and now also
+     the dashboard tab bar + leads-list icon bar (v0.8). CHANGED from
+     `position: sticky` to `position: fixed`: sticky only starts
+     pinning once its natural in-flow position scrolls into view — on
+     a long leads list, that meant scrolling past every card before
+     the bar appeared at all. Fixed pins it to the viewport bottom
+     from the moment the page loads, exactly like the appbar header
+     above (which achieves the same "always there" feel via
+     sticky+top:0, since it's the FIRST thing on the page — this bar
+     is the LAST thing, so sticky can't do the same job here; fixed
+     is the correct tool for a bottom nav bar). main.wrap gets matching
+     bottom padding below so content never sits underneath it. */
+  .action-bar{
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 12;
+    display: flex;
+    justify-content: space-around;
+    background: #fff;
+    border-top: 1px solid var(--line);
+    padding: 10px 6px calc(10px + env(safe-area-inset-bottom));
+  }
+  .action-btn{
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    background: none; border: none; color: var(--navy);
+    font-size: 11px; padding: 4px 8px; cursor: pointer;
+  }
+  .action-btn svg{ width: 22px; height: 22px; }
+  .action-btn.disabled{ color: var(--gray); cursor: not-allowed; opacity: 0.55; }
+
+  .fields-popover{
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+    padding: 12px 16px;
+    z-index: 15;
+    min-width: 160px;
+    max-width: calc(100vw - 32px);
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  .fields-popover.open{ display: block; }
+
+  main.wrap{
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 20px;
+    /* v0.8 — reserves space for the now-fixed .action-bar so the last
+       card/button on any page isn't hidden underneath it. Only takes
+       effect where a page actually includes an action-bar; harmless
+       extra whitespace on pages that don't. */
+    padding-bottom: calc(78px + env(safe-area-inset-bottom));
+  }
+
+  .card{
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+
+  .badge{
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    background: var(--ink-soft); /* default so any unmapped stage name is still visible */
+  }
+  .stage-Incoming{ background: var(--gray); }
+  .stage-Prospect{ background: var(--blue); }
+  .stage-Opportunity{ background: var(--amber); }
+  .stage-SiteVisited{ background: var(--green); }
+  .stage-Booked{ background: #1E8449; }
+  .stage-Lost, .stage-Unqualified{ background: var(--red); }
+  .stage-ReAssigned{ background: #7E57C2; }
+  .stage-other{ background: var(--ink-soft); }
+
+  .btn{
+    display: inline-block;
+    padding: 9px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--ink);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .btn:hover{ text-decoration: none; border-color: var(--blue); }
+  .btn-primary{ background: var(--navy); color: #fff; border-color: var(--navy); }
+  .btn-primary:hover{ background: var(--navy-light); }
+
+  input[type="text"], input[type="email"], input[type="password"],
+  input[type="tel"], input[type="date"], input[type="time"], select{
+    padding: 10px 12px;
+    border: 1.5px solid var(--line);
+    border-radius: 8px;
+    font-size: 14px;
+    background: #fff;
+    color: var(--ink);
+    height: 42px;
+    box-sizing: border-box;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  input[type="text"]:focus, input[type="email"]:focus, input[type="password"]:focus,
+  input[type="tel"]:focus, input[type="date"]:focus, input[type="time"]:focus, select:focus{
+    outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(47,128,237,0.15);
+  }
+  select{
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    cursor: pointer;
+    padding-right: 34px;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%235B6472' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+  }
+  select:hover, input[type="text"]:hover, input[type="tel"]:hover{ border-color: #C3C9D2; }
+
+  table.leads{ width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.leads th{
+    text-align: left; font-size: 12px; color: var(--ink-soft);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 10px 12px; border-bottom: 1px solid var(--line);
+  }
+  table.leads td{ padding: 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  table.leads tr:hover td{ background: #FAFBFC; }
+
+  .empty-state{ text-align: center; padding: 48px 20px; color: var(--ink-soft); }
+
+  /* Flash messages (v0.5 — success/error feedback after write actions) */
+  .flash{
+    padding: 10px 14px; border-radius: 8px; font-size: 14px;
+    margin-bottom: 14px;
+  }
+  .flash-success{ background: #E8F6EE; color: #1E8449; border: 1px solid #BEE6CE; }
+  .flash-error{ background: #FBEAEA; color: var(--red); border: 1px solid #F3C9C9; }
+
+  /* Simple write forms on the lead detail page (v0.5) */
+  .write-form{ margin-top: 10px; }
+  .write-form textarea{
+    width: 100%; padding: 9px 11px; border: 1px solid var(--line);
+    border-radius: 8px; font-size: 14px; font-family: inherit;
+    resize: vertical; min-height: 60px; background: #fff; color: var(--ink);
+  }
+  .write-form input[type="datetime-local"]{
+    padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px;
+    font-size: 14px; background: #fff; color: var(--ink);
+  }
+  .write-form-row{ display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px; }
+  details.write-toggle{ margin-top: 10px; }
+  details.write-toggle > summary{
+    cursor: pointer; font-size: 14px; color: var(--blue); font-weight: 600;
+    list-style: none;
+  }
+  details.write-toggle > summary::-webkit-details-marker{ display: none; }
+
+  .activity-item{
+    padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px;
+  }
+  .activity-item:last-child{ border-bottom: none; }
+  .activity-meta{ font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+  .temp-badge{
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; margin-left: 6px;
+  }
+  .temp-Hot{ background: #FBEAEA; color: var(--red); }
+  .temp-Warm{ background: #FDF3E7; color: var(--amber); }
+
+  .field-label{ font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); margin-bottom: 4px; }
+  .field-value{ font-size: 15px; margin-bottom: 14px; }
+
+  /* Dense lead cards (v0.3) — replaces the old one-field-per-line
+     table-turned-cards. Packs several fields per line so more leads
+     fit on screen without scrolling, closer to Sell.do's density. */
+  .lead-card-list{ display: flex; flex-direction: column; gap: 8px; }
+  .lead-card{
+    position: relative; background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 14px; color: var(--ink);
+  }
+  .lead-card:hover{ background: #FAFBFC; }
+  .lead-card-stretch{ position: absolute; inset: 0; z-index: 1; border-radius: 8px; }
+  .lead-card-head{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+  .lead-card-no{ font-size: 12px; color: var(--ink-soft); font-weight: 600; }
+  .lead-card-name{ font-size: 15px; font-weight: 600; flex: 1; min-width: 100px; }
+  .lead-card-grid{ display: flex; flex-wrap: wrap; gap: 4px 16px; }
+  .lc-field{ font-size: 13px; color: var(--ink); white-space: nowrap; }
+  .lc-label{ color: var(--ink-soft); margin-right: 3px; }
+  .lead-card-phone{ position: relative; z-index: 2; }
+
+  /* Mobile: table becomes stacked cards */
+  @media (max-width: 700px){
+    main.wrap{ padding: 10px; padding-bottom: calc(78px + env(safe-area-inset-bottom)); }
+    table.leads thead{ display: none; }
+    table.leads, table.leads tbody, table.leads tr, table.leads td{ display: block; width: 100%; }
+    table.leads tr{ background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; padding: 4px 0; }
+    table.leads td{ border-bottom: none; padding: 5px 12px; }
+    table.leads td[data-label]::before{
+      content: attr(data-label);
+      display: block;
+      font-size: 10px;
+      color: var(--ink-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin-bottom: 1px;
+    }
+  }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+{% if current_user %}
+<header class="appbar">
+  <button class="menu-btn" onclick="document.getElementById('navDrawer').classList.add('open'); document.getElementById('navScrim').classList.add('show');" aria-label="Open menu">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
+  <div class="brand">
+    <!-- Logo goes here once provided — see note below.
+         <img src="{{ url_for('static', filename='logo.png') }}" alt="Asian Properties" class="brand-logo"> -->
+    Asian Properties CRM
+  </div>
+  <div style="width:22px;"></div>
+</header>
+
+<div id="navScrim" class="nav-scrim" onclick="document.getElementById('navDrawer').classList.remove('open'); this.classList.remove('show');"></div>
+
+<nav id="navDrawer" class="nav-drawer">
+  <div class="drawer-user">
+    <div class="drawer-avatar">{{ current_user.full_name[:2]|upper if current_user.full_name else 'U' }}</div>
+    <div>
+      <div style="font-weight:600;">{{ current_user.full_name }}</div>
+      <div style="font-size:12px; color:var(--ink-soft);">{{ current_user.email }} · {{ current_user.role }}</div>
+    </div>
+  </div>
+  <a href="{{ url_for('dashboard') }}" class="drawer-link {{ 'active' if request.endpoint == 'dashboard' }}">Dashboard</a>
+  <a href="{{ url_for('leads_list') }}" class="drawer-link {{ 'active' if request.endpoint in ['leads_list', 'lead_detail'] }}">Leads</a>
+  {% if current_user.role == 'admin' %}
+  <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin'] }}">Settings</a>
+  {% endif %}
+  <div class="drawer-divider"></div>
+  <a href="{{ url_for('logout') }}" class="drawer-link">Log out</a>
+  <div class="drawer-footer">Asian Properties CRM</div>
+</nav>
+{% endif %}
+
+<main class="wrap">
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}
+    <div class="flash flash-{{ category }}">{{ message }}</div>
+  {% endfor %}
+{% endwith %}
+{% block content %}{% endblock %}
+</main>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('/sw.js').catch(function(err){
+      console.log('Service worker registration failed:', err);
+    });
+  });
+}
+</script>
+</body>
+</html>

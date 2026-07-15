@@ -1,0 +1,43 @@
+{# leads_search.html (v0.7) — dedicated search screen (item 7 of
+   Srikanth's spec). Every OTHER currently-active filter is carried
+   forward as a hidden input so searching doesn't silently clear a
+   filter someone already set. #}
+{% extends "base.html" %}
+{% block title %}Search Leads{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('leads_list') }}" style="font-size:14px;">← Back to leads</a>
+
+<h2 style="margin-top:10px;">Search Leads</h2>
+<p style="font-size:13px; color:var(--ink-soft); margin-top:-8px;">
+  Matches name, phone, or email.
+</p>
+
+<form method="get" action="{{ url_for('leads_list') }}" class="card" style="margin-top:16px;">
+  <input type="text" name="q" value="{{ filters.q }}" placeholder="Search name, phone, or email"
+         autofocus style="width:100%; margin-bottom:14px;">
+
+  {# Carry every other active filter forward untouched #}
+  <input type="hidden" name="stage" value="{{ filters.stage }}">
+  <input type="hidden" name="project" value="{{ filters.project }}">
+  <input type="hidden" name="owner" value="{{ filters.owner }}">
+  <input type="hidden" name="date_from" value="{{ filters.date_from }}">
+  <input type="hidden" name="date_to" value="{{ filters.date_to }}">
+  <input type="hidden" name="sort_by" value="{{ filters.sort_by }}">
+  <input type="hidden" name="stage_reason" value="{{ filters.stage_reason }}">
+  <input type="hidden" name="campaign" value="{{ filters.campaign }}">
+  <input type="hidden" name="source" value="{{ filters.source }}">
+  <input type="hidden" name="sub_source" value="{{ filters.sub_source }}">
+  <input type="hidden" name="budget" value="{{ filters.budget }}">
+  {% for v in filters.configuration %}<input type="hidden" name="configuration" value="{{ v }}">{% endfor %}
+  {% for v in filters.property_type %}<input type="hidden" name="property_type" value="{{ v }}">{% endfor %}
+  {% for v in filters.facing %}<input type="hidden" name="facing" value="{{ v }}">{% endfor %}
+
+  <div class="write-form-row">
+    <button type="submit" class="btn btn-primary">Search</button>
+    {% if filters.q %}
+    <a href="{{ url_for('leads_list', stage=filters.stage, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" class="btn">Clear search</a>
+    {% endif %}
+  </div>
+</form>
+{% endblock %}
