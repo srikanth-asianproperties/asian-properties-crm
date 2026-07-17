@@ -1,12 +1,66 @@
-{# reports.html (v0.6.1) — Categorized Reports landing page. Categories +
+{# reports.html (v0.6.2) — Categorized Reports landing page. Categories +
    cards are entirely config-driven from cls_reports.CATEGORIES via
    visible_categories(current_user) — admin_only reports are simply
    absent from a salesperson's list here (Srikanth's call: hide, don't
    grey-out), not a template-level if-check per report. Add a report by
    adding one entry to cls_reports.REPORTS and one id to a category in
-   cls_reports.CATEGORIES; nothing here needs to change. #}
+   cls_reports.CATEGORIES; nothing here needs to change.
+
+   v0.6.2 — Categories now collapse-by-default dropdowns (native
+   <details>, no JS). No <details open> anywhere, so every category
+   starts closed on page load; opening one is independent of the
+   others (native <details> behavior). Chevron is an inline SVG,
+   rotated via CSS on details[open]. cls_reports.py untouched — this
+   is presentation-only. #}
 {% extends "base.html" %}
 {% block title %}Reports{% endblock %}
+
+{% block head %}
+<style>
+  details.report-cat{
+    border-bottom: 1px solid var(--line);
+    margin: 0 0 4px;
+  }
+  details.report-cat > summary{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 14px 4px;
+    cursor: pointer;
+    list-style: none;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-soft);
+  }
+  details.report-cat > summary::-webkit-details-marker{ display: none; }
+  details.report-cat > summary:hover{ background: var(--paper); }
+  .report-cat-title{ flex: 1; }
+  .report-cat-count{
+    font-size: 12px;
+    color: var(--ink-soft);
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 1px 9px;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+  .report-cat .chev{
+    flex-shrink: 0;
+    transition: transform 0.15s ease;
+    color: var(--ink-soft);
+  }
+  details.report-cat[open] .chev{ transform: rotate(180deg); }
+  .report-grid{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+    padding: 4px 4px 18px;
+  }
+</style>
+{% endblock %}
 
 {% block content %}
 <h2 style="margin-top:0;">Reports</h2>
@@ -22,22 +76,28 @@
 </p>
 
 {% for category in categories %}
-<h3 style="margin:28px 0 10px; font-size:14px; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft);">
-  {{ category.name }}
-</h3>
-<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;">
-  {% for r in category.reports %}
-  <a href="{{ url_for('report_view', report_id=r.id) }}" class="card" style="display:block;">
-    <div style="display:flex; justify-content:space-between; align-items:start; gap:8px;">
-      <strong style="font-size:15px;">{{ r.title }}</strong>
-      <span class="badge" style="background:{{ 'var(--blue)' if r.admin_only else 'var(--gray)' }}; flex-shrink:0;">
-        {{ 'Team' if r.admin_only else r.cadence }}
-      </span>
-    </div>
-    <p style="font-size:13px; color:var(--ink-soft); margin:8px 0 0;">{{ r.description }}</p>
-  </a>
-  {% endfor %}
-</div>
+<details class="report-cat">
+  <summary>
+    <span class="report-cat-title">{{ category.name }}</span>
+    <span class="report-cat-count">{{ category.reports|length }}</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 12 8" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M1 1l5 5 5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </summary>
+  <div class="report-grid">
+    {% for r in category.reports %}
+    <a href="{{ url_for('report_view', report_id=r.id) }}" class="card" style="display:block;">
+      <div style="display:flex; justify-content:space-between; align-items:start; gap:8px;">
+        <strong style="font-size:15px;">{{ r.title }}</strong>
+        <span class="badge" style="background:{{ 'var(--blue)' if r.admin_only else 'var(--gray)' }}; flex-shrink:0;">
+          {{ 'Team' if r.admin_only else r.cadence }}
+        </span>
+      </div>
+      <p style="font-size:13px; color:var(--ink-soft); margin:8px 0 0;">{{ r.description }}</p>
+    </a>
+    {% endfor %}
+  </div>
+</details>
 {% endfor %}
 
 {% if not categories %}
