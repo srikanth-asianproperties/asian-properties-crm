@@ -2,11 +2,60 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.13
+Version : 2.14
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.14 (July 2026) — APX v0.10 Tomorrow's Site-Visit WhatsApp Reminders.
+  ALL additive — no existing table, function, or call site touched.
+
+  NEW TABLE whatsapp_reminder_templates (self-healing, CREATE IF NOT
+  EXISTS) — one reminder message per project, DELIBERATELY separate
+  from whatsapp_templates (v2.7): different content, edited from a
+  different Settings screen, even though the CRUD shape is identical
+  (Srikanth's call — see the table's own comment in init_db()).
+
+  NEW "WHATSAPP SITE-VISIT REMINDER TEMPLATES" section (after
+  render_whatsapp_template()): get_whatsapp_reminder_templates(),
+  upsert_whatsapp_reminder_template(project, message_body, actor),
+  delete_whatsapp_reminder_template(template_id) — mirror the v2.7
+  WhatsApp-template CRUD exactly. render_whatsapp_reminder_template
+  (message_body, lead, scheduled_at_iso) — same {name}/{project}
+  expansion as render_whatsapp_template() plus a new {time} placeholder
+  (12-hour AM/PM, mirrors app.py's `ampm` Jinja filter's own strftime
+  format; falls back to '' on an unparseable/missing timestamp so a
+  bad scheduled_at can't blank the whole message).
+
+  NEW get_site_visits_for_tomorrow(owner_match_name=None) — tomorrow's
+  scheduled site visits (status='scheduled', DATE(scheduled_at) =
+  DATE('now','localtime','+1 day') — same server-local convention as
+  _now() everywhere else in this file, no timezone abstraction added),
+  optionally scoped to one salesperson via leads.lead_owner. Each row
+  includes reminder_sent_at, resolved via a correlated subquery against
+  activity_log filtered on activity_type='whatsapp_reminder_sent' and
+  description LIKE 'visit_id:<id>%'.
+
+  NEW get_site_visit_by_id(visit_id) — single site_visits row lookup,
+  needed because the mark-sent route's URL carries only a visit_id, not
+  a cls_id (unlike every other site-visit write route in app.py).
+
+  NEW get_pending_reminder_count(owner_match_name=None) — count of
+  tomorrow's visits with reminder_sent_at IS NULL, built ON TOP OF
+  get_site_visits_for_tomorrow() rather than a second query (small
+  dataset, one definition of "sent" instead of two to keep in sync).
+  Feeds the drawer badge and the new Dashboard tile.
+
+  NEW log_reminder_sent(visit_id, cls_id, actor) — writes one
+  activity_log row via the existing _log_activity() helper (no new
+  audit table). description is EXACTLY f"visit_id:{visit_id}" —
+  get_site_visits_for_tomorrow()'s LIKE lookup depends on this exact
+  format; changing it without updating both sites will silently break
+  the "already sent" detection.
+
+  No schema change to any EXISTING table. No existing function's
+  behavior changed.
+
 v2.13 (July 2026) — APX v0.6.1 Reports Enhancements. ALL additive except
   the eight explicitly-flagged modified functions below (each gained
   ONLY new optional kwargs with defaults that reproduce prior exact
@@ -1416,6 +1465,26 @@ def init_db():
         );
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_watemplates_project ON whatsapp_templates(project);")
+
+    # ── v2.14 — WhatsApp SITE-VISIT REMINDER templates ──
+    # Separate table from whatsapp_templates (v2.7, above) — deliberately
+    # NOT reused, per Srikanth's call: welcome-message templates and
+    # tomorrow's-visit reminder templates are different content edited
+    # on different screens, even though the shape is identical. One
+    # template per project (project is the title AND unique key, same
+    # pattern as whatsapp_templates). Expanded at send time by
+    # render_whatsapp_reminder_template() (adds a {time} placeholder on
+    # top of {name}/{project}).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS whatsapp_reminder_templates (
+            template_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+            project      TEXT UNIQUE NOT NULL,
+            message_body TEXT NOT NULL,
+            updated_by   TEXT,
+            updated_at   TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_wareminder_project ON whatsapp_reminder_templates(project);")
 
     conn.commit()
     conn.close()
@@ -3076,6 +3145,209 @@ def render_whatsapp_template(message_body, lead):
     project = (lead.get("project") or "").strip()
     out = message_body.replace("{name}", name).replace("{project}", project)
     return out
+
+
+# ─────────────────────────────────────────────────────────────
+# WHATSAPP SITE-VISIT REMINDER TEMPLATES  —  CRM v2.14
+# ─────────────────────────────────────────────────────────────
+# Separate table/CRUD from the WHATSAPP TEMPLATES section above — see
+# the whatsapp_reminder_templates table comment in init_db() for why
+# this isn't a reuse of whatsapp_templates. Mirrors that section's CRUD
+# shape exactly, for consistency.
+
+def get_whatsapp_reminder_templates():
+    """(v2.14) All site-visit reminder templates, alphabetical by
+    project. For the Settings admin screen and the reminders page."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM whatsapp_reminder_templates ORDER BY project COLLATE NOCASE ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_whatsapp_reminder_template(project, message_body, actor):
+    """
+    (v2.14) Create or update the site-visit reminder template for a
+    project. project is the UNIQUE key/title, so saving the same
+    project again overwrites its body (edit), and a new project name
+    inserts a new template. Both fields required. Admin-gate is in the
+    route.
+
+    Returns (ok: bool, message: str).
+    """
+    project = (project or "").strip()
+    message_body = (message_body or "").strip()
+    if not project:
+        return False, "Project (template title) is required."
+    if not message_body:
+        return False, "Message body can't be empty."
+
+    conn = _connect()
+    try:
+        now = _now()
+        existing = conn.execute(
+            "SELECT template_id FROM whatsapp_reminder_templates WHERE project=?", (project,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE whatsapp_reminder_templates SET message_body=?, updated_by=?, updated_at=? "
+                "WHERE project=?",
+                (message_body, actor, now, project)
+            )
+            msg = f"Reminder template for '{project}' updated."
+        else:
+            conn.execute(
+                "INSERT INTO whatsapp_reminder_templates (project, message_body, updated_by, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (project, message_body, actor, now)
+            )
+            msg = f"Reminder template for '{project}' created."
+        conn.commit()
+        return True, msg
+    finally:
+        conn.close()
+
+
+def delete_whatsapp_reminder_template(template_id):
+    """(v2.14) Delete one reminder template by id. Admin-gate is in the
+    route. Returns (ok, message)."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT project FROM whatsapp_reminder_templates WHERE template_id=?", (template_id,)
+        ).fetchone()
+        if not row:
+            return False, "Template not found."
+        conn.execute("DELETE FROM whatsapp_reminder_templates WHERE template_id=?", (template_id,))
+        conn.commit()
+        return True, f"Reminder template for '{row['project']}' deleted."
+    finally:
+        conn.close()
+
+
+def render_whatsapp_reminder_template(message_body, lead, scheduled_at_iso):
+    """
+    (v2.14) Expand {name}, {project} and {time} placeholders in a
+    reminder template body against a lead dict and a visit's
+    scheduled_at. Unknown placeholders are left as-is (same tolerant
+    behavior as render_whatsapp_template()). {name} falls back to
+    'there' on a nameless lead. {time} is formatted 12-hour with
+    AM/PM (mirrors app.py's `ampm` Jinja filter's own strftime format)
+    and falls back to '' if scheduled_at_iso is missing or doesn't
+    match either timestamp shape cls_db writes.
+
+    Returns the rendered string, ready to URL-encode into a wa.me link.
+    """
+    name = (lead.get("full_name") or "").strip() or "there"
+    project = (lead.get("project") or "").strip()
+    time_str = ""
+    if scheduled_at_iso:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                time_str = datetime.strptime(scheduled_at_iso, fmt).strftime("%I:%M %p")
+                break
+            except ValueError:
+                continue
+    out = (message_body.replace("{name}", name)
+                        .replace("{project}", project)
+                        .replace("{time}", time_str))
+    return out
+
+
+def get_site_visits_for_tomorrow(owner_match_name=None):
+    """
+    (v2.14) Tomorrow's scheduled site visits, for the WhatsApp reminders
+    page (/reminders/site-visits-tomorrow). Scope: status='scheduled'
+    AND DATE(scheduled_at) = tomorrow — server-local, via
+    DATE('now','localtime','+1 day'), the SAME server-local convention
+    _now()/datetime.now() use everywhere else in this file (no timezone
+    abstraction here either). When owner_match_name is given, further
+    filtered to that salesperson's own leads (leads.lead_owner).
+
+    Returns a list of dicts: visit_id, cls_id, full_name, phone_raw,
+    phone_norm, phone_e164 ("91" + phone_norm), project (from
+    leads.project), scheduled_at, notes, reminder_sent_at (the most
+    recent whatsapp_reminder_sent activity_log entry for this visit,
+    else None). Sorted by scheduled_at ascending.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT v.visit_id, v.cls_id, l.full_name, l.phone_raw, l.phone_norm,
+                   l.project, v.scheduled_at, v.notes,
+                   (SELECT MAX(a.created_at) FROM activity_log a
+                    WHERE a.activity_type = 'whatsapp_reminder_sent'
+                      AND a.description LIKE 'visit_id:' || v.visit_id || '%') AS reminder_sent_at
+            FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE v.status = 'scheduled'
+              AND DATE(v.scheduled_at) = DATE('now', 'localtime', '+1 day')
+        """
+        params = []
+        if owner_match_name is not None:
+            query += " AND l.lead_owner = ?"
+            params.append(owner_match_name)
+        query += " ORDER BY v.scheduled_at ASC"
+
+        rows = conn.execute(query, params).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["phone_e164"] = "91" + (d["phone_norm"] or "")
+            results.append(d)
+        return results
+    finally:
+        conn.close()
+
+
+def get_site_visit_by_id(visit_id):
+    """
+    (v2.14) One site_visits row by id, or None. Used by the reminders
+    mark-sent route (/reminders/site-visits-tomorrow/mark-sent/<visit_id>
+    — no cls_id in that URL) to resolve a visit_id back to its cls_id
+    before running the ownership gate.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM site_visits WHERE visit_id=?", (visit_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_pending_reminder_count(owner_match_name=None):
+    """
+    (v2.14) Count of tomorrow's site visits with no reminder sent yet —
+    feeds the drawer badge and the Dashboard tile. Built on
+    get_site_visits_for_tomorrow() rather than a separate query — the
+    dataset (one day's worth of scheduled visits) is small enough that
+    reuse costs nothing and keeps the "sent" definition in exactly one
+    place.
+    """
+    return sum(
+        1 for v in get_site_visits_for_tomorrow(owner_match_name)
+        if not v["reminder_sent_at"]
+    )
+
+
+def log_reminder_sent(visit_id, cls_id, actor):
+    """
+    (v2.14) Records that a tomorrow's-site-visit WhatsApp reminder was
+    sent, via the existing activity_log audit trail (no new table).
+    description is EXACTLY f"visit_id:{visit_id}" —
+    get_site_visits_for_tomorrow()'s LIKE lookup depends on this format.
+    """
+    conn = _connect()
+    try:
+        _log_activity(conn, cls_id, "whatsapp_reminder_sent", actor,
+                      description=f"visit_id:{visit_id}")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _validate_multi_select(value, allowed_list, label):

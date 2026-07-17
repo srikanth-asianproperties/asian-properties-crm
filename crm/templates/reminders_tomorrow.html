@@ -1,0 +1,69 @@
+{# reminders_tomorrow.html (v0.10) — Tomorrow's Site Visits: WhatsApp
+   reminder page. Reached from the Dashboard tile, the drawer
+   "Reminders" link, or directly. Salespeople see only their own leads'
+   visits (route scopes the query); admins/managers see all of them.
+
+   Same "cannot auto-send" pattern as whatsapp_picker.html: each card's
+   button POSTs to mark-sent (recording the send + gating on lead
+   ownership server-side) and the route 302s the browser straight into
+   WhatsApp with the message pre-filled — the user still reviews and
+   taps Send there. #}
+{% extends "base.html" %}
+{% block title %}Tomorrow's Site Visits{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:0; margin-bottom:4px;">Tomorrow's Site Visits ({{ visits|length }})</h2>
+<p style="font-size:13px; color:var(--ink-soft); margin-top:0; max-width:560px;">
+  Tap Open WhatsApp to send tomorrow's reminder. You'll review the message inside WhatsApp
+  before it sends.
+</p>
+
+{% if visits %}
+<div style="display:flex; flex-direction:column; gap:12px; margin-top:16px;">
+  {% for v in visits %}
+  <div class="card">
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <strong style="font-size:15px;">{{ v.full_name or '(no name)' }}</strong>
+      {% if v.phone_raw or v.phone_norm %}
+      <a href="tel:{{ v.phone_e164 }}" style="font-size:13px;">{{ v.phone_raw or v.phone_norm }}</a>
+      {% endif %}
+      {% if v.project %}
+      <span class="badge" style="background:var(--gray);">{{ v.project }}</span>
+      {% endif %}
+      <span style="font-size:13px; color:var(--ink-soft); margin-left:auto;">{{ v.scheduled_at|ampm }}</span>
+    </div>
+
+    {% if v.rendered_body is none %}
+    <div class="flash flash-error" style="margin-top:10px; margin-bottom:0;">
+      No reminder template set up for <strong>{{ v.project or 'this project' }}</strong> yet.
+      <a href="{{ url_for('whatsapp_reminder_templates_admin') }}">Add one in Settings</a>.
+    </div>
+    {% else %}
+    <div style="white-space:pre-wrap; font-size:14px; color:var(--ink); margin-top:10px; background:var(--paper); padding:10px 12px; border-radius:8px;">{{ v.rendered_body }}</div>
+
+    {% if not v.reminder_sent_at %}
+    <form method="post" action="{{ url_for('reminder_mark_sent', visit_id=v.visit_id) }}" style="margin-top:12px;">
+      <input type="hidden" name="wa_url" value="https://wa.me/{{ v.phone_e164 }}?text={{ v.rendered_body|urlencode }}">
+      <button type="submit" class="btn btn-primary" style="width:100%; padding:10px; font-size:15px; background:var(--green); border-color:var(--green);">
+        Open WhatsApp →
+      </button>
+    </form>
+    {% else %}
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:12px; flex-wrap:wrap;">
+      <span class="badge" style="background:var(--green);">✓ Reminder sent at {{ v.reminder_sent_at|ampm }}</span>
+      <form method="post" action="{{ url_for('reminder_mark_sent', visit_id=v.visit_id) }}">
+        <input type="hidden" name="wa_url" value="https://wa.me/{{ v.phone_e164 }}?text={{ v.rendered_body|urlencode }}">
+        <button type="submit" class="btn" style="padding:4px 10px; font-size:12px;">Send again</button>
+      </form>
+    </div>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty-state">
+  <p>No site visits scheduled for tomorrow.</p>
+</div>
+{% endif %}
+{% endblock %}

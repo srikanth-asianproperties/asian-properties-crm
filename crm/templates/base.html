@@ -1,3 +1,7 @@
+<!-- base.html v0.10 — v0.10: NEW "Reminders" drawer link (between Leads
+     and Settings) with a pending-count badge, fed by
+     inject_current_user()'s new pending_reminder_count. First version
+     header this file has carried — established now. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -361,9 +365,15 @@
   </div>
   <a href="{{ url_for('dashboard') }}" class="drawer-link {{ 'active' if request.endpoint == 'dashboard' }}">Dashboard</a>
   <a href="{{ url_for('leads_list') }}" class="drawer-link {{ 'active' if request.endpoint in ['leads_list', 'lead_detail'] }}">Leads</a>
+  <a href="{{ url_for('reminders_tomorrow') }}" class="drawer-link {{ 'active' if request.endpoint == 'reminders_tomorrow' }}">
+    Reminders
+    {% if pending_reminder_count and pending_reminder_count > 0 %}
+    <span class="badge" style="background:var(--red); padding:1px 8px; font-size:11px; margin-left:4px;">{{ pending_reminder_count }}</span>
+    {% endif %}
+  </a>
   <a href="{{ url_for('reports_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['reports_home', 'report_view'] }}">Reports</a>
   {% if current_user.role == 'admin' %}
-  <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin'] }}">Settings</a>
+  <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   {% endif %}
   <div class="drawer-divider"></div>
   <a href="{{ url_for('logout') }}" class="drawer-link">Log out</a>

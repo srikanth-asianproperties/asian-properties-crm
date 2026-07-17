@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.9.8
+Version : 0.10
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,36 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.10  (July 2026) — APX v0.10 Tomorrow's Site-Visit WhatsApp Reminders.
+  Requires cls_db.py v2.14. NEW templates/reminders_tomorrow.html, NEW
+  templates/settings_whatsapp_reminders.html, settings.html/base.html/
+  dashboard.html all extended.
+
+  NEW /reminders/site-visits-tomorrow (reminders_tomorrow route) —
+  salespeople see only their own leads' tomorrow visits
+  (owner_match_name-scoped, same convention as everywhere else in this
+  file); admins/managers see all of them. Renders each visit's message
+  pre-filled from that project's reminder template (matched via
+  cls_db.get_project_bucket(), same bucketing the rest of the app
+  already uses) — a visit whose project has no template gets a warning
+  card and no send button instead.
+
+  NEW POST /reminders/site-visits-tomorrow/mark-sent/<visit_id> —
+  ownership-gated like every other write route, validates wa_url is a
+  genuine https://wa.me/ link before redirecting to it (never redirects
+  to an arbitrary caller-supplied URL), then logs the send via
+  cls_db.log_reminder_sent() and 302s into WhatsApp.
+
+  NEW admin CRUD routes /settings/whatsapp-reminder-templates(/save,
+  /<id>/delete) — mirror the existing WhatsApp Templates admin routes
+  exactly, against the new (separate) whatsapp_reminder_templates
+  table.
+
+  MODIFIED inject_current_user() — now also injects
+  pending_reminder_count (cls_db.get_pending_reminder_count(), scoped
+  the same way as unread_assignment_count) so base.html can show a
+  drawer badge on every page without each route computing it.
+
 v0.9.8  (July 2026) — APX v0.6.1 Reports Enhancements. Requires cls_db.py
   v2.13, cls_reports.py v1.1, NEW report_view_charts.html, NEW
   templates/_report_date_picker.html partial, reports.html/
@@ -730,13 +760,23 @@ def inject_current_user():
     # reassignment badge), so base.html can show it next to the
     # "Leads" drawer link on every page without every single route
     # having to compute and pass it explicitly.
+    # v0.10 — also injects pending_reminder_count (cls_db.
+    # get_pending_reminder_count()), same scoping rule, for the new
+    # "Reminders" drawer link's badge.
     user = None
     unread_assignment_count = 0
+    pending_reminder_count = 0
     if session.get("user_id"):
         user = cls_db.get_user_by_id(session["user_id"])
         if user:
             unread_assignment_count = cls_db.get_unread_assignment_count(user.get("owner_match_name"))
-    return {"current_user": user, "unread_assignment_count": unread_assignment_count}
+            owner_scope = user.get("owner_match_name") if user["role"] == "salesperson" else None
+            pending_reminder_count = cls_db.get_pending_reminder_count(owner_scope)
+    return {
+        "current_user": user,
+        "unread_assignment_count": unread_assignment_count,
+        "pending_reminder_count": pending_reminder_count,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1696,6 +1736,59 @@ def whatsapp_picker(cls_id):
 
 
 # ─────────────────────────────────────────────────────────────
+# ROUTES — SITE-VISIT REMINDERS  (v0.10)
+# ─────────────────────────────────────────────────────────────
+# Tomorrow's scheduled site visits, one WhatsApp reminder deep-link per
+# visit. Same "cannot auto-send, user reviews and taps Send inside
+# WhatsApp" flow as whatsapp_picker() above — this route only ever
+# builds a wa.me link and records that it was opened.
+
+@app.route("/reminders/site-visits-tomorrow")
+@login_required
+def reminders_tomorrow():
+    user = cls_db.get_user_by_id(session["user_id"])
+    owner_scope = user.get("owner_match_name") if user["role"] == "salesperson" else None
+    visits = cls_db.get_site_visits_for_tomorrow(owner_match_name=owner_scope)
+
+    # {project bucket -> reminder message body}, so each visit can be
+    # matched to its project's template the same way the rest of the
+    # app buckets projects (cls_db.get_project_bucket()).
+    templates_by_bucket = {t["project"]: t["message_body"] for t in cls_db.get_whatsapp_reminder_templates()}
+    for v in visits:
+        bucket = cls_db.get_project_bucket(v["project"])
+        body = templates_by_bucket.get(bucket)
+        if body:
+            v["rendered_body"] = cls_db.render_whatsapp_reminder_template(
+                body, {"full_name": v["full_name"], "project": bucket}, v["scheduled_at"]
+            )
+        else:
+            v["rendered_body"] = None
+
+    return render_template("reminders_tomorrow.html", visits=visits)
+
+
+@app.route("/reminders/site-visits-tomorrow/mark-sent/<int:visit_id>", methods=["POST"])
+@login_required
+def reminder_mark_sent(visit_id):
+    visit = cls_db.get_site_visit_by_id(visit_id)
+    if not visit:
+        abort(404, description="No site visit found with that id.")
+    lead = cls_db.get_lead_by_id(visit["cls_id"])
+    if not lead:
+        abort(404, description="No lead found with that id.")
+    user = cls_db.get_user_by_id(session["user_id"])
+    _check_lead_ownership(lead, user)
+
+    wa_url = request.form.get("wa_url", "")
+    if not wa_url.startswith("https://wa.me/"):
+        flash("Couldn't open WhatsApp — invalid link.", "error")
+        return redirect(url_for("reminders_tomorrow"))
+
+    cls_db.log_reminder_sent(visit_id, visit["cls_id"], actor=user["email"])
+    return redirect(wa_url)
+
+
+# ─────────────────────────────────────────────────────────────
 # SETTINGS  (admin-only hub — v0.9.1)
 # ─────────────────────────────────────────────────────────────
 
@@ -1769,6 +1862,44 @@ def whatsapp_template_delete(template_id):
     ok, message = cls_db.delete_whatsapp_template(template_id)
     flash(message, "success" if ok else "error")
     return redirect(url_for("whatsapp_templates_admin"))
+
+
+@app.route("/settings/whatsapp-reminder-templates")
+@login_required
+@admin_required
+def whatsapp_reminder_templates_admin():
+    """v0.10 — admin CRUD list for site-visit reminder templates.
+    Mirrors whatsapp_templates_admin() exactly, against the separate
+    whatsapp_reminder_templates table."""
+    templates = cls_db.get_whatsapp_reminder_templates()
+    return render_template(
+        "settings_whatsapp_reminders.html",
+        templates=templates,
+        projects=sorted(set(cls_db.PROJECT_BUCKETS.values())),
+    )
+
+
+@app.route("/settings/whatsapp-reminder-templates/save", methods=["POST"])
+@login_required
+@admin_required
+def whatsapp_reminder_template_save():
+    user = cls_db.get_user_by_id(session["user_id"])
+    ok, message = cls_db.upsert_whatsapp_reminder_template(
+        project=request.form.get("project", ""),
+        message_body=request.form.get("message_body", ""),
+        actor=user["email"],
+    )
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("whatsapp_reminder_templates_admin"))
+
+
+@app.route("/settings/whatsapp-reminder-templates/<int:template_id>/delete", methods=["POST"])
+@login_required
+@admin_required
+def whatsapp_reminder_template_delete(template_id):
+    ok, message = cls_db.delete_whatsapp_reminder_template(template_id)
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("whatsapp_reminder_templates_admin"))
 
 
 # ─────────────────────────────────────────────────────────────

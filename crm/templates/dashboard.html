@@ -1,7 +1,12 @@
-{# dashboard.html (v0.7) — "Stats" tab of the 3-tab dashboard (Stats /
+{# dashboard.html (v0.10) — "Stats" tab of the 3-tab dashboard (Stats /
    Today's Performance / Pipeline Analysis). Bottom tab bar unchanged
    from v0.6. Kept at the /dashboard route/filename so every existing
    url_for('dashboard') link elsewhere still works.
+
+   v0.10 — NEW "Tomorrow's Reminders" tile, placed after the existing
+   due-today card row. Links to /reminders/site-visits-tomorrow;
+   pending_reminder_count comes from inject_current_user() (v0.10),
+   not a route-local query, so this tile needs no new context var.
 
    v0.7 (July 2026, Srikanth's decisions 1+2):
    - New Enquiries card now links to /new-enquiries (new_enquiries_list
@@ -44,6 +49,16 @@
   </a>
 
 </div>
+
+<a href="{{ url_for('reminders_tomorrow') }}" class="card" style="display:block; text-decoration:none; color:inherit; margin-top:14px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+    <div>
+      <div class="field-label">Tomorrow's Reminders</div>
+      <div style="font-size:13px; color:var(--ink-soft); margin-top:4px;">Site visits scheduled for tomorrow &middot; tap to send WhatsApp reminders</div>
+    </div>
+    <div style="font-size:34px; font-weight:700; color:var(--amber);">{{ pending_reminder_count }}</div>
+  </div>
+</a>
 
 <p style="font-size:13px; color:var(--ink-soft); margin-top:18px; max-width:560px;">
   "Reengaged" counts existing leads touched again this week — it can't yet tell
