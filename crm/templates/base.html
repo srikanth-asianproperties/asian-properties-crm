@@ -1,7 +1,10 @@
-<!-- base.html v0.10 — v0.10: NEW "Reminders" drawer link (between Leads
-     and Settings) with a pending-count badge, fed by
-     inject_current_user()'s new pending_reminder_count. First version
-     header this file has carried — established now. -->
+<!-- base.html v0.11 — first version header this file has carried,
+     established in v0.10.
+     v0.10: NEW "Reminders" drawer link (between Leads and Settings)
+       with a pending-count badge, fed by inject_current_user()'s new
+       pending_reminder_count.
+     v0.11: NEW impersonation banner (shown when inject_current_user()'s
+       `impersonator` is set), sticky above the appbar via :has(). -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -62,6 +65,27 @@
     top: 0;
     z-index: 10;
   }
+
+  /* Admin "View as" banner (v0.11). Sticky above the appbar (higher
+     z-index) whenever an admin is impersonating a salesperson/manager
+     — see inject_current_user()'s `impersonator` context var. The
+     :has() selector below demotes the appbar's OWN sticky pinning only
+     while the banner is present, so the two stack cleanly instead of
+     both trying to pin to top:0. Widely supported in evergreen
+     browsers including mobile Safari 16.4+. */
+  .impersonation-banner{
+    background: #F5B301;
+    color: #1B2430;
+    padding: 10px 16px;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 600;
+    border-bottom: 2px solid #C68600;
+    position: sticky;
+    top: 0;
+    z-index: 15;
+  }
+  body:has(.impersonation-banner) header.appbar{ top: auto; }
   header.appbar .menu-btn{
     background: none; border: none; color: #fff; padding: 4px;
     cursor: pointer; display: flex; align-items: center;
@@ -340,6 +364,17 @@
 {% block head %}{% endblock %}
 </head>
 <body>
+{% if impersonator %}
+<div class="impersonation-banner">
+  ⚠️ Viewing as <strong>{{ current_user.full_name }}</strong>
+  (real login: {{ impersonator.email }})
+  <form method="post" action="{{ url_for('impersonate_exit') }}" style="display:inline; margin-left:12px;">
+    <button type="submit" class="btn" style="padding:4px 14px; font-size:13px; background:#fff; border-color:#C68600;">
+      Exit to admin
+    </button>
+  </form>
+</div>
+{% endif %}
 {% if current_user %}
 <header class="appbar">
   <button class="menu-btn" onclick="document.getElementById('navDrawer').classList.add('open'); document.getElementById('navScrim').classList.add('show');" aria-label="Open menu">

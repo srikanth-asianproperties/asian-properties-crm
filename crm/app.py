@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.10
+Version : 0.11
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,44 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.11  (July 2026) — APX v0.11 Admin "View as" (impersonation), with
+  dual-attribution on every write. Requires cls_db.py v2.15.
+  settings_users.html extended, base.html extended (impersonation
+  banner — its second v0.10/v0.11 edit).
+
+  NEW _actor() helper — the ONE place that decides what string a
+  write's `actor` argument is: the current user's email normally, or
+  "target@x (via admin@x)" during a View-as session. EVERY existing
+  write route's actor=user["email"] call site was swapped to
+  actor=_actor() — a grep-and-replace across the whole file, not a
+  signature change to any cls_db.py writer. This is the entire
+  mechanism: existing write paths inherit dual-attribution with zero
+  additional code at each call site.
+
+  NEW POST /admin/impersonate/<user_id> (impersonate_start) — admin-
+  only. Session swap: session["impersonator_id"] = the admin's own
+  user_id, then session["user_id"] = the target's. Rejects self,
+  another admin, or an unknown/deactivated target (cls_db.
+  get_user_by_id() already excludes deactivated accounts, so that
+  case surfaces as "not found" rather than a separate check). Logs a
+  'start' row via cls_db.log_impersonation().
+
+  NEW POST /admin/impersonate/exit (impersonate_exit) — login_required
+  ONLY (not admin_required — mid-impersonation, session["user_id"] IS
+  the target, who may not be an admin). Swaps the session keys back,
+  logs an 'exit' row, redirects to dashboard.
+
+  MODIFIED login_required() — NEW safety check: if
+  session["impersonator_id"] is set but that admin's own account no
+  longer resolves via get_user_by_id() (deactivated by another admin
+  mid-session), the whole session is cleared rather than leaving a
+  stuck "viewing as" state with no way back to a valid admin login.
+
+  MODIFIED inject_current_user() — NEW `impersonator` key: the real
+  admin's user dict when mid-impersonation, else None. base.html uses
+  this (not current_user, which is the TARGET during impersonation) to
+  decide whether to render the banner.
+
 v0.10  (July 2026) — APX v0.10 Tomorrow's Site-Visit WhatsApp Reminders.
   Requires cls_db.py v2.14. NEW templates/reminders_tomorrow.html, NEW
   templates/settings_whatsapp_reminders.html, settings.html/base.html/
@@ -726,6 +764,18 @@ def login_required(view):
     def wrapped(*args, **kwargs):
         if not session.get("user_id"):
             return redirect(url_for("login", next=request.path))
+        # v0.11 — if this session is mid-impersonation, confirm the
+        # REAL admin behind it still has an active account. Prevents a
+        # stuck "viewing as" state if another admin deactivates that
+        # admin mid-session: without this check, get_user_by_id() below
+        # would only ever re-validate the TARGET account, and the
+        # impersonator could keep operating under someone else's
+        # identity after their own login was revoked.
+        if session.get("impersonator_id"):
+            admin = cls_db.get_user_by_id(session["impersonator_id"])
+            if not admin:
+                session.clear()
+                return redirect(url_for("login"))
         # Re-check the account is still active on every request — an
         # admin disabling someone takes effect immediately, not at
         # their next login.
@@ -763,20 +813,47 @@ def inject_current_user():
     # v0.10 — also injects pending_reminder_count (cls_db.
     # get_pending_reminder_count()), same scoping rule, for the new
     # "Reminders" drawer link's badge.
+    # v0.11 — also injects `impersonator`: the REAL admin's user dict
+    # when this session is mid "View as", else None. base.html uses
+    # this (not current_user) to decide whether to render the
+    # impersonation banner, since current_user is the TARGET during
+    # impersonation.
     user = None
     unread_assignment_count = 0
     pending_reminder_count = 0
+    impersonator = None
     if session.get("user_id"):
         user = cls_db.get_user_by_id(session["user_id"])
         if user:
             unread_assignment_count = cls_db.get_unread_assignment_count(user.get("owner_match_name"))
             owner_scope = user.get("owner_match_name") if user["role"] == "salesperson" else None
             pending_reminder_count = cls_db.get_pending_reminder_count(owner_scope)
+        if session.get("impersonator_id"):
+            impersonator = cls_db.get_user_by_id(session["impersonator_id"])
     return {
         "current_user": user,
         "unread_assignment_count": unread_assignment_count,
         "pending_reminder_count": pending_reminder_count,
+        "impersonator": impersonator,
     }
+
+
+def _actor():
+    """
+    (v0.11) Returns the string to pass as `actor` on every cls_db
+    write. Normal: current user's email. During impersonation:
+    dual-attributed as 'target@x (via admin@x)' so activity_log records
+    BOTH parties on every write made while an admin is viewing as
+    someone else. This is the ONE place that decision lives — every
+    write route below calls this instead of user["email"] directly, so
+    dual-attribution applies automatically with no per-route change.
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    if session.get("impersonator_id"):
+        admin = cls_db.get_user_by_id(session["impersonator_id"])
+        if admin:
+            return f"{user['email']} (via {admin['email']})"
+    return user["email"]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1358,7 +1435,7 @@ def change_lead_stage(cls_id):
     reason_code = request.form.get("reason_code") or None
     reason_notes = request.form.get("reason_notes") or None
     ok, message = cls_db.update_lead_stage(
-        cls_id, new_stage, actor=user["email"],
+        cls_id, new_stage, actor=_actor(),
         reason_code=reason_code, reason_notes=reason_notes
     )
     flash(message, "success" if ok else "error")
@@ -1375,7 +1452,7 @@ def add_lead_note(cls_id):
     _check_lead_ownership(lead, user)
 
     text = request.form.get("note_text", "")
-    ok, message = cls_db.add_note(cls_id, actor=user["email"], text=text)
+    ok, message = cls_db.add_note(cls_id, actor=_actor(), text=text)
     flash(message, "success" if ok else "error")
     return redirect(url_for("lead_detail", cls_id=cls_id))
 
@@ -1401,7 +1478,7 @@ def assign_lead(cls_id):
     _check_lead_ownership(lead, user)
 
     new_owner = request.form.get("new_owner", "")
-    ok, message = cls_db.reassign_lead_owner(cls_id, new_owner, actor=user["email"])
+    ok, message = cls_db.reassign_lead_owner(cls_id, new_owner, actor=_actor())
     flash(message, "success" if ok else "error")
     return redirect(url_for("lead_detail", cls_id=cls_id))
 
@@ -1417,7 +1494,7 @@ def add_site_visit(cls_id):
 
     scheduled_at = request.form.get("scheduled_at", "")
     notes = request.form.get("notes", "")
-    ok, message = cls_db.schedule_site_visit(cls_id, scheduled_at, actor=user["email"], notes=notes)
+    ok, message = cls_db.schedule_site_visit(cls_id, scheduled_at, actor=_actor(), notes=notes)
     flash(message, "success" if ok else "error")
     return redirect(url_for("lead_detail", cls_id=cls_id))
 
@@ -1442,7 +1519,7 @@ def add_walkin_site_visit(cls_id):
     conducted_at = request.form.get("conducted_at", "")
     notes = request.form.get("notes", "")
     ok, message = cls_db.log_walkin_site_visit(
-        cls_id, project, conducted_at, actor=user["email"], notes=notes
+        cls_id, project, conducted_at, actor=_actor(), notes=notes
     )
     flash(message, "success" if ok else "error")
     return redirect(url_for("lead_detail", cls_id=cls_id))
@@ -1461,7 +1538,7 @@ def update_site_visit_route(cls_id, visit_id):
     reason = request.form.get("reason", "")
     new_scheduled_at = request.form.get("new_scheduled_at") or None
     ok, message = cls_db.update_site_visit(
-        visit_id, action, actor=user["email"], reason=reason,
+        visit_id, action, actor=_actor(), reason=reason,
         new_scheduled_at=new_scheduled_at
     )
     flash(message, "success" if ok else "error")
@@ -1479,7 +1556,7 @@ def add_follow_up(cls_id):
 
     scheduled_at = request.form.get("scheduled_at", "")
     notes = request.form.get("notes", "")
-    ok, message = cls_db.schedule_follow_up(cls_id, scheduled_at, actor=user["email"], notes=notes)
+    ok, message = cls_db.schedule_follow_up(cls_id, scheduled_at, actor=_actor(), notes=notes)
     flash(message, "success" if ok else "error")
     return redirect(url_for("lead_detail", cls_id=cls_id))
 
@@ -1497,7 +1574,7 @@ def update_follow_up_route(cls_id, followup_id):
     reason = request.form.get("reason", "")
     new_scheduled_at = request.form.get("new_scheduled_at") or None
     ok, message = cls_db.update_follow_up(
-        followup_id, action, actor=user["email"], reason=reason,
+        followup_id, action, actor=_actor(), reason=reason,
         new_scheduled_at=new_scheduled_at
     )
     flash(message, "success" if ok else "error")
@@ -1518,7 +1595,7 @@ def call_tap(cls_id):
         return ("", 404)
     user = cls_db.get_user_by_id(session["user_id"])
     _check_lead_ownership(lead, user)
-    cls_db.log_call_tap(cls_id, actor=user["email"])
+    cls_db.log_call_tap(cls_id, actor=_actor())
     return ("", 204)
 
 
@@ -1555,7 +1632,7 @@ def new_lead():
 
         ok, result = cls_db.create_manual_lead(
             full_name=full_name, phone_raw=phone_raw, initial_stage=initial_stage,
-            actor=user["email"], project=project, email_raw=email_raw,
+            actor=_actor(), project=project, email_raw=email_raw,
             lead_owner=lead_owner, source_detail=source_detail
         )
         if ok:
@@ -1566,7 +1643,7 @@ def new_lead():
             facing_list = request.form.getlist("facing")
             if budget or configuration_list or property_type_list or facing_list:
                 cls_db.update_property_details(
-                    cls_id, actor=user["email"], budget=budget,
+                    cls_id, actor=_actor(), budget=budget,
                     configuration=", ".join(configuration_list) if configuration_list else None,
                     property_type=", ".join(property_type_list) if property_type_list else None,
                     facing=", ".join(facing_list) if facing_list else None,
@@ -1578,7 +1655,7 @@ def new_lead():
             alt_phone_raw = request.form.get("alt_phone_raw") or None
             if alt_phone_raw:
                 cls_db.update_lead_contact_info(
-                    cls_id, actor=user["email"], alt_phone_raw=alt_phone_raw
+                    cls_id, actor=_actor(), alt_phone_raw=alt_phone_raw
                 )
             flash("Lead created.", "success")
             return redirect(url_for("lead_detail", cls_id=cls_id))
@@ -1607,7 +1684,7 @@ def update_lead_source(cls_id):
         abort(403, description="Only admins can change a lead's source after creation.")
 
     new_source_detail = request.form.get("source_detail", "")
-    ok, message = cls_db.update_lead_source_detail(cls_id, new_source_detail, actor=user["email"])
+    ok, message = cls_db.update_lead_source_detail(cls_id, new_source_detail, actor=_actor())
     flash(message, "success" if ok else "error")
     return redirect(url_for("lead_detail", cls_id=cls_id))
 
@@ -1633,7 +1710,7 @@ def update_property_details_route(cls_id):
     facing_list = request.form.getlist("facing")
 
     ok, message = cls_db.update_property_details(
-        cls_id, actor=user["email"],
+        cls_id, actor=_actor(),
         funding_source=request.form.get("funding_source") or None,
         property_type=", ".join(property_type_list) if property_type_list else None,
         configuration=", ".join(configuration_list) if configuration_list else None,
@@ -1660,7 +1737,7 @@ def update_contact_info_route(cls_id):
     _check_lead_ownership(lead, user)
 
     ok, message = cls_db.update_lead_contact_info(
-        cls_id, actor=user["email"],
+        cls_id, actor=_actor(),
         full_name=request.form.get("full_name") or None,
         phone_raw=request.form.get("phone_raw") or None,
         alt_phone_raw=request.form.get("alt_phone_raw") or None,
@@ -1683,8 +1760,7 @@ def delete_lead_route(cls_id):
     person still exists in Sell.do, Job B re-imports them on its next
     sync. Accepted parallel-run reality — a suppression list is v1.0+.
     """
-    user = cls_db.get_user_by_id(session["user_id"])
-    ok, message = cls_db.delete_lead(cls_id, actor=user["email"])
+    ok, message = cls_db.delete_lead(cls_id, actor=_actor())
     flash(message, "success" if ok else "error")
     # Deleted lead's own page no longer exists — go back to the list.
     return redirect(url_for("leads_list"))
@@ -1784,7 +1860,7 @@ def reminder_mark_sent(visit_id):
         flash("Couldn't open WhatsApp — invalid link.", "error")
         return redirect(url_for("reminders_tomorrow"))
 
-    cls_db.log_reminder_sent(visit_id, visit["cls_id"], actor=user["email"])
+    cls_db.log_reminder_sent(visit_id, visit["cls_id"], actor=_actor())
     return redirect(wa_url)
 
 
@@ -1828,6 +1904,64 @@ def settings_user_toggle(user_id):
     return redirect(url_for("settings_users"))
 
 
+@app.route("/admin/impersonate/<int:user_id>", methods=["POST"])
+@login_required
+@admin_required
+def impersonate_start(user_id):
+    """
+    v0.11 — admin "View as": full session swap into a target
+    salesperson/manager's account, for diagnosing what they see without
+    asking them to screen-share. Every write made from here on is
+    dual-attributed via _actor() until Exit to admin is tapped.
+    """
+    admin = cls_db.get_user_by_id(session["user_id"])
+    # get_user_by_id() only ever returns an ACTIVE account (WHERE
+    # active=1 — see its docstring) — so a deactivated target already
+    # comes back None here and is rejected by the "not found" branch
+    # below, same as a genuinely unknown user_id. No separate active
+    # check needed.
+    target = cls_db.get_user_by_id(user_id)
+
+    if not target:
+        flash("That user couldn't be found or is deactivated.", "error")
+        return redirect(url_for("settings_users"))
+    if target["user_id"] == admin["user_id"]:
+        flash("You can't view as yourself.", "error")
+        return redirect(url_for("settings_users"))
+    if target["role"] == "admin":
+        flash("Can't view as another admin.", "error")
+        return redirect(url_for("settings_users"))
+
+    session["impersonator_id"] = session["user_id"]
+    session["user_id"] = target["user_id"]
+    cls_db.log_impersonation(admin["email"], target["email"], event="start")
+    flash(f"Now viewing as {target['full_name'] or target['email']}.", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/admin/impersonate/exit", methods=["POST"])
+@login_required
+def impersonate_exit():
+    """v0.11 — ends a "View as" session and returns to the real admin
+    login. Available to anyone mid-impersonation, not admin_required —
+    at this point session["user_id"] IS the target, who may not be an
+    admin themselves."""
+    if not session.get("impersonator_id"):
+        flash("You're not currently viewing as someone else.", "error")
+        return redirect(url_for("dashboard"))
+
+    target = cls_db.get_user_by_id(session["user_id"])
+    admin = cls_db.get_user_by_id(session["impersonator_id"])
+
+    session["user_id"] = session["impersonator_id"]
+    session.pop("impersonator_id", None)
+
+    if target and admin:
+        cls_db.log_impersonation(admin["email"], target["email"], event="exit")
+    flash("Returned to admin view.", "success")
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/settings/whatsapp-templates")
 @login_required
 @admin_required
@@ -1845,11 +1979,10 @@ def whatsapp_templates_admin():
 @login_required
 @admin_required
 def whatsapp_template_save():
-    user = cls_db.get_user_by_id(session["user_id"])
     ok, message = cls_db.upsert_whatsapp_template(
         project=request.form.get("project", ""),
         message_body=request.form.get("message_body", ""),
-        actor=user["email"],
+        actor=_actor(),
     )
     flash(message, "success" if ok else "error")
     return redirect(url_for("whatsapp_templates_admin"))
@@ -1883,11 +2016,10 @@ def whatsapp_reminder_templates_admin():
 @login_required
 @admin_required
 def whatsapp_reminder_template_save():
-    user = cls_db.get_user_by_id(session["user_id"])
     ok, message = cls_db.upsert_whatsapp_reminder_template(
         project=request.form.get("project", ""),
         message_body=request.form.get("message_body", ""),
-        actor=user["email"],
+        actor=_actor(),
     )
     flash(message, "success" if ok else "error")
     return redirect(url_for("whatsapp_reminder_templates_admin"))

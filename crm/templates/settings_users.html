@@ -1,10 +1,15 @@
-{# settings_users.html (v0.9.4) — admin Settings > Team. Lists every CRM
+{# settings_users.html (v0.11) — admin Settings > Team. Lists every CRM
    login with an activate/deactivate toggle. Reuses users.active, already
    enforced by verify_login()/get_user_by_id() since v0.1 — this screen is
    new UI on an existing flag, not a new access-control mechanism.
 
    v0.9.4 — own row no longer shows a Deactivate button (backend already
-   refused this in cls_db.set_user_active(); this just stops offering it). #}
+   refused this in cls_db.set_user_active(); this just stops offering it).
+
+   v0.11 — NEW "View as" button, just to the left of Deactivate, for
+   every row that is: not the current admin, not another admin, and
+   active. Posts to impersonate_start() (app.py) — a secondary,
+   diagnostic action, so it's styled as a plain .btn, not .btn-primary. #}
 {% extends "base.html" %}
 {% block title %}Team{% endblock %}
 
@@ -43,15 +48,23 @@
          offered in the first place instead of showing after a failed click. #}
       <span style="font-size:13px; color:var(--ink-soft); padding:5px 14px;">This is you</span>
       {% else %}
-      <form method="post" action="{{ url_for('settings_user_toggle', user_id=u.user_id) }}"
-            {% if u.active %}onsubmit="return confirm('Deactivate {{ u.full_name or u.email }}? They will be signed out on their next request.');"{% endif %}>
-        <input type="hidden" name="active" value="{{ '0' if u.active else '1' }}">
-        {% if u.active %}
-        <button type="submit" class="btn" style="color:var(--red); border-color:#F3C9C9; padding:5px 14px; font-size:13px;">Deactivate</button>
-        {% else %}
-        <button type="submit" class="btn btn-primary" style="padding:5px 14px; font-size:13px;">Activate</button>
+      <div style="display:flex; gap:8px; align-items:center;">
+        {% if u.role != 'admin' and u.active %}
+        <form method="post" action="{{ url_for('impersonate_start', user_id=u.user_id) }}"
+              onsubmit="return confirm('View the CRM as {{ u.full_name or u.email }}? Any actions you take will be recorded as BOTH you and them.');">
+          <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">View as</button>
+        </form>
         {% endif %}
-      </form>
+        <form method="post" action="{{ url_for('settings_user_toggle', user_id=u.user_id) }}"
+              {% if u.active %}onsubmit="return confirm('Deactivate {{ u.full_name or u.email }}? They will be signed out on their next request.');"{% endif %}>
+          <input type="hidden" name="active" value="{{ '0' if u.active else '1' }}">
+          {% if u.active %}
+          <button type="submit" class="btn" style="color:var(--red); border-color:#F3C9C9; padding:5px 14px; font-size:13px;">Deactivate</button>
+          {% else %}
+          <button type="submit" class="btn btn-primary" style="padding:5px 14px; font-size:13px;">Activate</button>
+          {% endif %}
+        </form>
+      </div>
       {% endif %}
     </div>
   </div>

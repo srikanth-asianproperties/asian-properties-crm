@@ -2,11 +2,31 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.14
+Version : 2.15
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.15 (July 2026) — APX v0.11 Admin "View as" (impersonation). ALL
+  additive — no existing table, function, or call site touched. All
+  the session-swap logic and dual-attribution (the actor= string
+  written to activity_log on every write made while impersonating)
+  live entirely in app.py's new _actor() helper — this file's only
+  change is a plain audit trail of when a view-as session started/
+  ended, same append-only spirit as activity_log/events_log.
+
+  NEW TABLE impersonation_log (self-healing, CREATE IF NOT EXISTS) —
+  one row per impersonation session start/exit. Kept separate from
+  activity_log rather than reusing it: this is an account-level
+  session event, not a lead-scoped one (cls_id would be meaningless).
+
+  NEW log_impersonation(admin_email, target_email, event) — event must
+  be 'start' or 'exit' (raises ValueError otherwise, a caller-bug
+  guard, not a user-facing error path).
+
+  No schema change to any EXISTING table. No existing function's
+  behavior changed.
+
 v2.14 (July 2026) — APX v0.10 Tomorrow's Site-Visit WhatsApp Reminders.
   ALL additive — no existing table, function, or call site touched.
 
@@ -1485,6 +1505,21 @@ def init_db():
         );
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_wareminder_project ON whatsapp_reminder_templates(project);")
+
+    # ── v2.15 — admin "View as" (impersonation) audit trail ──
+    # Append-only, same spirit as activity_log/events_log: one row per
+    # impersonation session start/exit. Kept separate from activity_log
+    # because this isn't a lead-scoped action (cls_id is meaningless
+    # here) — it's an account-level session event.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS impersonation_log (
+            log_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_email  TEXT NOT NULL,
+            target_email TEXT NOT NULL,
+            event        TEXT NOT NULL,
+            created_at   TEXT NOT NULL
+        );
+    """)
 
     conn.commit()
     conn.close()
@@ -3345,6 +3380,31 @@ def log_reminder_sent(visit_id, cls_id, actor):
     try:
         _log_activity(conn, cls_id, "whatsapp_reminder_sent", actor,
                       description=f"visit_id:{visit_id}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# IMPERSONATION  —  CRM v2.15 (admin "View as")
+# ─────────────────────────────────────────────────────────────
+
+def log_impersonation(admin_email, target_email, event):
+    """
+    (v2.15) Append one row to impersonation_log. event must be 'start'
+    or 'exit' — anything else raises ValueError (a caller bug, not a
+    user-facing error path, so this fails loud rather than silently
+    writing a garbage event value).
+    """
+    if event not in ("start", "exit"):
+        raise ValueError(f"log_impersonation: event must be 'start' or 'exit', got {event!r}")
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO impersonation_log (admin_email, target_email, event, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (admin_email, target_email, event, _now())
+        )
         conn.commit()
     finally:
         conn.close()
