@@ -1,0 +1,48 @@
+{# reports.html (v0.6.1) — Categorized Reports landing page. Categories +
+   cards are entirely config-driven from cls_reports.CATEGORIES via
+   visible_categories(current_user) — admin_only reports are simply
+   absent from a salesperson's list here (Srikanth's call: hide, don't
+   grey-out), not a template-level if-check per report. Add a report by
+   adding one entry to cls_reports.REPORTS and one id to a category in
+   cls_reports.CATEGORIES; nothing here needs to change. #}
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:0;">Reports</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:-6px;">
+  {% if is_oversight %}
+  Reports marked "Team" are cross-salesperson comparisons; everything else is scoped to your
+  own leads when you're logged in as a salesperson. Most reports have a date-range picker on
+  their own page — a few marked "Live" are point-in-time snapshots instead.
+  {% else %}
+  Scoped to your own leads. A few cross-salesperson comparison reports are admin/manager-only
+  and aren't shown here.
+  {% endif %}
+</p>
+
+{% for category in categories %}
+<h3 style="margin:28px 0 10px; font-size:14px; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft);">
+  {{ category.name }}
+</h3>
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;">
+  {% for r in category.reports %}
+  <a href="{{ url_for('report_view', report_id=r.id) }}" class="card" style="display:block;">
+    <div style="display:flex; justify-content:space-between; align-items:start; gap:8px;">
+      <strong style="font-size:15px;">{{ r.title }}</strong>
+      <span class="badge" style="background:{{ 'var(--blue)' if r.admin_only else 'var(--gray)' }}; flex-shrink:0;">
+        {{ 'Team' if r.admin_only else r.cadence }}
+      </span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:8px 0 0;">{{ r.description }}</p>
+  </a>
+  {% endfor %}
+</div>
+{% endfor %}
+
+{% if not categories %}
+<div class="card empty-state">
+  <p>No reports available.</p>
+</div>
+{% endif %}
+{% endblock %}

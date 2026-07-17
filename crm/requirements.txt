@@ -1,4 +1,8 @@
 # APX CRM — requirements.txt
+# v3  (July 2026) — added openpyxl for Reports section Excel export
+#   (app.py v0.9.7 / cls_reports.py v1.0). PDF export is browser
+#   print-to-PDF, not a server-side library — no new dependency for that.
+#
 # v2  (July 2026) — added waitress for production hardening (app.py v0.1.5)
 #
 # v1  (July 2026) — original: Flask + python-dotenv only
@@ -8,3 +12,4 @@
 Flask
 python-dotenv
 waitress
+openpyxl

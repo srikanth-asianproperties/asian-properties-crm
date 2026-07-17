@@ -1,0 +1,87 @@
+{# report_view.html (v0.6.1) — generic template for every PLAIN-TABLE
+   report (everything except Lead Stage Analysis + the chart-bearing
+   Campaign Insights reports, which use report_view_charts.html
+   instead — see report.template, set by app.py's report_view() route).
+   Every report shapes its data into the same {columns, rows} table via
+   cls_reports.build_report() — this template just renders that shape.
+
+   v0.6.1: gained the shared date-range picker (_report_date_picker.html)
+   in place of the old daily/weekly period toggle; Export Excel now
+   carries the same from/to the page is showing, so the download always
+   matches what's on screen.
+
+   Export: Excel via /reports/<id>/export.xlsx (openpyxl, server-side).
+   PDF: browser print-to-PDF (Srikanth's confirmed call, 2026-07) — the
+   <style media="print"> block below hides everything except the table,
+   and "Print / Save as PDF" just calls window.print(). No PDF library. #}
+{% extends "base.html" %}
+{% block title %}{{ report.title }}{% endblock %}
+
+{% block content %}
+<style media="print">
+  .appbar, .nav-drawer, .nav-scrim, .no-print { display: none !important; }
+  main.wrap { max-width: 100%; padding: 0; }
+  .report-table { font-size: 11px; }
+</style>
+<style>
+  .report-table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+  .report-table th, .report-table td {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+    font-size: 13px; white-space: nowrap;
+  }
+  .report-table th { color: var(--ink-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .report-table tbody tr:hover { background: var(--paper); }
+  .report-table-wrap { overflow-x: auto; }
+</style>
+
+<a href="{{ url_for('reports_home') }}" class="no-print" style="font-size:14px;">← All Reports</a>
+<div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; margin-top:10px;">
+  <div>
+    <h2 style="margin:0;">{{ report.title }}</h2>
+    <p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin:4px 0 0;">{{ report.description }}</p>
+  </div>
+  <div class="no-print" style="display:flex; gap:8px; flex-shrink:0;">
+    {% if report.is_live %}
+    <a href="{{ url_for('report_export_excel', report_id=report.id) }}" class="btn">Export Excel</a>
+    {% else %}
+    <a href="{{ url_for('report_export_excel', report_id=report.id, **{'from': report.date_from, 'to': report.date_to}) }}" class="btn">Export Excel</a>
+    {% endif %}
+    <button type="button" class="btn" onclick="window.print();">Print / Save as PDF</button>
+  </div>
+</div>
+
+{% include "_report_date_picker.html" %}
+
+{% if report.caveat %}
+<div class="card" style="margin-top:14px; background:#FBF6E9; border-color:#EAD9A0;">
+  <p style="font-size:12px; color:var(--ink-soft); margin:0;">{{ report.caveat }}</p>
+</div>
+{% endif %}
+
+{% if report.rows %}
+<div class="report-table-wrap">
+  <table class="report-table">
+    <thead>
+      <tr>
+        {% for key, label in report.columns %}
+        <th>{{ label }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in report.rows %}
+      <tr>
+        {% for key, label in report.columns %}
+        <td>{{ row.get(key, '—') if row.get(key, '—') is not none else '—' }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty-state" style="margin-top:14px;">
+  <p>No data yet for this report{{ '' if report.is_live else ' in the selected date range' }}.</p>
+</div>
+{% endif %}
+{% endblock %}

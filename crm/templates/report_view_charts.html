@@ -1,0 +1,136 @@
+{# report_view_charts.html (v0.6.1) — NEW template for chart-bearing
+   reports: Lead Stage Analysis (4 views: by owner/project/campaign +
+   site visits by campaign) and the Campaign Insights reports that carry
+   a single chart (Campaign Lead Volume, Campaign Stage Distribution,
+   Campaign Conversion Rate, Campaign First-Response Time, Site Visits
+   by Campaign). Selected via report.template — app.py's report_view()
+   route picks this over report_view.html per the report's "template"
+   key in cls_reports.REPORTS. Campaign Lost Reason Breakdown stays on
+   report_view.html (plain table, no chart — see cls_reports.py's C4
+   design note: reason-cardinality reads better as a table than bars).
+
+   Charting: Chart.js via CDN (Srikanth's confirmed call, 2026-07) — the
+   ONLY template in this app that loads it, so every other report page
+   stays dependency-free. Every chart is ALWAYS rendered alongside its
+   full accessible table (not behind a toggle) — the table is the same
+   data Excel export uses, and print-to-PDF hides the (unreliable to
+   print) canvas and keeps the table, via the print stylesheet below.
+
+   A single-chart report (report.views is None) is normalized into a
+   one-item list here so the same loop renders both shapes — see the
+   `views` Jinja variable below. #}
+{% extends "base.html" %}
+{% block title %}{{ report.title }}{% endblock %}
+
+{% block content %}
+<style media="print">
+  .appbar, .nav-drawer, .nav-scrim, .no-print { display: none !important; }
+  main.wrap { max-width: 100%; padding: 0; }
+  .report-table { font-size: 11px; }
+  .chart-canvas-wrap { display: none !important; }
+</style>
+<style>
+  .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .report-table th, .report-table td {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+    font-size: 13px; white-space: nowrap;
+  }
+  .report-table th { color: var(--ink-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .report-table tbody tr:hover { background: var(--paper); }
+  .report-table-wrap { overflow-x: auto; }
+  .chart-canvas-wrap { position: relative; height: 320px; margin-top: 10px; }
+</style>
+
+<a href="{{ url_for('reports_home') }}" class="no-print" style="font-size:14px;">← All Reports</a>
+<div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; margin-top:10px;">
+  <div>
+    <h2 style="margin:0;">{{ report.title }}</h2>
+    <p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin:4px 0 0;">{{ report.description }}</p>
+  </div>
+  <div class="no-print" style="display:flex; gap:8px; flex-shrink:0;">
+    {% if report.is_live %}
+    <a href="{{ url_for('report_export_excel', report_id=report.id) }}" class="btn">Export Excel</a>
+    {% else %}
+    <a href="{{ url_for('report_export_excel', report_id=report.id, **{'from': report.date_from, 'to': report.date_to}) }}" class="btn">Export Excel</a>
+    {% endif %}
+    <button type="button" class="btn" onclick="window.print();">Print / Save as PDF</button>
+  </div>
+</div>
+
+{% include "_report_date_picker.html" %}
+
+{% if report.caveat %}
+<div class="card" style="margin-top:14px; background:#FBF6E9; border-color:#EAD9A0;">
+  <p style="font-size:12px; color:var(--ink-soft); margin:0;">{{ report.caveat }}</p>
+</div>
+{% endif %}
+
+{% set views = report.views if report.views else [{"title": report.title, "columns": report.columns, "rows": report.rows, "chart": report.chart}] %}
+
+{% for view in views %}
+<div class="card" style="margin-top:18px;">
+  {% if report.views %}<h3 style="margin-top:0; margin-bottom:0; font-size:15px;">{{ view.title }}</h3>{% endif %}
+  {% if view.rows %}
+    {% if view.chart %}
+    <div class="chart-canvas-wrap no-print">
+      <canvas id="chart-{{ loop.index }}"></canvas>
+    </div>
+    {% endif %}
+    <div class="report-table-wrap">
+      <table class="report-table">
+        <thead>
+          <tr>
+            {% for key, label in view.columns %}
+            <th>{{ label }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in view.rows %}
+          <tr>
+            {% for key, label in view.columns %}
+            <td>{{ row.get(key, '—') if row.get(key, '—') is not none else '—' }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty-state" style="margin:10px 0 0; padding:24px;">No data yet for this view{{ '' if report.is_live else ' in the selected date range' }}.</p>
+  {% endif %}
+</div>
+{% endfor %}
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+  var CHART_VIEWS = {{ views | tojson }};
+  CHART_VIEWS.forEach(function(view, i) {
+    if (!view.chart || !view.rows || !view.rows.length) return;
+    var canvas = document.getElementById('chart-' + (i + 1));
+    if (!canvas) return;
+    var cfg = view.chart;
+    var isHorizontal = cfg.type === 'horizontal_bar';
+    var isStacked = cfg.type === 'stacked_bar';
+    var datasets = cfg.datasets.map(function(ds) {
+      return { label: ds.label, data: ds.data, backgroundColor: ds.color };
+    });
+    new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: { labels: cfg.labels, datasets: datasets },
+      options: {
+        indexAxis: isHorizontal ? 'y' : 'x',
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { stacked: isStacked },
+          y: { stacked: isStacked, beginAtZero: true },
+        },
+        plugins: { legend: { display: datasets.length > 1 } },
+      },
+    });
+  });
+})();
+</script>
+{% endblock %}

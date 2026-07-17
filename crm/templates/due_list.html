@@ -1,9 +1,13 @@
+{# due_list.html — v0.3 logic unchanged. v0.4 (July 2026, Srikanth's
+   decision 2): header labels only, "Site Visits Due" -> "MISSED SITE
+   VISITS", "Follow-ups Due" -> "MISSED FOLLOWUPS". get_due_by_kind()/
+   get_due_today() and the route are untouched. #}
 {% extends "base.html" %}
-{% block title %}{{ 'Site Visits Due' if kind == 'site_visit' else 'Follow-ups Due' }}{% endblock %}
+{% block title %}{{ 'MISSED SITE VISITS' if kind == 'site_visit' else 'MISSED FOLLOWUPS' }}{% endblock %}
 
 {% block content %}
 <h2 style="margin-top:0;">
-  {{ 'Site Visits Due' if kind == 'site_visit' else 'Follow-ups Due' }}
+  {{ 'MISSED SITE VISITS' if kind == 'site_visit' else 'MISSED FOLLOWUPS' }}
   <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ items|length }})</span>
 </h2>
 

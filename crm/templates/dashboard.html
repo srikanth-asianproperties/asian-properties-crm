@@ -1,8 +1,16 @@
-{# dashboard.html (v0.6) — "Stats" tab of the 3-tab dashboard (Stats /
-   Today's Performance / Pipeline Analysis). Content is UNCHANGED from
-   the pre-v0.6 single-page dashboard (the same 4 cards); only the
-   bottom tab bar is new. Kept at the /dashboard route/filename so
-   every existing url_for('dashboard') link elsewhere still works. #}
+{# dashboard.html (v0.7) — "Stats" tab of the 3-tab dashboard (Stats /
+   Today's Performance / Pipeline Analysis). Bottom tab bar unchanged
+   from v0.6. Kept at the /dashboard route/filename so every existing
+   url_for('dashboard') link elsewhere still works.
+
+   v0.7 (July 2026, Srikanth's decisions 1+2):
+   - New Enquiries card now links to /new-enquiries (new_enquiries_list
+     route) instead of the generic leads_list filter, so the list a tap
+     opens actually matches the redefined count (current_stage=
+     'Incoming' AND zero activity_log rows — see cls_db.py v2.11).
+   - "Follow-ups Due" -> "MISSED FOLLOWUPS", "Site Visits Due" ->
+     "MISSED SITE VISITS" — label-only rename, no logic change; the
+     due_list route/cls_db.get_due_by_kind() are untouched. #}
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
 
@@ -11,10 +19,10 @@
 
 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;">
 
-  <a href="{{ url_for('leads_list', stage='Incoming', fields_submitted=1) }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+  <a href="{{ url_for('new_enquiries_list') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div class="field-label">New Enquiries</div>
     <div style="font-size:34px; font-weight:700; color:var(--green); margin:6px 0;">{{ new_enquiries_count }}</div>
-    <div style="font-size:13px; color:var(--ink-soft);">Still in Incoming &middot; tap to view</div>
+    <div style="font-size:13px; color:var(--ink-soft);">Untouched since arrival &middot; tap to view</div>
   </a>
 
   <a href="{{ url_for('reengaged_list') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
@@ -24,13 +32,13 @@
   </a>
 
   <a href="{{ url_for('due_list', kind='follow_up') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
-    <div class="field-label">Follow-ups Due</div>
+    <div class="field-label">MISSED FOLLOWUPS</div>
     <div style="font-size:34px; font-weight:700; color:var(--amber); margin:6px 0;">{{ follow_up_due_count }}</div>
     <div style="font-size:13px; color:var(--ink-soft);">Due today or overdue &middot; tap to view</div>
   </a>
 
   <a href="{{ url_for('due_list', kind='site_visit') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
-    <div class="field-label">Site Visits Due</div>
+    <div class="field-label">MISSED SITE VISITS</div>
     <div style="font-size:34px; font-weight:700; color:var(--amber); margin:6px 0;">{{ site_visit_due_count }}</div>
     <div style="font-size:13px; color:var(--ink-soft);">Due today or overdue &middot; tap to view</div>
   </a>

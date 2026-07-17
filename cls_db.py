@@ -2,11 +2,138 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.10
+Version : 2.13
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.13 (July 2026) — APX v0.6.1 Reports Enhancements. ALL additive except
+  the eight explicitly-flagged modified functions below (each gained
+  ONLY new optional kwargs with defaults that reproduce prior exact
+  behavior — no existing call site anywhere needed to change).
+
+  DATA-AVAILABILITY FINDING surfaced to Srikanth before building (his
+  call: build now, backfill later): leads.campaign is blank/NULL on
+  3,728 of 3,729 leads (99.97%) as of 2026-07-17 — it's a manual,
+  optional, salesperson-typed field (set via the /property-details
+  route), never auto-populated by meta_leads_fetcher.py or
+  selldo_to_cls.py. Every campaign-grouped function below buckets a
+  blank/NULL campaign under the literal label "Unknown/Manual" (see
+  _campaign_bucket()) rather than dropping those leads — so today
+  these reports will show almost everything under that one bucket
+  until campaign data is backfilled; that's expected, not a bug.
+
+  NEW _campaign_bucket(raw) — trivial TRIM/blank-to-"Unknown/Manual"
+  helper, same spirit as the existing get_project_bucket() but with no
+  alias table (campaign is free text, no known-variant collapsing
+  needed yet).
+
+  NEW "REPORTS v0.6.1" functions (after get_call_activity()):
+  get_activity_counts_range() (date-range generalization of
+  get_todays_activity_counts(), kept as a SEPARATE new function rather
+  than modifying that one — zero risk to its 3 existing call sites),
+  get_leads_received_by_owner(), get_stage_breakdown(),
+  get_site_visits_by_campaign(), get_campaign_lead_volume(),
+  get_campaign_performance(), get_campaign_lost_reasons(),
+  get_campaign_response_time().
+
+  MODIFIED (additive optional date_from/date_to kwargs, default None
+  on every one reproduces that function's exact prior behavior):
+  get_source_performance(), get_project_pipeline(),
+  get_followup_hit_rate(), get_lost_reason_breakdown(),
+  get_conversion_funnel_trend() (date_from/date_to, when given,
+  replace the trailing-`months`-window with the explicit range —
+  months param unchanged/still governs the default trailing window),
+  get_first_response_time() (same treatment as conversion_funnel_trend),
+  get_reengaged_leads() (date_from/date_to, when given, replace the
+  trailing-`days` cutoff with an explicit window), get_call_activity()
+  (date_from/date_to, when given, replace the trailing-`days` window —
+  used to retire report_view's old daily/weekly toggle in favor of the
+  new universal date-range picker).
+
+  No schema change. No existing function's behavior changed except the
+  eight flagged above, and every one of those changes is inert unless
+  the NEW date_from/date_to kwargs are actually passed.
+
+v2.12 (July 2026) — APX v0.6 Reports section. ALL additive except the
+  three explicitly-flagged modified functions below (each gained ONLY
+  a new optional kwarg / new dict key with a default that reproduces
+  its exact prior behavior — no existing call site anywhere in the
+  codebase needed to change).
+
+  NEW "CRM v0.6 — REPORTS" section (after drip_stats()): 8 new read-
+  only functions — get_source_performance(), get_project_pipeline(),
+  get_conversion_funnel_trend(), get_followup_hit_rate(),
+  get_lost_reason_breakdown(), get_score_distribution(),
+  get_first_response_time(), get_owner_workload(),
+  get_call_activity() — one per report that needed a new aggregation.
+  Reports #1 (Daily Scorecard), #2 (Pipeline Funnel Snapshot), and #9
+  (Reengagement) reuse existing functions instead (see the three
+  modifications below). See that section's own HONESTY NOTE block for
+  two real data-limitation caveats worth reading before trusting the
+  numbers: (1) activity_log 'stage_change' rows exist only for stage
+  moves made through THIS app (update_lead_stage()), not Sell.do-
+  driven syncs, so get_conversion_funnel_trend() undercounts pre-CRM-
+  adoption months; (2) leads.source only ever holds 'meta' /
+  'selldo_only' / 'manual_crm' (the capture channel), not a marketing
+  sub-source like "99acres" — lead_source_detail is richer but NULL
+  for the large majority of leads, so get_source_performance() reports
+  on `source`, not `lead_source_detail`.
+
+  MODIFIED get_stage_snapshot_counts() — NEW optional owner kwarg
+  (default None, unchanged behavior for the zero-arg call
+  dashboard_pipeline() already makes).
+
+  MODIFIED get_reengaged_leads() — NEW optional owner kwarg (default
+  None, unchanged behavior for reengaged_list()'s existing call).
+
+  MODIFIED get_todays_activity_counts() — NEW 'note' -> 'notes_added'
+  entry in METRIC_MAP, so its returned dict gained ONE new key
+  (notes_added). Every existing key/value this function already
+  returned is unchanged; dashboard_today() still works unmodified.
+
+  cls_reports.py (new, crm/) owns report metadata, table/column
+  shaping, and Excel/print-PDF export — it queries cls.db ONLY through
+  these functions, never opens sqlite3 directly, per the centralized-
+  access rule.
+
+v2.11 (July 2026) — APX v0.5 polish pass, 5 independent additions
+  (Srikanth's decisions 1/3/4/5; decision 2 is template-label-only and
+  decision 4's root cause turned out to be template-only too — see
+  app.py/lead_detail.html changelogs for those). ALL additive except
+  the two explicitly-flagged modified functions below.
+
+  REDEFINED get_new_enquiries_count() (decision 1) — was "current_
+  stage='Incoming'" (v1.9); now ALSO requires zero activity_log rows
+  for that cls_id, so a lead drops off the count the instant a human
+  does anything to it (even before its stage moves off Incoming), not
+  just when the stage changes. NEW get_new_enquiries_leads() — same
+  criteria, row-returning, mirrors get_reengaged_leads().
+
+  NEW STAGE_REASON_LISTS = {"Lost": UNQUALIFIED_REASONS, "Unqualified":
+  UNQUALIFIED_REASONS} (decision 3) — Lost now shows the same 15
+  Unqualified reasons instead of its own 8. MODIFIED update_lead_
+  stage()'s reason validation to read this dict instead of two
+  hardcoded if/elif branches against LOST_REASONS/UNQUALIFIED_REASONS;
+  behavior for Unqualified is unchanged, Lost's required-reason list
+  changed from LOST_REASONS to UNQUALIFIED_REASONS. LOST_REASONS itself
+  is UNCHANGED and still exported — marked "# PAUSED — retained for
+  historical Lost reason codes + easy revert", read by app.py's
+  leads_filter_screen() so leads already marked Lost under the old
+  codes stay filterable.
+
+  NEW nullable leads columns alt_phone_raw / alt_phone_norm (decision
+  5, self-healing ALTER TABLE, additive-only migration). MODIFIED
+  update_lead_contact_info() — NEW optional alt_phone_raw kwarg
+  (default None, existing callers unaffected), normalized through the
+  SAME norm_phone() into alt_phone_norm for DISPLAY ONLY. alt_phone_
+  norm is deliberately never read by find_match() or any matcher —
+  storage/display only, per Srikanth's explicit instruction.
+
+  No schema change removed or renamed anything; no existing function's
+  behavior changed except the two flagged above, and both changes were
+  explicitly requested (not incidental).
+
 v2.10 (July 2026) — read-only feed for cls_parallel_export.py (parallel-
   run sync-health checkpoint, on-demand, not scheduled). Purely additive,
   ZERO schema change — reads existing activity_log + leads columns only.
@@ -714,6 +841,14 @@ FACING_OPTIONS = ["East", "West", "North", "South"]
 # 2026-07). RADIO-style single selection per lead per stage-change —
 # see update_lead_stage()'s reason_code param. Config-not-code: add or
 # reword a reason here, no code change needed anywhere else.
+#
+# PAUSED — retained for historical Lost reason codes + easy revert
+# (v2.11, July 2026). Srikanth's decision 5: the Lost picker now shows
+# UNQUALIFIED_REASONS instead (see STAGE_REASON_LISTS below), but any
+# lead already marked Lost with one of THESE codes must stay readable
+# and filterable — leads_filter_screen()'s stage_reasons still unions
+# this list with UNQUALIFIED_REASONS for exactly that reason. Not
+# deleted, not dead code: still the source of truth for old data.
 LOST_REASONS = [
     "Price negotiations failed",
     "Fund availability issue",
@@ -742,6 +877,19 @@ UNQUALIFIED_REASONS = [
     "Is a channel partner",
     "Requirement floor not matching",
 ]
+
+# v2.11 (July 2026) — STAGE_REASON_LISTS: which reason list gates each
+# stage-change reason_code, keyed by new_stage. Srikanth's decision 5:
+# Lost now uses the SAME 15 Unqualified reasons instead of its own
+# 8-item list (LOST_REASONS above stays defined/PAUSED for historical
+# data only — see its docstring). update_lead_stage() below validates
+# reason_code against THIS dict instead of two hardcoded if/elif
+# branches, so adding a third reason-gated stage later is a one-line
+# dict entry, not a new elif. Config-not-code, single source of truth.
+STAGE_REASON_LISTS = {
+    "Lost":         UNQUALIFIED_REASONS,
+    "Unqualified":  UNQUALIFIED_REASONS,
+}
 
 # v2.5 — leads-list Sort By filter. Config-not-code, whitelisted lookup
 # ONLY — get_leads_page() falls back to "recent" for any key not in
@@ -892,6 +1040,22 @@ def get_project_bucket(raw_project):
 
     first = raw_project.split(",")[0].strip()
     return PROJECT_BUCKETS.get(first, first)
+
+
+def _campaign_bucket(raw_campaign):
+    """
+    (v2.13) Collapse a raw leads.campaign value into a display bucket
+    for the Campaign Insights reports. No known-variant alias table
+    like PROJECT_BUCKETS — campaign is free text with only one non-
+    blank value in the live DB as of this writing (see v2.13 changelog
+    HONESTY NOTE), so there's nothing to collapse yet. Blank/NULL
+    becomes the literal "Unknown/Manual" bucket rather than being
+    dropped, so campaign-grouped totals still add up to the full lead
+    count in scope.
+    """
+    if raw_campaign and raw_campaign.strip():
+        return raw_campaign.strip()
+    return "Unknown/Manual"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1090,6 +1254,12 @@ def init_db():
         ("facing",                  "TEXT"),   # comma-separated subset of FACING_OPTIONS
         ("stage_reason",            "TEXT"),   # current Lost/Unqualified reason CODE; cleared on any other stage
         ("owner_notified",          "INTEGER"),# 0 = pending reassignment badge; 1/NULL = none pending
+        # v2.11 — optional alternate contact number (Srikanth's decision
+        # 5). Storage/display only: alt_phone_norm is NEVER passed to
+        # find_match() or any matcher — see update_lead_contact_info()'s
+        # v2.11 changelog note for why.
+        ("alt_phone_raw",           "TEXT"),   # as typed, optional
+        ("alt_phone_norm",          "TEXT"),   # normalized via norm_phone(), display/tel: link only
     ]
     for col_name, col_type in drip_migrations:
         if col_name not in lead_cols:
@@ -1672,23 +1842,55 @@ def get_distinct_owners():
 
 def get_new_enquiries_count(days=7):
     """
-    v1.9 REDEFINED: was a time-window count (leads first created in
-    the last `days` days); now counts leads currently sitting at
-    current_stage='Incoming' — i.e. genuinely untriaged, regardless of
-    when they arrived. `days` is kept as a parameter (unused) only so
-    existing call sites don't need updating; the real answer this
-    function gives is now "how many leads still need a first look,"
-    not "how many arrived recently." A lead that arrived 3 weeks ago
-    and is STILL sitting in Incoming is exactly the kind of thing this
-    should surface — the old definition would have silently dropped it
-    once it aged out of the window.
+    v1.9: was a time-window count (leads first created in the last
+    `days` days); redefined to count leads currently sitting at
+    current_stage='Incoming', regardless of when they arrived.
+
+    v2.11 REDEFINED again (Srikanth's decision 1, July 2026): a lead
+    can sit at current_stage='Incoming' for a while yet already have
+    been looked at (a call attempted, a note added, a walk-in visit
+    logged) — the v1.9 definition still counted those as "new," which
+    overstated genuinely untouched inbound. Now counts current_stage=
+    'Incoming' AND zero rows in activity_log for that cls_id — i.e.
+    no human action has EVER been taken on it. Integration ingestion
+    (Job A/B upserts) writes no activity_log rows, so "zero activity_
+    log rows" reliably means "untouched since it arrived." The moment
+    ANY activity is logged against it (log_call_tap's 'call_attempted'
+    is the most common first touch, but a note/stage-change/site-visit
+    would too), it drops off this count — even though it may still be
+    sitting at current_stage='Incoming' (nobody has moved the stage
+    yet, just looked at it). `days` is kept as an unused parameter so
+    existing call sites don't need updating.
     """
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT COUNT(*) c FROM leads WHERE current_stage='Incoming'"
-        ).fetchone()
+        row = conn.execute("""
+            SELECT COUNT(*) c FROM leads l
+            WHERE l.current_stage='Incoming'
+              AND NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.cls_id = l.cls_id)
+        """).fetchone()
         return row["c"]
+    finally:
+        conn.close()
+
+
+def get_new_enquiries_leads():
+    """
+    (v2.11) List-returning counterpart to get_new_enquiries_count()
+    above — SAME criteria (current_stage='Incoming' AND zero activity_
+    log rows), just returning rows instead of a count, so the dashboard
+    card can link through to an actual filtered list. Mirrors
+    get_reengaged_leads()'s shape.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT * FROM leads l
+            WHERE l.current_stage='Incoming'
+              AND NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.cls_id = l.cls_id)
+            ORDER BY l.cls_created_at DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -1721,27 +1923,54 @@ def get_reengaged_count(days=7):
         conn.close()
 
 
-def get_reengaged_leads(days=7):
+def get_reengaged_leads(days=7, owner=None, date_from=None, date_to=None):
     """
     List-returning counterpart to get_reengaged_count() above — SAME
     approximate criteria (see that function's docstring for the full
     caveat), just returning rows instead of a count, so the dashboard
     card can link through to an actual filtered list.
+
+    owner (v2.12): optional, default None (existing behavior,
+    unchanged — reengaged_list() keeps calling this with no owner
+    arg). Pass a lead_owner to scope to one salesperson's own leads,
+    for Report #9's owner-filtered view.
+
+    date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings, default
+    None (existing behavior unchanged — `days` trailing window from
+    right now). When both given, the cutoff becomes date_from's start
+    of day (leads created before the selected period, reengaged AT OR
+    AFTER it starts) and matches are additionally capped at date_to's
+    end of day — "which existing leads came back DURING this period,"
+    not "...since N days ago."
     """
     conn = _connect()
     try:
-        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        rows = conn.execute("""
-            SELECT * FROM leads
-            WHERE cls_created_at < ? AND cls_updated_at >= ?
-            ORDER BY cls_updated_at DESC
-        """, (cutoff, cutoff)).fetchall()
+        if date_from and date_to:
+            cutoff = f"{date_from} 00:00:00"
+            upper = f"{date_to} 23:59:59"
+            query = """
+                SELECT * FROM leads
+                WHERE cls_created_at < ? AND cls_updated_at >= ? AND cls_updated_at <= ?
+            """
+            params = [cutoff, cutoff, upper]
+        else:
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            query = """
+                SELECT * FROM leads
+                WHERE cls_created_at < ? AND cls_updated_at >= ?
+            """
+            params = [cutoff, cutoff]
+        if owner:
+            query += " AND lead_owner = ?"
+            params.append(owner)
+        query += " ORDER BY cls_updated_at DESC"
+        rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
 
 
-def get_stage_snapshot_counts():
+def get_stage_snapshot_counts(owner=None):
     """
     (v2.4) Current-moment count of leads sitting in EACH of ALL_STAGES
     right now — feeds the Pipeline Analysis dashboard tiles. Every
@@ -1753,12 +1982,21 @@ def get_stage_snapshot_counts():
     read at request time), not a "stage distribution as it stood
     earlier today" historical figure — see the v2.4 changelog note for
     why that distinction is deliberate.
+
+    owner (v2.12): optional, default None (existing behavior,
+    unchanged — dashboard_pipeline() keeps calling this with zero
+    args). Pass a lead_owner to scope the snapshot to one
+    salesperson's own leads, for Report #2's owner-filtered view.
     """
     conn = _connect()
     try:
-        rows = conn.execute(
-            "SELECT current_stage, COUNT(*) c FROM leads GROUP BY current_stage"
-        ).fetchall()
+        query = "SELECT current_stage, COUNT(*) c FROM leads"
+        params = []
+        if owner:
+            query += " WHERE lead_owner = ?"
+            params.append(owner)
+        query += " GROUP BY current_stage"
+        rows = conn.execute(query, params).fetchall()
         live_counts = {r["current_stage"]: r["c"] for r in rows}
         return {stage: live_counts.get(stage, 0) for stage in ALL_STAGES}
     finally:
@@ -1803,6 +2041,10 @@ def get_todays_activity_counts(actor_email=None):
     duration/connected-status data this schema doesn't have yet; it's
     v1.0 Telephony's job, exactly as roadmapped. calls_attempted is a
     tap-count proxy, same honest limit as log_call_tap() itself.
+
+    (v2.12) NEW 'notes_added' key (activity_type='note') for Report
+    #1's Daily Scorecard — every other key this function already
+    returned is unchanged.
     """
     METRIC_MAP = {
         "call_attempted":        "calls_attempted",
@@ -1810,6 +2052,7 @@ def get_todays_activity_counts(actor_email=None):
         "site_visit_conducted":  "site_visits_conducted",
         "follow_up_scheduled":   "follow_ups_created",
         "follow_up_completed":   "follow_ups_completed",
+        "note":                  "notes_added",
     }
     result = {key: 0 for key in METRIC_MAP.values()}
 
@@ -1994,16 +2237,23 @@ def update_lead_stage(cls_id, new_stage, actor, reason_code=None, reason_notes=N
     the SAME transaction — see _auto_cancel_open_schedules() above.
 
     v2.3: whenever new_stage is 'Lost' or 'Unqualified', reason_code
-    (one value from LOST_REASONS / UNQUALIFIED_REASONS, matching
-    new_stage) and reason_notes (non-empty free text) are now BOTH
-    REQUIRED — same mandatory-reason pattern already used for site
-    visit/follow-up outcomes. reason_code is written to leads.
-    stage_reason; reason_notes is appended to this same stage_change
-    activity_log row's description (no new activity_type). Moving OUT
-    of Lost/Unqualified to any other stage clears stage_reason back to
-    NULL in the same write, since it only ever describes the CURRENT
-    Lost/Unqualified state — the full historical reason still lives
-    permanently in activity_log regardless.
+    (one value from the list STAGE_REASON_LISTS maps new_stage to) and
+    reason_notes (non-empty free text) are now BOTH REQUIRED — same
+    mandatory-reason pattern already used for site visit/follow-up
+    outcomes. reason_code is written to leads.stage_reason; reason_notes
+    is appended to this same stage_change activity_log row's description
+    (no new activity_type). Moving OUT of Lost/Unqualified to any other
+    stage clears stage_reason back to NULL in the same write, since it
+    only ever describes the CURRENT Lost/Unqualified state — the full
+    historical reason still lives permanently in activity_log regardless.
+
+    v2.11: reason_code validation is now driven by STAGE_REASON_LISTS
+    (config-not-code) instead of two hardcoded if/elif branches against
+    LOST_REASONS/UNQUALIFIED_REASONS directly — see that dict's
+    changelog entry. Any stage present as a key in STAGE_REASON_LISTS
+    requires a reason_code from its list plus non-empty reason_notes; a
+    stage absent from the dict (everything except Lost/Unqualified today)
+    requires neither, same as before.
 
     Returns (ok: bool, message: str). Never raises for an invalid
     transition, a stale-stage race, or a missing/invalid reason — all
@@ -2013,16 +2263,12 @@ def update_lead_stage(cls_id, new_stage, actor, reason_code=None, reason_notes=N
         return False, f"'{new_stage}' is not a recognised stage."
 
     reason_notes = (reason_notes or "").strip()
-    if new_stage == "Lost":
-        if reason_code not in LOST_REASONS:
-            return False, f"A Lost reason is required, one of: {', '.join(LOST_REASONS)}."
+    reason_list = STAGE_REASON_LISTS.get(new_stage)
+    if reason_list is not None:
+        if reason_code not in reason_list:
+            return False, f"A {new_stage} reason is required, one of: {', '.join(reason_list)}."
         if not reason_notes:
-            return False, "A short explanation note is required when marking a lead Lost."
-    elif new_stage == "Unqualified":
-        if reason_code not in UNQUALIFIED_REASONS:
-            return False, f"An Unqualified reason is required, one of: {', '.join(UNQUALIFIED_REASONS)}."
-        if not reason_notes:
-            return False, "A short explanation note is required when marking a lead Unqualified."
+            return False, f"A short explanation note is required when marking a lead {new_stage}."
 
     conn = _connect()
     try:
@@ -2044,7 +2290,7 @@ def update_lead_stage(cls_id, new_stage, actor, reason_code=None, reason_notes=N
             )
 
         now = _now()
-        new_stage_reason = reason_code if new_stage in ("Lost", "Unqualified") else None
+        new_stage_reason = reason_code if new_stage in STAGE_REASON_LISTS else None
         conn.execute("""
             UPDATE leads SET current_stage=?, stage_reason=?, stage_updated_at=?, cls_updated_at=?
             WHERE cls_id=?
@@ -2589,7 +2835,7 @@ def update_lead_source_detail(cls_id, new_source_detail, actor):
         conn.close()
 
 
-def update_lead_contact_info(cls_id, actor, full_name=None, phone_raw=None):
+def update_lead_contact_info(cls_id, actor, full_name=None, phone_raw=None, alt_phone_raw=None):
     """
     (v2.6) Correct a lead's name and/or phone number after creation —
     for the common real-world mess-ups: an email pasted into the name
@@ -2610,6 +2856,15 @@ def update_lead_contact_info(cls_id, actor, full_name=None, phone_raw=None):
     activity_log with the old and new value, specifically so a
     resulting duplicate is traceable rather than a mystery.
 
+    v2.11 — NEW optional alt_phone_raw (Srikanth's decision 5): a
+    second contact number, same "pass only what you want to change"
+    pattern as phone_raw. Re-normalized through the SAME norm_phone()
+    into alt_phone_norm PURELY for display (a clickable tel: link) —
+    alt_phone_norm is NEVER fed into find_match() or any matcher, and
+    never will be; it carries no dedup/matching weight, unlike
+    phone_norm above. An empty/invalid alt_phone_raw fails the call
+    the same way an invalid phone_raw does, for the same reason.
+
     Returns (ok: bool, message: str).
     """
     full_name = full_name.strip() if full_name is not None else None
@@ -2625,10 +2880,19 @@ def update_lead_contact_info(cls_id, actor, full_name=None, phone_raw=None):
         if not new_phone_norm:
             return False, "That doesn't look like a valid phone number."
 
+    new_alt_phone_norm = None
+    if alt_phone_raw is not None:
+        alt_phone_raw = alt_phone_raw.strip()
+        if not alt_phone_raw:
+            return False, "Alternate phone can't be blank."
+        new_alt_phone_norm = norm_phone(alt_phone_raw)
+        if not new_alt_phone_norm:
+            return False, "That doesn't look like a valid alternate phone number."
+
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT full_name, phone_raw, phone_norm FROM leads WHERE cls_id=?", (cls_id,)
+            "SELECT full_name, phone_raw, phone_norm, alt_phone_raw FROM leads WHERE cls_id=?", (cls_id,)
         ).fetchone()
         if not row:
             return False, "Lead not found."
@@ -2641,6 +2905,10 @@ def update_lead_contact_info(cls_id, actor, full_name=None, phone_raw=None):
             updates.append("phone_raw=?"); params.append(phone_raw)
             updates.append("phone_norm=?"); params.append(new_phone_norm)
             changed.append(f"Phone: '{row['phone_raw']}' -> '{phone_raw}'")
+        if alt_phone_raw is not None and alt_phone_raw != row["alt_phone_raw"]:
+            updates.append("alt_phone_raw=?"); params.append(alt_phone_raw)
+            updates.append("alt_phone_norm=?"); params.append(new_alt_phone_norm)
+            changed.append(f"Alt phone: '{row['alt_phone_raw']}' -> '{alt_phone_raw}'")
 
         if not updates:
             return False, "Nothing to update."
@@ -3970,6 +4238,1046 @@ def drip_stats():
         }
     finally:
         conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# CRM v0.6 — REPORTS  (Srikanth's 12-report spec, July 2026)
+# ─────────────────────────────────────────────────────────────
+# All read-only, all NEW (v2.12) except the three functions flagged
+# in this version's changelog entry above, each of which gained only
+# a backward-compatible optional kwarg or dict key. crm/cls_reports.py
+# owns report metadata, table shaping, and Excel/print-PDF export —
+# it calls these functions, it never opens sqlite3 itself, per the
+# centralized-access rule.
+#
+# HONESTY NOTES (read before trusting a report number):
+#   - activity_log 'stage_change' rows are written ONLY by this
+#     module's own update_lead_stage() — i.e. only for stage moves
+#     made THROUGH the CRM app. Job B's Sell.do sync (upsert_selldo_
+#     lead) updates leads.current_stage directly and logs nothing to
+#     activity_log. During parallel-run, most historical stage moves
+#     still happen via Sell.do, so get_conversion_funnel_trend()
+#     below will undercount early months and fill in only as the
+#     team's CRM usage matures — flagged again in its own docstring.
+#   - leads.source only ever holds 'meta' / 'selldo_only' /
+#     'manual_crm' (see SOURCE_OPTIONS) — the system-level capture
+#     channel, not a marketing sub-source like "99acres". lead_
+#     source_detail (MANUAL_SOURCE_OPTIONS) is richer but is set ONLY
+#     at manual-entry time and locked after, so it's NULL for the
+#     large majority of leads (anything auto-captured from Meta or
+#     Sell.do). get_source_performance() below reports on the
+#     universally-populated `source` column for that reason.
+# ─────────────────────────────────────────────────────────────
+
+def get_source_performance(date_from=None, date_to=None):
+    """
+    (v2.12) Report #3 — Lead Source Performance, admin-only (cross-
+    salesperson comparison, not owner-filterable). For each value of
+    leads.source ('meta' / 'selldo_only' / 'manual_crm' — see the
+    HONESTY NOTE above on why this is the source column used, not
+    lead_source_detail), a current-stage funnel snapshot: how many
+    leads from that source have reached Prospect+, Opportunity+, Site
+    Visited+, Booked, or ended Lost/Unqualified, right now.
+
+    "Reached X+" means current_stage is X or any stage further along
+    the funnel (Opportunity+ = currently at Opportunity, Site Visited,
+    or Booked) — a live snapshot proxy for quality, not a historical
+    cohort conversion rate (that's get_conversion_funnel_trend()'s job).
+
+    date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings, default
+    None (existing behavior, unchanged — every lead, all-time). When
+    both given, scopes to leads whose cls_created_at falls in that
+    range — "of the leads that CAME IN during this period, where do
+    they stand now" rather than "of every lead ever, where do they
+    stand now."
+
+    Returns a list of dicts, one per source, sorted by total desc:
+        [{"source": "meta", "total": 120, "prospect_plus": 80,
+          "opportunity_plus": 40, "site_visited_plus": 15,
+          "booked": 3, "lost_unqualified": 25}, ...]
+    """
+    PROSPECT_PLUS = ("Prospect", "Opportunity", "Site Visited", "Booked")
+    OPPORTUNITY_PLUS = ("Opportunity", "Site Visited", "Booked")
+    SITE_VISITED_PLUS = ("Site Visited", "Booked")
+
+    conn = _connect()
+    try:
+        query = """
+            SELECT COALESCE(NULLIF(TRIM(source), ''), '(unknown)') AS source,
+                   current_stage, COUNT(*) c
+            FROM leads
+        """
+        params = []
+        if date_from and date_to:
+            query += " WHERE substr(cls_created_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        query += " GROUP BY source, current_stage"
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    by_source = {}
+    for r in rows:
+        src = r["source"]
+        bucket = by_source.setdefault(src, {
+            "source": src, "total": 0, "prospect_plus": 0,
+            "opportunity_plus": 0, "site_visited_plus": 0,
+            "booked": 0, "lost_unqualified": 0,
+        })
+        stage, c = r["current_stage"], r["c"]
+        bucket["total"] += c
+        if stage in PROSPECT_PLUS:
+            bucket["prospect_plus"] += c
+        if stage in OPPORTUNITY_PLUS:
+            bucket["opportunity_plus"] += c
+        if stage in SITE_VISITED_PLUS:
+            bucket["site_visited_plus"] += c
+        if stage == "Booked":
+            bucket["booked"] += c
+        if stage in ("Lost", "Unqualified"):
+            bucket["lost_unqualified"] += c
+
+    result = list(by_source.values())
+    result.sort(key=lambda r: r["total"], reverse=True)
+    return result
+
+
+def get_project_pipeline(owner=None, date_from=None, date_to=None):
+    """
+    (v2.12) Report #4 — Project-wise Pipeline. Cross-tab of project
+    (bucketed through the existing get_project_bucket() so Sell.do's
+    spacing/dash variants and comma-joined multi-project strings
+    collapse into one row per real project, same as every other
+    project-facing view in this file) x current_stage, optionally
+    scoped to one salesperson's owned leads.
+
+    owner : lead_owner to scope to (salesperson's own view). None =
+            every lead (admin/manager view).
+
+    date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings, default
+    None (existing behavior, unchanged — every lead regardless of when
+    created). When both given, scopes to leads whose cls_created_at
+    falls in that range — turns this from a pure live snapshot into
+    "of the leads created in this period, where do they stand now."
+
+    Returns a dict keyed by project bucket, each value a dict keyed by
+    every stage in ALL_STAGES (all present, 0 if empty) plus a "total"
+    key: {"Naishka Homes": {"Incoming": 4, ..., "total": 37}, ...}
+    """
+    conn = _connect()
+    try:
+        query = "SELECT project, current_stage FROM leads"
+        clauses = []
+        params = []
+        if owner:
+            clauses.append("lead_owner = ?")
+            params.append(owner)
+        if date_from and date_to:
+            clauses.append("substr(cls_created_at, 1, 10) BETWEEN ? AND ?")
+            params.extend([date_from, date_to])
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    result = {}
+    for r in rows:
+        bucket = get_project_bucket(r["project"])
+        entry = result.setdefault(bucket, {stage: 0 for stage in ALL_STAGES})
+        entry["total"] = entry.get("total", 0)
+        stage = r["current_stage"]
+        if stage in entry:
+            entry[stage] += 1
+        entry["total"] += 1
+
+    return result
+
+
+def get_conversion_funnel_trend(months=6, date_from=None, date_to=None):
+    """
+    (v2.12) Report #5 — Conversion Funnel Over Time, admin-only.
+    Month-over-month cohort: of the leads that FIRST entered Prospect
+    in a given month (earliest activity_log 'stage_change' row with
+    new_value='Prospect' for that cls_id), what % have SINCE reached
+    Opportunity, and what % have SINCE reached Site Visited (as of
+    right now — not "by end of that month").
+
+    IMPORTANT CAVEAT: activity_log 'stage_change' rows are only
+    written by the CRM app's own update_lead_stage() — see this
+    section's HONESTY NOTE above. Sell.do-driven stage moves (the
+    majority, during parallel-run) leave no activity_log trail, so
+    months before the team's CRM adoption matured will show few or
+    zero cohort entries here — a real gap in the data, not a bug.
+    Read this report as "conversion rate for stage moves made inside
+    the CRM," trending toward completeness as parallel-run continues.
+
+    date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings. When
+    BOTH given, the month bucket list is built from that explicit
+    range instead of "the `months` trailing calendar months from
+    today" — so picking "This Month" naturally yields one row, a wider
+    custom range yields however many months it spans. When either is
+    omitted, `months` governs the window exactly as before (unchanged
+    default behavior).
+
+    Returns a list of dicts, oldest month first:
+        [{"month": "2026-02", "entered_prospect": 12,
+          "reached_opportunity": 5, "reached_site_visited": 2,
+          "opportunity_rate": 41.7, "site_visited_rate": 16.7}, ...]
+    """
+    conn = _connect()
+    try:
+        first_prospect = conn.execute("""
+            SELECT cls_id, MIN(created_at) AS entered_at
+            FROM activity_log
+            WHERE activity_type = 'stage_change' AND new_value = 'Prospect'
+            GROUP BY cls_id
+        """).fetchall()
+
+        cls_ids = [r["cls_id"] for r in first_prospect]
+        current_stages = {}
+        if cls_ids:
+            placeholders = ",".join("?" * len(cls_ids))
+            stage_rows = conn.execute(
+                f"SELECT cls_id, current_stage FROM leads WHERE cls_id IN ({placeholders})",
+                cls_ids
+            ).fetchall()
+            current_stages = {r["cls_id"]: r["current_stage"] for r in stage_rows}
+    finally:
+        conn.close()
+
+    OPPORTUNITY_PLUS = ("Opportunity", "Site Visited", "Booked")
+    SITE_VISITED_PLUS = ("Site Visited", "Booked")
+
+    months_list = []
+    if date_from and date_to:
+        cursor = datetime.strptime(date_from, "%Y-%m-%d").replace(day=1)
+        end_cursor = datetime.strptime(date_to, "%Y-%m-%d").replace(day=1)
+        while cursor <= end_cursor:
+            months_list.append(cursor.strftime("%Y-%m"))
+            cursor = (cursor + timedelta(days=32)).replace(day=1)
+    else:
+        cursor = datetime.now().replace(day=1)
+        for _ in range(months):
+            months_list.append(cursor.strftime("%Y-%m"))
+            cursor = (cursor - timedelta(days=1)).replace(day=1)
+        months_list.reverse()
+
+    buckets = {m: {"entered_prospect": 0, "reached_opportunity": 0, "reached_site_visited": 0}
+               for m in months_list}
+
+    for r in first_prospect:
+        month = (r["entered_at"] or "")[:7]
+        if month not in buckets:
+            continue
+        buckets[month]["entered_prospect"] += 1
+        stage = current_stages.get(r["cls_id"])
+        if stage in OPPORTUNITY_PLUS:
+            buckets[month]["reached_opportunity"] += 1
+        if stage in SITE_VISITED_PLUS:
+            buckets[month]["reached_site_visited"] += 1
+
+    result = []
+    for m in months_list:
+        b = buckets[m]
+        entered = b["entered_prospect"]
+        result.append({
+            "month": m,
+            "entered_prospect": entered,
+            "reached_opportunity": b["reached_opportunity"],
+            "reached_site_visited": b["reached_site_visited"],
+            "opportunity_rate": round(b["reached_opportunity"] / entered * 100, 1) if entered else 0.0,
+            "site_visited_rate": round(b["reached_site_visited"] / entered * 100, 1) if entered else 0.0,
+        })
+    return result
+
+
+def get_followup_hit_rate(owner=None, date_from=None, date_to=None):
+    """
+    (v2.12) Report #6 — Follow-up / Site-Visit Hit Rate. Of every
+    scheduled follow_up/site_visit row, how many ended completed/
+    conducted vs cancelled vs are still open-and-overdue ("missed",
+    computed live the SAME way get_due_today() does — see that
+    function's docstring for why "missed" is never a stored value) vs
+    still open-and-upcoming.
+
+    owner : scope to one salesperson's OWNED leads (joins to
+            leads.lead_owner). None = everyone.
+
+    date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings, default
+    None (existing behavior, unchanged — every row, all-time). When
+    both given, scopes to rows whose scheduled_at falls in that range
+    — "of what was scheduled during this period, how did it turn out."
+
+    Returns {"site_visits": {...}, "follow_ups": {...}}, each inner
+    dict: {completed, cancelled, missed, upcoming, total} (site_visits
+    also gets a "no_show" key — its own terminal status, distinct from
+    a still-open "missed" row).
+    """
+    now = _now()
+    conn = _connect()
+    try:
+        def _tally(table, done_status):
+            query = f"""
+                SELECT t.status, t.scheduled_at
+                FROM {table} t JOIN leads l ON l.cls_id = t.cls_id
+            """
+            clauses = []
+            params = []
+            if owner:
+                clauses.append("l.lead_owner = ?")
+                params.append(owner)
+            if date_from and date_to:
+                clauses.append("substr(t.scheduled_at, 1, 10) BETWEEN ? AND ?")
+                params.extend([date_from, date_to])
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+            rows = conn.execute(query, params).fetchall()
+            tally = {"completed": 0, "cancelled": 0, "missed": 0, "upcoming": 0, "total": 0}
+            for r in rows:
+                tally["total"] += 1
+                if r["status"] == done_status:
+                    tally["completed"] += 1
+                elif r["status"] == "cancelled":
+                    tally["cancelled"] += 1
+                elif r["status"] == "scheduled":
+                    if r["scheduled_at"] and r["scheduled_at"] < now:
+                        tally["missed"] += 1
+                    else:
+                        tally["upcoming"] += 1
+                # else: 'no_show' (site_visits only) — tallied separately below
+            return tally
+
+        site_visits = _tally("site_visits", "conducted")
+        no_show_query = """
+            SELECT COUNT(*) c FROM site_visits t JOIN leads l ON l.cls_id = t.cls_id
+            WHERE t.status = 'no_show'
+        """
+        no_show_params = []
+        if owner:
+            no_show_query += " AND l.lead_owner = ?"
+            no_show_params.append(owner)
+        if date_from and date_to:
+            no_show_query += " AND substr(t.scheduled_at, 1, 10) BETWEEN ? AND ?"
+            no_show_params.extend([date_from, date_to])
+        site_visits["no_show"] = conn.execute(no_show_query, no_show_params).fetchone()["c"]
+
+        follow_ups = _tally("follow_ups", "completed")
+        return {"site_visits": site_visits, "follow_ups": follow_ups}
+    finally:
+        conn.close()
+
+
+def get_lost_reason_breakdown(date_from=None, date_to=None):
+    """
+    (v2.12) Report #7 — Lost/Unqualified Reason Breakdown, admin-only.
+    Groups CURRENTLY Lost/Unqualified leads by (current_stage,
+    stage_reason). Data-driven, not hardcoded to UNQUALIFIED_REASONS/
+    LOST_REASONS — a lead marked Lost under the older LOST_REASONS
+    codes (see that list's PAUSED docstring) still has its real
+    stage_reason value and shows up here under its own code, exactly
+    as it does in leads_filter_screen()'s reason dropdown.
+
+    Only reflects leads' CURRENT reason — stage_reason is cleared the
+    moment a lead moves OUT of Lost/Unqualified (see update_lead_
+    stage()'s docstring), so a lead that was Lost and later reopened
+    to Prospect does not appear here. The full historical reason still
+    lives in that lead's activity_log regardless.
+
+    date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings, default
+    None (existing behavior, unchanged — every currently Lost/
+    Unqualified lead, regardless of when). When both given, scopes to
+    leads whose stage_updated_at (best available proxy for "when it
+    became Lost/Unqualified" — there's no dedicated timestamp per
+    reason) falls in that range.
+
+    Returns a list of dicts sorted by count desc:
+        [{"stage": "Lost", "reason": "Budget does not match", "count": 8}, ...]
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT current_stage AS stage,
+                   COALESCE(NULLIF(TRIM(stage_reason), ''), '(no reason recorded)') AS reason,
+                   COUNT(*) c
+            FROM leads
+            WHERE current_stage IN ('Lost', 'Unqualified')
+        """
+        params = []
+        if date_from and date_to:
+            query += " AND substr(stage_updated_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        query += " GROUP BY current_stage, reason ORDER BY c DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [{"stage": r["stage"], "reason": r["reason"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def get_score_distribution(owner=None):
+    """
+    (v2.12) Report #8 — Lead Score Distribution, by salesperson.
+    Wraps the existing compute_lead_scores() (called exactly as it
+    already is elsewhere, unmodified) over every lead in scope, then
+    buckets by band and lead_owner.
+
+    owner : scope to one salesperson (their row only). None = every
+            owner (admin/manager view) — a cross-salesperson table is
+            inherent to "by salesperson"; app.py's route decides who's
+            allowed to pass owner=None, this function just obeys
+            whatever it's given.
+
+    Returns a list of dicts, one per owner (+ "Unassigned" bucket),
+    sorted by total desc:
+        [{"owner": "Elohar", "Hot": 3, "Warm": 5, "Cold": 2, "total": 10}, ...]
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT cls_id, COALESCE(NULLIF(TRIM(lead_owner), ''), 'Unassigned') AS owner
+            FROM leads
+        """
+        params = []
+        if owner:
+            query += " WHERE lead_owner = ?"
+            params.append(owner)
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    cls_ids = [r["cls_id"] for r in rows]
+    scores = compute_lead_scores(cls_ids)
+
+    by_owner = {}
+    for r in rows:
+        o = r["owner"]
+        bucket = by_owner.setdefault(o, {"owner": o, "Hot": 0, "Warm": 0, "Cold": 0, "total": 0})
+        band = scores.get(r["cls_id"], {}).get("band", "Cold")
+        bucket[band] += 1
+        bucket["total"] += 1
+
+    result = list(by_owner.values())
+    result.sort(key=lambda r: r["total"], reverse=True)
+    return result
+
+
+def get_first_response_time(months=6, date_from=None, date_to=None):
+    """
+    (v2.12) Report #10 — First-Response Time, admin-only. For every
+    lead, time from cls_created_at to its EARLIEST activity_log row of
+    any type (the first time a human touched it), bucketed by the
+    lead's creation month. Leads with zero activity_log rows ever are
+    counted separately as "no_response_yet" per month, not silently
+    dropped or averaged in as infinite.
+
+    date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings. When
+    BOTH given, the month bucket list is built from that explicit
+    range instead of "the `months` trailing calendar months from
+    today" — same treatment as get_conversion_funnel_trend(). When
+    either is omitted, `months` governs the window exactly as before.
+
+    Returns a list of dicts, oldest month first:
+        [{"month": "2026-02", "leads": 40, "responded": 36,
+          "no_response_yet": 4, "avg_hours": 3.2, "median_hours": 1.1}, ...]
+    (avg_hours/median_hours are None for a month with zero responded
+    leads, never a division-by-zero crash or a misleading 0.0.)
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT l.cls_id, l.cls_created_at, MIN(a.created_at) AS first_activity
+            FROM leads l LEFT JOIN activity_log a ON a.cls_id = l.cls_id
+            GROUP BY l.cls_id
+        """).fetchall()
+    finally:
+        conn.close()
+
+    months_list = []
+    if date_from and date_to:
+        cursor = datetime.strptime(date_from, "%Y-%m-%d").replace(day=1)
+        end_cursor = datetime.strptime(date_to, "%Y-%m-%d").replace(day=1)
+        while cursor <= end_cursor:
+            months_list.append(cursor.strftime("%Y-%m"))
+            cursor = (cursor + timedelta(days=32)).replace(day=1)
+    else:
+        cursor = datetime.now().replace(day=1)
+        for _ in range(months):
+            months_list.append(cursor.strftime("%Y-%m"))
+            cursor = (cursor - timedelta(days=1)).replace(day=1)
+        months_list.reverse()
+
+    buckets = {m: {"leads": 0, "responded": 0, "no_response_yet": 0, "hours": []} for m in months_list}
+
+    for r in rows:
+        month = (r["cls_created_at"] or "")[:7]
+        if month not in buckets:
+            continue
+        b = buckets[month]
+        b["leads"] += 1
+        if not r["first_activity"]:
+            b["no_response_yet"] += 1
+            continue
+        try:
+            created = datetime.strptime(r["cls_created_at"], "%Y-%m-%d %H:%M:%S")
+            first = datetime.strptime(r["first_activity"], "%Y-%m-%d %H:%M:%S")
+            hours = max(0.0, (first - created).total_seconds() / 3600)
+            b["hours"].append(hours)
+            b["responded"] += 1
+        except (ValueError, TypeError):
+            pass  # malformed/legacy timestamp — skip this lead's timing, still counted in "leads"
+
+    result = []
+    for m in months_list:
+        b = buckets[m]
+        hours_list = sorted(b["hours"])
+        avg_hours = round(sum(hours_list) / len(hours_list), 1) if hours_list else None
+        median_hours = round(hours_list[len(hours_list) // 2], 1) if hours_list else None
+        result.append({
+            "month": m,
+            "leads": b["leads"],
+            "responded": b["responded"],
+            "no_response_yet": b["no_response_yet"],
+            "avg_hours": avg_hours,
+            "median_hours": median_hours,
+        })
+    return result
+
+
+def get_owner_workload(owner=None):
+    """
+    (v2.12) Report #11 — Owner-wise Workload. Open leads (current_
+    stage not in a closed-out state) and open follow-ups/site-visits
+    (status='scheduled') per salesperson, right now.
+
+    "Open lead" = current_stage NOT IN ('Booked', 'Lost', 'Unqualified')
+    — Re Assigned counts as open (it's mid-handoff, not closed out). A
+    NULL current_stage (a Meta lead Job A has fetched but Job B hasn't
+    yet Sell.do-synced a stage onto) counts as open too — it's
+    unambiguously unresolved, and SQL's NOT IN would otherwise exclude
+    it silently via three-valued NULL logic, undercounting exactly the
+    freshest, most attention-needing leads.
+
+    owner : scope to one salesperson (their row only). None = every
+            owner (+ "Unassigned"), sorted by open_leads desc.
+
+    Returns a list of dicts:
+        [{"owner": "Elohar", "open_leads": 14, "open_follow_ups": 5,
+          "open_site_visits": 2}, ...]
+    """
+    CLOSED_STAGES = ("Booked", "Lost", "Unqualified")
+    conn = _connect()
+    try:
+        lead_query = f"""
+            SELECT COALESCE(NULLIF(TRIM(lead_owner), ''), 'Unassigned') AS owner, COUNT(*) c
+            FROM leads
+            WHERE current_stage IS NULL OR current_stage NOT IN ({','.join('?' * len(CLOSED_STAGES))})
+        """
+        lead_params = list(CLOSED_STAGES)
+        if owner:
+            lead_query += " AND lead_owner = ?"
+            lead_params.append(owner)
+        lead_query += " GROUP BY owner"
+        lead_rows = conn.execute(lead_query, lead_params).fetchall()
+
+        def _open_count(table):
+            query = f"""
+                SELECT COALESCE(NULLIF(TRIM(l.lead_owner), ''), 'Unassigned') AS owner, COUNT(*) c
+                FROM {table} t JOIN leads l ON l.cls_id = t.cls_id
+                WHERE t.status = 'scheduled'
+            """
+            params = []
+            if owner:
+                query += " AND l.lead_owner = ?"
+                params.append(owner)
+            query += " GROUP BY owner"
+            return {r["owner"]: r["c"] for r in conn.execute(query, params).fetchall()}
+
+        followup_counts = _open_count("follow_ups")
+        visit_counts = _open_count("site_visits")
+    finally:
+        conn.close()
+
+    merged = {}
+    for r in lead_rows:
+        merged.setdefault(r["owner"], {"owner": r["owner"], "open_leads": 0, "open_follow_ups": 0, "open_site_visits": 0})
+        merged[r["owner"]]["open_leads"] = r["c"]
+    for o, c in followup_counts.items():
+        merged.setdefault(o, {"owner": o, "open_leads": 0, "open_follow_ups": 0, "open_site_visits": 0})
+        merged[o]["open_follow_ups"] = c
+    for o, c in visit_counts.items():
+        merged.setdefault(o, {"owner": o, "open_leads": 0, "open_follow_ups": 0, "open_site_visits": 0})
+        merged[o]["open_site_visits"] = c
+
+    result = list(merged.values())
+    result.sort(key=lambda r: r["open_leads"], reverse=True)
+    return result
+
+
+def get_call_activity(owner=None, days=7, date_from=None, date_to=None):
+    """
+    (v2.12) Report #12 — Call Activity Report. Calls tapped
+    (log_call_tap()'s activity_type='call_attempted' rows — a tap-
+    count proxy, same honest limit get_todays_activity_counts()'s
+    docstring already explains; no duration/connected-status until
+    v1.0 Telephony) per lead per salesperson, over the trailing `days`
+    window.
+
+    owner : scope to one salesperson's OWNED leads. None = everyone.
+    days  : trailing window size — pass 1 for "today", 7 for "this week".
+            Ignored when date_from/date_to are both given.
+
+    date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings, default
+    None (existing `days`-trailing-window behavior unchanged). When
+    both given, scopes to activity_log rows in that explicit range
+    instead — powers report_view's universal date-range picker, which
+    replaced this report's old daily/weekly toggle.
+
+    Returns a list of dicts, one per lead with >=1 call in the window,
+    sorted by call_count desc:
+        [{"cls_id": "...", "crm_lead_no": 42, "full_name": "...",
+          "lead_owner": "Elohar", "call_count": 3,
+          "last_call_at": "2026-07-16 11:03:00"}, ...]
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT l.cls_id, l.crm_lead_no, l.full_name, l.lead_owner,
+                   COUNT(*) AS call_count, MAX(a.created_at) AS last_call_at
+            FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
+            WHERE a.activity_type = 'call_attempted'
+        """
+        params = []
+        if date_from and date_to:
+            query += " AND substr(a.created_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        else:
+            since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            query += " AND a.created_at >= ?"
+            params.append(since)
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        query += " GROUP BY l.cls_id ORDER BY call_count DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# REPORTS v0.6.1 — NEW functions (all additive, v2.13)
+# ─────────────────────────────────────────────────────────────
+
+# Mirrors get_todays_activity_counts()'s local METRIC_MAP exactly, kept
+# as a SEPARATE module-level constant rather than refactoring that
+# function to share it — get_todays_activity_counts() has 3 existing
+# call sites (dashboard_today(), the old Daily Scorecard builder) and
+# is left byte-for-byte untouched here, per the "never touch unless
+# explicitly flagged" rule.
+ACTIVITY_METRIC_MAP = {
+    "call_attempted":        "calls_attempted",
+    "site_visit_scheduled":  "site_visits_created",
+    "site_visit_conducted":  "site_visits_conducted",
+    "follow_up_scheduled":   "follow_ups_created",
+    "follow_up_completed":   "follow_ups_completed",
+    "note":                  "notes_added",
+}
+
+
+def get_activity_counts_range(actor_email=None, date_from=None, date_to=None):
+    """
+    (v2.13) Date-range generalization of get_todays_activity_counts() —
+    same METRIC_MAP-driven shape (calls_attempted, site_visits_created,
+    site_visits_conducted, follow_ups_created, follow_ups_completed,
+    notes_added), but scoped to an explicit [date_from, date_to]
+    'YYYY-MM-DD' window instead of hardcoded "today". Powers the
+    renamed Salesperson Scorecard report (Requirement 5) and the
+    Weekly Site Visits Conducted/Scheduled reports (W2/W3) — all three
+    read "who did X, attributed via activity_log.actor" rather than
+    site_visits/follow_ups.created_by, because created_by only ever
+    records who SCHEDULED the row, not who conducted/completed it (the
+    schema has no separate "conducted by" column — see v2.13 changelog
+    for the schema check that confirmed this).
+
+    date_from/date_to are required (both 'YYYY-MM-DD'); this is a new
+    function with no prior all-time behavior to preserve, so unlike
+    the modified functions above there's no None-default fallback.
+
+    Returns the same fixed-key dict shape as get_todays_activity_counts().
+    """
+    result = {key: 0 for key in ACTIVITY_METRIC_MAP.values()}
+    conn = _connect()
+    try:
+        types_placeholder = ", ".join("?" for _ in ACTIVITY_METRIC_MAP)
+        params = [date_from, date_to] + list(ACTIVITY_METRIC_MAP.keys())
+        query = f"""
+            SELECT activity_type, COUNT(*) c
+            FROM activity_log
+            WHERE substr(created_at, 1, 10) BETWEEN ? AND ?
+              AND activity_type IN ({types_placeholder})
+        """
+        if actor_email:
+            query += " AND actor = ?"
+            params.append(actor_email)
+        query += " GROUP BY activity_type"
+
+        rows = conn.execute(query, params).fetchall()
+        for r in rows:
+            result[ACTIVITY_METRIC_MAP[r["activity_type"]]] = r["c"]
+        return result
+    finally:
+        conn.close()
+
+
+def get_leads_received_by_owner(date_from, date_to, owner=None):
+    """
+    (v2.13) Weekly Report W1 — Weekly Leads Received. Count of leads
+    whose cls_created_at falls in [date_from, date_to], grouped by
+    their CURRENT lead_owner.
+
+    Uses current lead_owner, not "who it was assigned to at creation
+    time" — this schema doesn't track assignment history separately
+    from the lead's current state (same limitation every other owner-
+    grouped report in this file already has). A lead created this week
+    and reassigned since would show under its new owner, not its
+    original one — an approximation, same honesty class as the
+    Reengagement report's caveat.
+
+    owner : scope to one salesperson's row only. None = every owner
+            (+ "Unassigned"), admin/manager view.
+
+    Returns a list of dicts sorted by count desc:
+        [{"owner": "Elohar", "count": 7}, ...]
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT COALESCE(NULLIF(TRIM(lead_owner), ''), 'Unassigned') AS owner, COUNT(*) c
+            FROM leads
+            WHERE substr(cls_created_at, 1, 10) BETWEEN ? AND ?
+        """
+        params = [date_from, date_to]
+        if owner:
+            query += " AND lead_owner = ?"
+            params.append(owner)
+        query += " GROUP BY owner ORDER BY c DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [{"owner": r["owner"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+_STAGE_BREAKDOWN_GROUP_COLUMNS = {
+    "owner": "lead_owner",
+    "project": "project",
+    "campaign": "campaign",
+}
+
+
+def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None):
+    """
+    (v2.13) Lead Stage Analysis report — views A (by owner), B (by
+    project), and C (by campaign), plus Campaign Insights C2 (Campaign
+    Stage Distribution, which is exactly view C reused). One
+    parameterized function rather than three near-identical ones,
+    since the only thing that differs between the views is which
+    column to GROUP BY on top of the same leads x current_stage cross-
+    tab already used by get_project_pipeline() — group_by is checked
+    against a fixed whitelist (_STAGE_BREAKDOWN_GROUP_COLUMNS), never
+    interpolated from unchecked input, so there's no injection surface
+    even though it ends up in the SQL text.
+
+    group_by : "owner" | "project" | "campaign"
+    date_from/date_to : optional 'YYYY-MM-DD' strings. When both
+        given, scopes to leads whose cls_created_at falls in range.
+        None = every lead regardless of creation date.
+    owner : scope to one salesperson's owned leads (independent of
+        group_by — e.g. group_by="project" with owner set shows one
+        salesperson's own project-wise breakdown).
+
+    "project" grouping runs raw project values through the existing
+    get_project_bucket() collapse; "campaign" grouping runs raw
+    campaign values through _campaign_bucket() (blank/NULL ->
+    "Unknown/Manual" — see this module's v2.13 HONESTY NOTE on why
+    that bucket currently holds almost everything).
+
+    Returns a dict keyed by group value, each value a dict keyed by
+    every stage in ALL_STAGES (all present, 0 if empty) plus "total":
+        {"Elohar": {"Incoming": 4, ..., "total": 37}, ...}
+    """
+    if group_by not in _STAGE_BREAKDOWN_GROUP_COLUMNS:
+        raise ValueError(f"get_stage_breakdown: unknown group_by {group_by!r}")
+    column = _STAGE_BREAKDOWN_GROUP_COLUMNS[group_by]
+
+    conn = _connect()
+    try:
+        query = f"SELECT {column} AS raw_group, current_stage FROM leads"
+        clauses = []
+        params = []
+        if owner:
+            clauses.append("lead_owner = ?")
+            params.append(owner)
+        if date_from and date_to:
+            clauses.append("substr(cls_created_at, 1, 10) BETWEEN ? AND ?")
+            params.extend([date_from, date_to])
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    result = {}
+    for r in rows:
+        raw = r["raw_group"]
+        if group_by == "project":
+            key = get_project_bucket(raw)
+        elif group_by == "campaign":
+            key = _campaign_bucket(raw)
+        else:
+            key = raw.strip() if raw and raw.strip() else "Unassigned"
+        entry = result.setdefault(key, {stage: 0 for stage in ALL_STAGES})
+        entry["total"] = entry.get("total", 0)
+        stage = r["current_stage"]
+        if stage in entry:
+            entry[stage] += 1
+        entry["total"] += 1
+
+    return result
+
+
+def get_site_visits_by_campaign(date_from=None, date_to=None, owner=None):
+    """
+    (v2.13) Lead Stage Analysis view D, and standalone Campaign
+    Insights C6 (Site Visits by Campaign) — the same underlying data,
+    reused rather than queried twice (Srikanth's call: keep C6 as its
+    own report too, but it reads through this one function).
+
+    Counts EVERY site_visits row (conducted + scheduled + cancelled +
+    no_show — "site visits" as booked activity, not just completed
+    ones, matching the requirement's "conducted + scheduled" wording)
+    whose created_at falls in [date_from, date_to] when given, grouped
+    by the owning lead's campaign bucket (_campaign_bucket()).
+
+    Returns a list of dicts sorted by count desc:
+        [{"campaign": "Unknown/Manual", "count": 41}, ...]
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT l.campaign AS raw_campaign, COUNT(*) c
+            FROM site_visits t JOIN leads l ON l.cls_id = t.cls_id
+        """
+        clauses = []
+        params = []
+        if date_from and date_to:
+            clauses.append("substr(t.created_at, 1, 10) BETWEEN ? AND ?")
+            params.extend([date_from, date_to])
+        if owner:
+            clauses.append("l.lead_owner = ?")
+            params.append(owner)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " GROUP BY raw_campaign"
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    by_campaign = {}
+    for r in rows:
+        key = _campaign_bucket(r["raw_campaign"])
+        by_campaign[key] = by_campaign.get(key, 0) + r["c"]
+
+    result = [{"campaign": k, "count": v} for k, v in by_campaign.items()]
+    result.sort(key=lambda r: r["count"], reverse=True)
+    return result
+
+
+def get_campaign_lead_volume(date_from=None, date_to=None):
+    """
+    (v2.13) Campaign Insights C1 — Campaign Lead Volume. Simple lead
+    count per campaign bucket, scoped to cls_created_at in
+    [date_from, date_to] when given.
+
+    Returns a list of dicts sorted by count desc:
+        [{"campaign": "Unknown/Manual", "count": 118}, ...]
+    """
+    conn = _connect()
+    try:
+        query = "SELECT campaign AS raw_campaign FROM leads"
+        params = []
+        if date_from and date_to:
+            query += " WHERE substr(cls_created_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    by_campaign = {}
+    for r in rows:
+        key = _campaign_bucket(r["raw_campaign"])
+        by_campaign[key] = by_campaign.get(key, 0) + 1
+
+    result = [{"campaign": k, "count": v} for k, v in by_campaign.items()]
+    result.sort(key=lambda r: r["count"], reverse=True)
+    return result
+
+
+def get_campaign_performance(date_from=None, date_to=None):
+    """
+    (v2.13) Campaign Insights C3 — Campaign Conversion Rate. Exactly
+    get_source_performance()'s logic, grouped by campaign bucket
+    instead of source. Returns the same shape so cls_reports.py can
+    shape both with near-identical code:
+        [{"campaign": "Unknown/Manual", "total": 118, "prospect_plus": 40,
+          "opportunity_plus": 18, "site_visited_plus": 6, "booked": 1,
+          "lost_unqualified": 22}, ...]
+    """
+    PROSPECT_PLUS = ("Prospect", "Opportunity", "Site Visited", "Booked")
+    OPPORTUNITY_PLUS = ("Opportunity", "Site Visited", "Booked")
+    SITE_VISITED_PLUS = ("Site Visited", "Booked")
+
+    conn = _connect()
+    try:
+        query = "SELECT campaign AS raw_campaign, current_stage, COUNT(*) c FROM leads"
+        params = []
+        if date_from and date_to:
+            query += " WHERE substr(cls_created_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        query += " GROUP BY raw_campaign, current_stage"
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    by_campaign = {}
+    for r in rows:
+        camp = _campaign_bucket(r["raw_campaign"])
+        bucket = by_campaign.setdefault(camp, {
+            "campaign": camp, "total": 0, "prospect_plus": 0,
+            "opportunity_plus": 0, "site_visited_plus": 0,
+            "booked": 0, "lost_unqualified": 0,
+        })
+        stage, c = r["current_stage"], r["c"]
+        bucket["total"] += c
+        if stage in PROSPECT_PLUS:
+            bucket["prospect_plus"] += c
+        if stage in OPPORTUNITY_PLUS:
+            bucket["opportunity_plus"] += c
+        if stage in SITE_VISITED_PLUS:
+            bucket["site_visited_plus"] += c
+        if stage == "Booked":
+            bucket["booked"] += c
+        if stage in ("Lost", "Unqualified"):
+            bucket["lost_unqualified"] += c
+
+    result = list(by_campaign.values())
+    result.sort(key=lambda r: r["total"], reverse=True)
+    return result
+
+
+def get_campaign_lost_reasons(date_from=None, date_to=None):
+    """
+    (v2.13) Campaign Insights C4 — Campaign Lost Reason Breakdown.
+    Exactly get_lost_reason_breakdown()'s logic, grouped by campaign
+    bucket in addition to (kept as its own column, not merged with)
+    reason, so cls_reports.py can render either a campaign x reason
+    table or a grouped bar chart.
+
+    Returns a list of dicts sorted by count desc:
+        [{"campaign": "Unknown/Manual", "reason": "Budget does not match",
+          "count": 8}, ...]
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT campaign AS raw_campaign,
+                   COALESCE(NULLIF(TRIM(stage_reason), ''), '(no reason recorded)') AS reason,
+                   COUNT(*) c
+            FROM leads
+            WHERE current_stage IN ('Lost', 'Unqualified')
+        """
+        params = []
+        if date_from and date_to:
+            query += " AND substr(stage_updated_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        query += " GROUP BY raw_campaign, reason"
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    by_key = {}
+    for r in rows:
+        camp = _campaign_bucket(r["raw_campaign"])
+        key = (camp, r["reason"])
+        by_key[key] = by_key.get(key, 0) + r["c"]
+
+    result = [{"campaign": c, "reason": rsn, "count": cnt} for (c, rsn), cnt in by_key.items()]
+    result.sort(key=lambda r: r["count"], reverse=True)
+    return result
+
+
+def get_campaign_response_time(date_from=None, date_to=None):
+    """
+    (v2.13) Campaign Insights C5 — Campaign First-Response Time.
+    Exactly get_first_response_time()'s per-lead hours-to-first-
+    activity computation, grouped by campaign bucket instead of month.
+
+    date_from/date_to : optional 'YYYY-MM-DD' strings scoping to leads
+        whose cls_created_at falls in range. None = every lead.
+
+    Returns a list of dicts sorted by leads desc:
+        [{"campaign": "Unknown/Manual", "leads": 118, "responded": 95,
+          "no_response_yet": 23, "avg_hours": 4.1, "median_hours": 1.8}, ...]
+    (avg_hours/median_hours are None for a campaign with zero responded
+    leads, never a division-by-zero crash or a misleading 0.0.)
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT l.campaign AS raw_campaign, l.cls_created_at,
+                   MIN(a.created_at) AS first_activity
+            FROM leads l LEFT JOIN activity_log a ON a.cls_id = l.cls_id
+        """
+        params = []
+        if date_from and date_to:
+            query += " WHERE substr(l.cls_created_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        query += " GROUP BY l.cls_id"
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    buckets = {}
+    for r in rows:
+        camp = _campaign_bucket(r["raw_campaign"])
+        b = buckets.setdefault(camp, {"leads": 0, "responded": 0, "no_response_yet": 0, "hours": []})
+        b["leads"] += 1
+        if not r["first_activity"]:
+            b["no_response_yet"] += 1
+            continue
+        try:
+            created = datetime.strptime(r["cls_created_at"], "%Y-%m-%d %H:%M:%S")
+            first = datetime.strptime(r["first_activity"], "%Y-%m-%d %H:%M:%S")
+            hours = max(0.0, (first - created).total_seconds() / 3600)
+            b["hours"].append(hours)
+            b["responded"] += 1
+        except (ValueError, TypeError):
+            pass  # malformed/legacy timestamp — skip this lead's timing, still counted in "leads"
+
+    result = []
+    for camp, b in buckets.items():
+        hours_list = sorted(b["hours"])
+        avg_hours = round(sum(hours_list) / len(hours_list), 1) if hours_list else None
+        median_hours = round(hours_list[len(hours_list) // 2], 1) if hours_list else None
+        result.append({
+            "campaign": camp,
+            "leads": b["leads"],
+            "responded": b["responded"],
+            "no_response_yet": b["no_response_yet"],
+            "avg_hours": avg_hours,
+            "median_hours": median_hours,
+        })
+    result.sort(key=lambda r: r["leads"], reverse=True)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────

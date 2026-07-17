@@ -361,6 +361,7 @@
   </div>
   <a href="{{ url_for('dashboard') }}" class="drawer-link {{ 'active' if request.endpoint == 'dashboard' }}">Dashboard</a>
   <a href="{{ url_for('leads_list') }}" class="drawer-link {{ 'active' if request.endpoint in ['leads_list', 'lead_detail'] }}">Leads</a>
+  <a href="{{ url_for('reports_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['reports_home', 'report_view'] }}">Reports</a>
   {% if current_user.role == 'admin' %}
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin'] }}">Settings</a>
   {% endif %}

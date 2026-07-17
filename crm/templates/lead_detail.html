@@ -1,4 +1,26 @@
-{# lead_detail.html v6 (July 2026) — manager role (app.py v0.9.5).
+{# lead_detail.html v7 (July 2026) — Srikanth's decisions 3/4/5 (APX
+   v0.5 polish, requires cls_db.py v2.11 / app.py v0.9.6):
+     • decision 3 — Lost picker: no template change needed here; it
+       already renders whatever lost_reasons the route passes (see
+       LOST_REASONS var below), and the route now passes cls_db.
+       STAGE_REASON_LISTS["Lost"] (== UNQUALIFIED_REASONS) instead of
+       cls_db.LOST_REASONS.
+     • decision 4 — FIX: the 'stage_change' activity branch dropped
+       a.description (the Lost/Unqualified reason + notes text
+       update_lead_stage() already wrote there), so it never showed in
+       Activity History even though the data existed. Fixed by
+       appending {% if a.description %} — {{ a.description }}{% endif %},
+       matching every other activity type's render pattern. Only
+       surfaces the reason for stage changes from this point forward —
+       rows written before this fix have no description to backfill if
+       an older cls_db.py never wrote one, but this deploy's cls_db.py
+       (v2.11) confirmed it already does, so no rows are actually
+       affected.
+     • decision 5 — alternate phone: Contact info card shows a tel:
+       link for lead.alt_phone_norm when present; ACTIONS > Edit name/
+       phone gained an "Alternate phone" input.
+
+   v6 (unmodified, carried over) — manager role (app.py v0.9.5).
    Splits the old single `restricted` flag into two:
      • restricted — contact-info-ONLY view (unchanged; salesperson on a
        lead that isn't theirs). Managers are NOT restricted.
@@ -201,6 +223,12 @@
           Correcting this can affect future Sell.do sync matching for this lead — every change is logged below in Activity History.
         </div>
 
+        <div class="field-label" style="margin-top:10px;">Alternate phone</div>
+        <input type="tel" name="alt_phone_raw" value="{{ lead.alt_phone_raw or '' }}" placeholder="e.g. +91 98765 43210 (optional)">
+        <div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">
+          Storage/display only — never used for Sell.do sync matching.
+        </div>
+
         <div class="write-form-row">
           <button type="submit" class="btn btn-primary">Save</button>
         </div>
@@ -335,6 +363,14 @@
             {% endif %}
           </div>
         </div>
+        {% if lead.alt_phone_norm %}
+        <div>
+          <div class="field-label">Alternate phone</div>
+          <div class="field-value">
+            <a href="tel:+91{{ lead.alt_phone_norm }}" onclick="logCallTap();">{{ lead.alt_phone_norm|fmt_phone }}</a>
+          </div>
+        </div>
+        {% endif %}
         <div>
           <div class="field-label">Email</div>
           <div class="field-value">{{ lead.email_raw or '—' }}</div>
@@ -451,7 +487,7 @@
           {% if a.activity_type == 'note' %}
             <div>📝 {{ a.description }}</div>
           {% elif a.activity_type == 'stage_change' %}
-            <div>🔄 Stage changed: <strong>{{ a.prev_value }}</strong> → <strong>{{ a.new_value }}</strong></div>
+            <div>🔄 Stage changed: <strong>{{ a.prev_value }}</strong> → <strong>{{ a.new_value }}</strong>{% if a.description %} — {{ a.description }}{% endif %}</div>
           {% elif a.activity_type == 'assignment_change' %}
             <div>👤 Reassigned: <strong>{{ a.prev_value or '(unassigned)' }}</strong> → <strong>{{ a.new_value }}</strong></div>
           {% elif a.activity_type == 'site_visit_scheduled' %}

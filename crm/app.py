@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.9.5
+Version : 0.9.8
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,83 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.9.8  (July 2026) — APX v0.6.1 Reports Enhancements. Requires cls_db.py
+  v2.13, cls_reports.py v1.1, NEW report_view_charts.html, NEW
+  templates/_report_date_picker.html partial, reports.html/
+  report_view.html both extended (categorized landing page, date-range
+  picker).
+
+  MODIFIED /reports — now renders categories (cls_reports.
+  visible_categories()) instead of a flat card list.
+
+  MODIFIED /reports/<report_id> and /reports/<report_id>/export.xlsx —
+  the old daily/weekly `period` query param + has_period_toggle branch
+  is GONE, replaced by the universal date-range picker: both routes now
+  call cls_reports.resolve_date_range(report_id, request.args) to get
+  (date_from, date_to) — either the caller's ?from=&to=, or the report's
+  own configured default — and thread it into build_report()/
+  export_to_excel() identically, so Excel always matches what's on
+  screen. report_view() picks report_view.html or report_view_charts.html
+  per the report's "template" key.
+
+  NEW /reports/daily-scorecard 301-redirect to /reports/salesperson-
+  scorecard (the renamed report's new slug — see cls_reports.py's
+  changelog) — same treatment for the old export.xlsx path — so any
+  bookmark from before this version keeps working.
+
+v0.9.7  (July 2026) — APX v0.6 Reports section. Requires cls_db.py v2.12,
+  NEW crm/cls_reports.py, NEW reports.html + report_view.html, base.html
+  gained one nav-drawer link.
+
+  NEW "ROUTES — REPORTS" section (3 routes): /reports (landing, cards
+  from cls_reports.visible_reports() — admin_only reports are simply
+  absent from a salesperson's list, not shown greyed-out), /reports/
+  <report_id> (one generic table view for all 12 reports, admin_only
+  reports 404 for a non-oversight login — enforced here, not just hidden
+  on the landing page), /reports/<report_id>/export.xlsx (openpyxl
+  download, same 403 gate). PDF export is browser print-to-PDF
+  (report_view.html's own <style media="print">) — no server-side PDF
+  library, per Srikanth's confirmed call.
+
+  All three routes reuse cls_db.can_view_all_leads(role) for the
+  admin_only gate — the SAME predicate every other oversight check in
+  this file already uses, not a new auth pattern.
+
+v0.9.6  (July 2026) — APX v0.5 polish pass, 5 independent changes
+  (Srikanth's decisions 1-5). Requires cls_db.py v2.11, lead_detail.html
+  v7, dashboard.html v0.7, due_list.html v0.4, NEW new_enquiries_list.html.
+
+  - decision 1: NEW /new-enquiries route (new_enquiries_list()) — calls
+    cls_db.get_new_enquiries_leads() (v2.11's redefined criteria:
+    current_stage='Incoming' AND zero activity_log rows) and renders a
+    NEW new_enquiries_list.html (mirrors reengaged_list.html). dashboard()
+    itself is UNCHANGED — it already called get_new_enquiries_count(),
+    which cls_db.py v2.11 redefined; only the template's card link moved
+    from a generic leads_list filter to this new route so the tap-through
+    list matches the count.
+
+  - decision 2: label-only, no route/app.py change — dashboard.html and
+    due_list.html rename their own headers.
+
+  - decision 3: leads_filter_screen()'s stage_reasons is now a DEDUPED
+    union (dict.fromkeys()) of LOST_REASONS + UNQUALIFIED_REASONS, so
+    leads already marked Lost under an old code stay filterable.
+    lead_detail()'s lost_reasons kwarg now passes cls_db.STAGE_REASON_
+    LISTS["Lost"] (== UNQUALIFIED_REASONS) instead of cls_db.LOST_
+    REASONS — the ONLY behavior change; unqualified_reasons is untouched.
+
+  - decision 4: template-only fix (lead_detail.html) — no app.py change.
+    update_lead_stage() already wrote the reason into the stage_change
+    activity_log row's description; confirmed during Step 0 verification,
+    so no cls_db.py write-path change was needed either.
+
+  - decision 5: update_contact_info_route() now also passes alt_phone_raw
+    from the form to cls_db.update_lead_contact_info() (new optional
+    kwarg, cls_db.py v2.11). new_lead() OPTIONALLY sets alt_phone_raw via
+    a second update_lead_contact_info() call after creation succeeds,
+    same pattern already used there for property details — create_
+    manual_lead()'s own signature is untouched.
+
 v0.9.5  (July 2026) — NEW 'manager' role (oversight tier). Requires
   cls_db.py v2.9, lead_detail.html v6, dashboard_today.html + leads_
   filter.html (renamed template flags), settings_users.html (badge),
@@ -470,13 +547,14 @@ from functools import wraps
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, send_from_directory, abort, flash
+    session, send_from_directory, send_file, abort, flash
 )
 
 # ── Import cls_db.py the same way every other CLS job does ──
 BASE_DIR = r"C:\CLS"
 sys.path.insert(0, BASE_DIR)
 import cls_db  # noqa: E402  (must follow the sys.path insert above)
+import cls_reports  # v0.6 — Reports section; lives in crm/ alongside app.py, no sys.path change needed
 
 
 # ─────────────────────────────────────────────────────────────
@@ -796,6 +874,100 @@ def reengaged_list():
     return render_template("reengaged_list.html", leads=leads)
 
 
+@app.route("/new-enquiries")
+@login_required
+def new_enquiries_list():
+    """
+    v0.9.6 — filtered list behind the dashboard's redefined New
+    Enquiries card (cls_db.py v2.11 decision 1). Same criteria as
+    get_new_enquiries_count(): current_stage='Incoming' AND zero
+    activity_log rows — genuinely untouched since arrival.
+    """
+    leads = cls_db.get_new_enquiries_leads()
+    return render_template("new_enquiries_list.html", leads=leads)
+
+
+# ─────────────────────────────────────────────────────────────
+# ROUTES — REPORTS (v0.6)
+# ─────────────────────────────────────────────────────────────
+# All 12 reports share these 3 routes — report-specific behavior lives
+# entirely in cls_reports.py's REPORTS config, not here. The admin_only
+# gate is enforced HERE (403, not just a hidden landing-page card) so a
+# salesperson can't reach a Team report by typing/bookmarking its URL.
+
+def _report_or_404(report_id):
+    if report_id not in cls_reports.REPORTS_BY_ID:
+        abort(404)
+    return cls_reports.REPORTS_BY_ID[report_id]
+
+
+def _check_report_access(meta, user):
+    if meta["admin_only"] and not cls_db.can_view_all_leads(user["role"]):
+        abort(403, description="This report is for admins/managers only.")
+
+
+@app.route("/reports")
+@login_required
+def reports_home():
+    user = cls_db.get_user_by_id(session["user_id"])
+    return render_template(
+        "reports.html",
+        categories=cls_reports.visible_categories(user),
+        is_oversight=cls_db.can_view_all_leads(user["role"]),
+    )
+
+
+@app.route("/reports/daily-scorecard")
+@login_required
+def report_view_old_scorecard_redirect():
+    return redirect(url_for("report_view", report_id="salesperson-scorecard", **request.args), code=301)
+
+
+@app.route("/reports/daily-scorecard/export.xlsx")
+@login_required
+def report_export_old_scorecard_redirect():
+    return redirect(url_for("report_export_excel", report_id="salesperson-scorecard", **request.args), code=301)
+
+
+@app.route("/reports/<report_id>")
+@login_required
+def report_view(report_id):
+    user = cls_db.get_user_by_id(session["user_id"])
+    meta = _report_or_404(report_id)
+    _check_report_access(meta, user)
+
+    date_from, date_to = cls_reports.resolve_date_range(report_id, request.args)
+    report = cls_reports.build_report(report_id, user, date_from=date_from, date_to=date_to)
+    return render_template(
+        meta.get("template", "report_view.html"),
+        report=report,
+        quick_select_links=cls_reports.quick_select_links(),
+        now=datetime.now().strftime("%Y-%m-%d %H:%M"),
+    )
+
+
+@app.route("/reports/<report_id>/export.xlsx")
+@login_required
+def report_export_excel(report_id):
+    user = cls_db.get_user_by_id(session["user_id"])
+    meta = _report_or_404(report_id)
+    _check_report_access(meta, user)
+
+    date_from, date_to = cls_reports.resolve_date_range(report_id, request.args)
+    report = cls_reports.build_report(report_id, user, date_from=date_from, date_to=date_to)
+    try:
+        buf = cls_reports.export_to_excel(report)
+    except RuntimeError as e:
+        flash(str(e), "error")
+        return redirect(url_for("report_view", report_id=report_id, **request.args))
+
+    filename = report["title"].lower().replace(" ", "-").replace("/", "-") + ".xlsx"
+    return send_file(
+        buf, as_attachment=True, download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # ROUTES — LEADS (read-only)
 # ─────────────────────────────────────────────────────────────
@@ -967,7 +1139,12 @@ def leads_filter_screen():
         stages=cls_db.ALL_STAGES,
         projects=sorted(set(cls_db.PROJECT_BUCKETS.values())),
         sort_labels=sort_labels,
-        stage_reasons=cls_db.LOST_REASONS + cls_db.UNQUALIFIED_REASONS,
+        # v0.9.6 — DEDUPED union (Srikanth's decision 3): the Lost picker
+        # now shows UNQUALIFIED_REASONS (see lead_detail() below), but
+        # leads already marked Lost under an OLD LOST_REASONS code must
+        # stay filterable here, so this filter list still covers both.
+        # dict.fromkeys() dedupes while preserving first-seen order.
+        stage_reasons=list(dict.fromkeys(cls_db.LOST_REASONS + cls_db.UNQUALIFIED_REASONS)),
         source_options=cls_db.SOURCE_OPTIONS,
         sub_source_options=cls_db.MANUAL_SOURCE_OPTIONS,
         budget_options=cls_db.BUDGET_BRACKETS,
@@ -1098,7 +1275,13 @@ def lead_detail(cls_id):
         configurations=cls_db.CONFIGURATIONS,
         budget_options=cls_db.BUDGET_BRACKETS,
         facing_options=cls_db.FACING_OPTIONS,
-        lost_reasons=cls_db.LOST_REASONS,
+        # v0.9.6 — Srikanth's decision 3: the Lost picker now shows the
+        # SAME list as Unqualified (cls_db.STAGE_REASON_LISTS["Lost"] is
+        # UNQUALIFIED_REASONS), not cls_db.LOST_REASONS. LOST_REASONS
+        # stays defined/PAUSED in cls_db.py for historical filtering only
+        # (see leads_filter_screen() above) — it's just no longer what
+        # renders here.
+        lost_reasons=cls_db.STAGE_REASON_LISTS["Lost"],
         unqualified_reasons=cls_db.UNQUALIFIED_REASONS,
         # These feed WRITE controls (reassign dropdown, property-detail
         # editor), so gate on can_write — a manager viewing a non-owned
@@ -1348,6 +1531,15 @@ def new_lead():
                     property_type=", ".join(property_type_list) if property_type_list else None,
                     facing=", ".join(facing_list) if facing_list else None,
                 )
+            # v0.9.6 — optional alternate phone (decision 5, OPTIONAL part).
+            # Same "second call, existing function" pattern as the property
+            # details block above — create_manual_lead() itself stays
+            # focused on identity/dedup fields only.
+            alt_phone_raw = request.form.get("alt_phone_raw") or None
+            if alt_phone_raw:
+                cls_db.update_lead_contact_info(
+                    cls_id, actor=user["email"], alt_phone_raw=alt_phone_raw
+                )
             flash("Lead created.", "success")
             return redirect(url_for("lead_detail", cls_id=cls_id))
         flash(result, "error")
@@ -1431,6 +1623,7 @@ def update_contact_info_route(cls_id):
         cls_id, actor=user["email"],
         full_name=request.form.get("full_name") or None,
         phone_raw=request.form.get("phone_raw") or None,
+        alt_phone_raw=request.form.get("alt_phone_raw") or None,
     )
     flash(message, "success" if ok else "error")
     return redirect(url_for("lead_detail", cls_id=cls_id))
