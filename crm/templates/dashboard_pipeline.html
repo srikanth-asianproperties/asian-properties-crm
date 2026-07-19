@@ -1,9 +1,15 @@
-{# dashboard_pipeline.html (v0.6) — "Pipeline Analysis" tab. Non-
+{# dashboard_pipeline.html (v0.7) — "Pipeline Analysis" tab. Non-
    pressable tiles only (Srikanth's explicit spec). "Total Leads" is
    today's new intake; every stage tile below it is a LIVE snapshot of
    where leads sit right now — deliberately different definitions,
    labelled so the difference isn't hidden. See cls_db.
-   get_stage_snapshot_counts()'s docstring for the reasoning. #}
+   get_stage_snapshot_counts()'s docstring for the reasoning.
+
+   v0.7 — Tiles migrated from ad-hoc .card markup to the shared
+   .stat-card / .stat-card-grid classes (base.html v0.12). "Total
+   Leads" keeps its blue emphasis border, now applied via an inline
+   border-color/border-width override on the .stat-card element
+   itself. Intro paragraph unchanged. #}
 {% extends "base.html" %}
 {% block title %}Pipeline Analysis{% endblock %}
 
@@ -14,17 +20,22 @@
   of where leads stand right now, not a historical figure for today specifically.
 </p>
 
-<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top:16px;">
+<div class="stat-card-grid">
 
-  <div class="card" style="text-align:center; padding:18px 12px; border:2px solid var(--blue, #2D6CDF);">
-    <div style="font-size:30px; font-weight:700; color:var(--blue);">{{ leads_today }}</div>
-    <div class="field-label" style="margin-top:4px;">Total Leads <span style="text-transform:none; font-weight:400;">(today)</span></div>
+  <div class="stat-card" style="border-color: var(--blue); border-width: 2px;">
+    <div class="stat-card-header">Total Leads</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-blue">{{ leads_today }}</div>
+      <div class="stat-card-caption">Today's new intake</div>
+    </div>
   </div>
 
   {% for stage in all_stages %}
-  <div class="card" style="text-align:center; padding:18px 12px;">
-    <div style="font-size:30px; font-weight:700; color:var(--ink);">{{ stage_counts[stage] }}</div>
-    <div class="field-label" style="margin-top:4px;">{{ stage }}</div>
+  <div class="stat-card">
+    <div class="stat-card-header">{{ stage }}</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-ink">{{ stage_counts[stage] }}</div>
+    </div>
   </div>
   {% endfor %}
 

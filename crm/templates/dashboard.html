@@ -1,7 +1,14 @@
-{# dashboard.html (v0.10) — "Stats" tab of the 3-tab dashboard (Stats /
+{# dashboard.html (v0.11) — "Stats" tab of the 3-tab dashboard (Stats /
    Today's Performance / Pipeline Analysis). Bottom tab bar unchanged
    from v0.6. Kept at the /dashboard route/filename so every existing
    url_for('dashboard') link elsewhere still works.
+
+   v0.11 — Stat tiles migrated from ad-hoc .card markup to the shared
+   .stat-card / .stat-card-grid classes (base.html v0.12), matching the
+   Sell.do-style card theme. Captions, links, and colors unchanged —
+   presentation only. "Tomorrow's Reminders" tile and the "Reengaged"
+   note below the grid are untouched by design (different visual
+   pattern).
 
    v0.10 — NEW "Tomorrow's Reminders" tile, placed after the existing
    due-today card row. Links to /reminders/site-visits-tomorrow;
@@ -22,30 +29,38 @@
 {% block content %}
 <h2 style="margin-top:0;">Stats</h2>
 
-<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;">
+<div class="stat-card-grid">
 
-  <a href="{{ url_for('new_enquiries_list') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
-    <div class="field-label">New Enquiries</div>
-    <div style="font-size:34px; font-weight:700; color:var(--green); margin:6px 0;">{{ new_enquiries_count }}</div>
-    <div style="font-size:13px; color:var(--ink-soft);">Untouched since arrival &middot; tap to view</div>
+  <a href="{{ url_for('new_enquiries_list') }}" class="stat-card">
+    <div class="stat-card-header">New Enquiries</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-green">{{ new_enquiries_count }}</div>
+      <div class="stat-card-caption">Untouched since arrival &middot; tap to view</div>
+    </div>
   </a>
 
-  <a href="{{ url_for('reengaged_list') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
-    <div class="field-label">Reengaged <span style="text-transform:none; font-weight:400;">(approx.)</span></div>
-    <div style="font-size:34px; font-weight:700; color:var(--blue); margin:6px 0;">{{ reengaged_count }}</div>
-    <div style="font-size:13px; color:var(--ink-soft);">Directional, not exact &middot; tap to view</div>
+  <a href="{{ url_for('reengaged_list') }}" class="stat-card">
+    <div class="stat-card-header">Reengaged <span style="text-transform:none; font-weight:400;">(approx.)</span></div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-blue">{{ reengaged_count }}</div>
+      <div class="stat-card-caption">Directional, not exact &middot; tap to view</div>
+    </div>
   </a>
 
-  <a href="{{ url_for('due_list', kind='follow_up') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
-    <div class="field-label">MISSED FOLLOWUPS</div>
-    <div style="font-size:34px; font-weight:700; color:var(--amber); margin:6px 0;">{{ follow_up_due_count }}</div>
-    <div style="font-size:13px; color:var(--ink-soft);">Due today or overdue &middot; tap to view</div>
+  <a href="{{ url_for('due_list', kind='follow_up') }}" class="stat-card">
+    <div class="stat-card-header">MISSED FOLLOWUPS</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-amber">{{ follow_up_due_count }}</div>
+      <div class="stat-card-caption">Due today or overdue &middot; tap to view</div>
+    </div>
   </a>
 
-  <a href="{{ url_for('due_list', kind='site_visit') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
-    <div class="field-label">MISSED SITE VISITS</div>
-    <div style="font-size:34px; font-weight:700; color:var(--amber); margin:6px 0;">{{ site_visit_due_count }}</div>
-    <div style="font-size:13px; color:var(--ink-soft);">Due today or overdue &middot; tap to view</div>
+  <a href="{{ url_for('due_list', kind='site_visit') }}" class="stat-card">
+    <div class="stat-card-header">MISSED SITE VISITS</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-amber">{{ site_visit_due_count }}</div>
+      <div class="stat-card-caption">Due today or overdue &middot; tap to view</div>
+    </div>
   </a>
 
 </div>

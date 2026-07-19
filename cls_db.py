@@ -2,11 +2,17 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.15
+Version : 2.16
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.16 (July 2026) — APX v0.7 UI Polish, Search by Lead ID.
+  get_leads_page() search now also matches on crm_lead_no. Accepts
+  'APX-183' or plain '183'. No schema change. No other function
+  touched. v2.14 (reminders) and v2.15 (impersonation) are unaffected
+  by this change.
+
 v2.15 (July 2026) — APX v0.11 Admin "View as" (impersonation). ALL
   additive — no existing table, function, or call site touched. All
   the session-swap logic and dual-attribution (the actor= string
@@ -1806,9 +1812,18 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
             params.append(owner)
 
         if has_active_search:
-            like = f"%{search.strip().lower()}%"
-            where.append("(LOWER(full_name) LIKE ? OR phone_norm LIKE ? OR email_norm LIKE ?)")
-            params.extend([like, like, like])
+            search_term = search.strip().lower()
+            # v2.16 — accept "APX-183" or just "183" for lead ID search.
+            # The prefix is a UI convention only; crm_lead_no is stored as
+            # a bare INTEGER, so strip the prefix before matching.
+            if search_term.startswith("apx-"):
+                search_term = search_term[4:].strip()
+            like = f"%{search_term}%"
+            where.append(
+                "(LOWER(full_name) LIKE ? OR phone_norm LIKE ? "
+                "OR email_norm LIKE ? OR CAST(crm_lead_no AS TEXT) LIKE ?)"
+            )
+            params.extend([like, like, like, like])
 
         if date_from:
             where.append("cls_created_at >= ?")

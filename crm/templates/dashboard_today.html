@@ -1,8 +1,14 @@
-{# dashboard_today.html (v0.6) — "Today's Performance" tab. Small,
+{# dashboard_today.html (v0.7) — "Today's Performance" tab. Small,
    non-pressable number tiles only (Srikanth's explicit spec — these
    are NOT clickable cards like the Stats tab). Deliberately no "talk
    time" tile — see the banner below and cls_db.get_todays_activity_
-   counts()'s docstring for why. #}
+   counts()'s docstring for why.
+
+   v0.7 — Tiles migrated from ad-hoc .card markup to the shared
+   .stat-card / .stat-card-grid classes (base.html v0.12). Still <div>,
+   not <a> — non-pressable is a presentation-only difference from the
+   Stats tab, same shell. No caption text (stat-card-caption omitted).
+   Intro paragraph and outro banner unchanged. #}
 {% extends "base.html" %}
 {% block title %}Today's Performance{% endblock %}
 
@@ -16,31 +22,41 @@
   {% endif %}
 </p>
 
-<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top:16px;">
+<div class="stat-card-grid">
 
-  <div class="card" style="text-align:center; padding:18px 12px;">
-    <div style="font-size:30px; font-weight:700; color:var(--ink);">{{ perf.calls_attempted }}</div>
-    <div class="field-label" style="margin-top:4px;">Calls Made</div>
+  <div class="stat-card">
+    <div class="stat-card-header">Calls Made</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-ink">{{ perf.calls_attempted }}</div>
+    </div>
   </div>
 
-  <div class="card" style="text-align:center; padding:18px 12px;">
-    <div style="font-size:30px; font-weight:700; color:var(--blue);">{{ perf.site_visits_created }}</div>
-    <div class="field-label" style="margin-top:4px;">Site Visits Scheduled</div>
+  <div class="stat-card">
+    <div class="stat-card-header">Site Visits Scheduled</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-blue">{{ perf.site_visits_created }}</div>
+    </div>
   </div>
 
-  <div class="card" style="text-align:center; padding:18px 12px;">
-    <div style="font-size:30px; font-weight:700; color:var(--green);">{{ perf.site_visits_conducted }}</div>
-    <div class="field-label" style="margin-top:4px;">Site Visits Conducted</div>
+  <div class="stat-card">
+    <div class="stat-card-header">Site Visits Conducted</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-green">{{ perf.site_visits_conducted }}</div>
+    </div>
   </div>
 
-  <div class="card" style="text-align:center; padding:18px 12px;">
-    <div style="font-size:30px; font-weight:700; color:var(--blue);">{{ perf.follow_ups_created }}</div>
-    <div class="field-label" style="margin-top:4px;">Follow-ups Scheduled</div>
+  <div class="stat-card">
+    <div class="stat-card-header">Follow-ups Scheduled</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-blue">{{ perf.follow_ups_created }}</div>
+    </div>
   </div>
 
-  <div class="card" style="text-align:center; padding:18px 12px;">
-    <div style="font-size:30px; font-weight:700; color:var(--green);">{{ perf.follow_ups_completed }}</div>
-    <div class="field-label" style="margin-top:4px;">Follow-ups Completed</div>
+  <div class="stat-card">
+    <div class="stat-card-header">Follow-ups Completed</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-green">{{ perf.follow_ups_completed }}</div>
+    </div>
   </div>
 
 </div>
