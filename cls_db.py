@@ -2,11 +2,59 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.16
+Version : 2.17
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.17 (July 2026) — Sell.do historical CSV bulk import (Option B).
+  ALL additive — no existing table, function, or call site touched.
+  No schema change: every column the import needs (selldo_lead_id,
+  crm_lead_no, campaign, last_fired_stage, last_fired_at, drip_paused,
+  drip_enrolled_at, match_tier, source) already existed.
+
+  NEW "SELL.DO HISTORICAL CSV BULK IMPORT" section (after
+  upsert_selldo_lead()): import_selldo_csv_row(csv_row, commit=False)
+  — match-or-insert ONE row from a one-time historical Sell.do CSV
+  export — plus one small companion function,
+  log_duplicate_selldo_import(cls_id, old_selldo_id, description), so
+  the CLI script's own phone-based dedupe (collapsing rows that share
+  a phone number, keeping only the latest as primary) can still record
+  each older Sell.do ID onto the primary lead's activity_log without
+  ever opening sqlite3 directly (per CLS's centralized-DB-access
+  rule) — it does not participate in matching/insert logic at all,
+  it only appends one 'duplicate_selldo_id_from_import' activity_log
+  row. Both are called only by the new cls_import_selldo_csv.py (NOT
+  part of the A->B->C->D pipeline, NOT selldo_to_cls.py — Job B
+  remains untouched and was neither read nor modified for this
+  change).
+
+  Matching reuses find_match() unchanged (tiered phone+email > phone >
+  email), preceded by a Tier-0 check for an existing exact
+  selldo_lead_id match. New inserts pin last_fired_stage/last_fired_at
+  to the historical stage/time and drip_paused=1 with drip_enrolled_at
+  pinned to the historical time, so an imported row can never trigger
+  a CAPI re-fire or a drip email storm. Matched (already-known) leads
+  get ONLY crm_lead_no overwritten (Option B — the Sell.do CSV's own
+  Lead's Id becomes the lead's permanent crm_lead_no) plus
+  selldo_lead_id/campaign backfilled ONLY if currently NULL/empty
+  (Srikanth's Q3/Q4 decisions) — current_stage, stage_updated_at,
+  project, lead_owner, contact fields, cls_created_at, fire state, and
+  every drip_* column on a matched lead are left exactly as Job B's
+  own sync last set them.
+
+  Every insert/update writes matching activity_log rows
+  (imported_from_selldo / lead_id_changed_from_import /
+  backfilled_from_selldo_import) via the existing _log_activity()
+  helper — no new audit table. Idempotent: re-running the same CSV
+  does not create duplicate leads (a previously-imported row is found
+  again via its own selldo_lead_id on Tier 0) or duplicate
+  imported_from_selldo activity rows (explicit activity_log guard
+  before any insert, belt-and-suspenders on top of the Tier-0 match).
+
+  No schema change to any EXISTING table. No existing function's
+  behavior changed.
+
 v2.16 (July 2026) — APX v0.7 UI Polish, Search by Lead ID.
   get_leads_page() search now also matches on crm_lead_no. Accepts
   'APX-183' or plain '183'. No schema change. No other function
@@ -4082,6 +4130,337 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
               now, now))
         conn.commit()
         return cls_id, True   # brand-new row counts as a change
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# SELL.DO HISTORICAL CSV BULK IMPORT  —  one-time backfill (v2.17)
+# ─────────────────────────────────────────────────────────────
+# Called ONLY by cls_import_selldo_csv.py, a one-time, unscheduled
+# operator-run script — NOT part of the A->B->C->D pipeline and NOT
+# selldo_to_cls.py (Job B, which stays untouched). This is Option B:
+# the historical Sell.do CSV export's own "Lead's Id" becomes each
+# matched/inserted row's crm_lead_no (displayed as "APX-<id>"), so
+# CLS's friendly IDs line up with Sell.do's for the whole backfilled
+# history.
+#
+# cls_import_selldo_csv.py owns ALL CSV-format-specific work (reading
+# the file with pandas, replacing pandas NaN artefacts with "", trying
+# multiple "Created At" date formats, and deduping rows that share a
+# phone number). By the time a row dict reaches this function, its
+# values are already clean strings and "Created At" is already
+# normalized to CLS's own "%Y-%m-%d %H:%M:%S" format (the same one
+# _now() produces) — this function does not parse dates itself, only
+# validates that what it was given is usable.
+#
+# csv_row is a dict keyed by the CSV's own column names:
+#   "Lead's Id", "First Name", "Last Name", "Lead Stage", "Phone",
+#   "Email", "Projects", "First-Campaign", "Attended By", "Created At"
+# ("Lead Status", "Secondary Phones", "Secondary Emails",
+#  "First-Sub Source", "Attended By Sales Id" are read by the CLI
+#  script but never passed in here — nothing downstream needs them.)
+
+def import_selldo_csv_row(csv_row, commit=False):
+    """
+    Match-or-insert ONE historical Sell.do CSV row against cls.db.
+
+    commit=False (default): read-only. Runs the exact same matching
+    logic and returns what WOULD happen, without writing anything —
+    this is what powers the CLI script's dry-run preview.
+    commit=True: performs the write (INSERT or UPDATE) + activity_log
+    entries described below, inside one transaction.
+
+    MATCHING (identical tiered order as find_match() — do not invent
+    a new one):
+      1. A CLS row already has this EXACT selldo_lead_id -> match.
+      2. Else find_match(phone_norm, email_norm) tiered:
+         phone+email > phone > email.
+      3. Else -> this is a brand-new lead -> insert.
+
+    NEW INSERT sets every guardrail field Srikanth specified so the
+    imported row can NEVER trigger a CAPI storm (last_fired_stage /
+    last_fired_at pinned to the historical stage/time) or an email
+    storm (drip_paused=1, drip_enrolled_at pinned to the historical
+    time): source='selldo_only', match_tier='imported'.
+
+    MATCHED existing row: ONLY crm_lead_no (Option B), and selldo_lead_id
+    / campaign IF currently NULL/empty (backfill-only, never overwrite —
+    Srikanth's Q3/Q4 decisions). current_stage, stage_updated_at,
+    project, lead_owner, phone/email, full_name, cls_created_at,
+    last_fired_stage/at, and every drip_* column are left exactly as
+    they are — Job B's own sync remains the system of record for those
+    on a matched (already-CRM-known) lead.
+
+    IDEMPOTENT: running the same CSV twice must not create duplicate
+    leads or duplicate activity_log rows. The normal path already
+    guarantees this — a row inserted once carries its selldo_lead_id
+    forward, so tier-1 matching finds it on every later run and takes
+    the update path instead of inserting again. As an explicit extra
+    guard (belt-and-suspenders, per spec) the insert path also checks
+    activity_log for a pre-existing 'imported_from_selldo' row for this
+    exact selldo_lead_id before writing a new one, in case a row's
+    selldo_lead_id/phone/email were later edited out from under it.
+
+    Returns a dict:
+        {
+            "action":  "insert" | "update_id_only" | "update_id_and_backfill"
+                      | "skip_duplicate_phone_in_csv" | "skip_invalid_row",
+            "cls_id":  <str or None>,
+            "prev_crm_lead_no": <int or None>,
+            "new_crm_lead_no":  <int or None>,
+            "backfilled": [<str>, ...],   # column names actually backfilled
+            "warnings":   [<str>, ...],   # human-readable diagnostics
+        }
+
+    NOTE: "skip_duplicate_phone_in_csv" is never returned by this
+    function itself — that classification happens one level up, in
+    cls_import_selldo_csv.py's own dedup pass, BEFORE it ever calls
+    this function for the older duplicate rows. It's listed here only
+    because it's part of the same result-shape contract the CLI script
+    uses for every row (real or synthesized) in its summary counts.
+    """
+    warnings = []
+
+    def _invalid(msg):
+        warnings.append(msg)
+        return {
+            "action": "skip_invalid_row",
+            "cls_id": None,
+            "prev_crm_lead_no": None,
+            "new_crm_lead_no": None,
+            "backfilled": [],
+            "warnings": warnings,
+        }
+
+    sid = str(csv_row.get("Lead's Id") or "").strip()
+    if sid.endswith(".0"):        # pandas float artefact, same rule as norm_phone
+        sid = sid[:-2]
+    raw_sid = csv_row.get("Lead's Id")
+    try:
+        crm_lead_no_val = int(sid)
+    except (TypeError, ValueError):
+        return _invalid("Unusable/non-numeric Lead's Id: {!r}".format(raw_sid))
+
+    created_at_str = str(csv_row.get("Created At") or "").strip()
+    try:
+        datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return _invalid(f"Unparseable/missing Created At: {created_at_str!r}")
+
+    first_name = str(csv_row.get("First Name") or "").strip()
+    last_name  = str(csv_row.get("Last Name") or "").strip()
+    full_name  = f"{first_name} {last_name}".strip()
+
+    lead_stage = str(csv_row.get("Lead Stage") or "").strip()
+
+    phone_raw = str(csv_row.get("Phone") or "").strip()
+    email_raw = str(csv_row.get("Email") or "").strip()
+    phone_norm = norm_phone(phone_raw)
+    email_norm = norm_email(email_raw)
+    if not phone_norm and not email_norm:
+        return _invalid("No usable phone or email to match on")
+
+    projects_raw = str(csv_row.get("Projects") or "").strip()
+    project = None
+    if projects_raw:
+        parts = [p.strip() for p in projects_raw.split(",") if p.strip()]
+        if parts:
+            project = parts[0]
+        if len(parts) > 1:
+            warnings.append(f"Multiple projects in CSV ('{projects_raw}'); used first value '{project}'")
+
+    campaign = str(csv_row.get("First-Campaign") or "").strip() or None
+    lead_owner = str(csv_row.get("Attended By") or "").strip()  # verbatim, no lookup (Srikanth's Q4 decision)
+
+    now = _now()
+    conn = _connect()
+    try:
+        # ── Tier 0: exact same selldo_lead_id already in CLS -> match ──
+        existing = conn.execute(
+            "SELECT cls_id FROM leads WHERE selldo_lead_id=? LIMIT 1", (sid,)
+        ).fetchone()
+
+        if not existing:
+            match_cls_id, _tier = find_match(conn, phone_norm, email_norm)
+            if match_cls_id:
+                existing = conn.execute(
+                    "SELECT cls_id FROM leads WHERE cls_id=?", (match_cls_id,)
+                ).fetchone()
+
+        # ═══════════════════════════════════════════════════════
+        # MATCHED — an existing CLS lead is this same person
+        # ═══════════════════════════════════════════════════════
+        if existing:
+            cls_id = existing["cls_id"]
+            row = conn.execute(
+                "SELECT crm_lead_no, selldo_lead_id, campaign FROM leads WHERE cls_id=?",
+                (cls_id,)
+            ).fetchone()
+            prev_crm_lead_no = row["crm_lead_no"]
+            backfilled = []
+            will_backfill_selldo_id = not row["selldo_lead_id"]
+            will_backfill_campaign  = (not row["campaign"]) and campaign
+
+            if commit:
+                conn.execute(
+                    "UPDATE leads SET crm_lead_no=?, cls_updated_at=? WHERE cls_id=?",
+                    (crm_lead_no_val, now, cls_id)
+                )
+                if prev_crm_lead_no != crm_lead_no_val:
+                    _log_activity(
+                        conn, cls_id, "lead_id_changed_from_import", "cls_import_selldo_csv",
+                        prev_value=(str(prev_crm_lead_no) if prev_crm_lead_no is not None else None),
+                        new_value=str(crm_lead_no_val),
+                        description="Lead ID changed to match Sell.do ID from imported_from_selldo",
+                    )
+
+                if will_backfill_selldo_id:
+                    conn.execute("UPDATE leads SET selldo_lead_id=? WHERE cls_id=?", (sid, cls_id))
+                    backfilled.append("selldo_lead_id")
+                    _log_activity(
+                        conn, cls_id, "backfilled_from_selldo_import", "cls_import_selldo_csv",
+                        prev_value=None, new_value=sid,
+                        description="Backfilled selldo_lead_id from Sell.do CSV import",
+                    )
+                elif row["selldo_lead_id"] != sid:
+                    warnings.append(
+                        f"Existing selldo_lead_id {row['selldo_lead_id']} differs from CSV {sid}; kept existing"
+                    )
+
+                if will_backfill_campaign:
+                    conn.execute("UPDATE leads SET campaign=? WHERE cls_id=?", (campaign, cls_id))
+                    backfilled.append("campaign")
+                    _log_activity(
+                        conn, cls_id, "backfilled_from_selldo_import", "cls_import_selldo_csv",
+                        prev_value=None, new_value=campaign,
+                        description="Backfilled campaign from Sell.do CSV import",
+                    )
+
+                conn.commit()
+            else:
+                if will_backfill_selldo_id:
+                    backfilled.append("selldo_lead_id")
+                elif row["selldo_lead_id"] != sid:
+                    warnings.append(
+                        f"Existing selldo_lead_id {row['selldo_lead_id']} differs from CSV {sid}; would keep existing"
+                    )
+                if will_backfill_campaign:
+                    backfilled.append("campaign")
+
+            action = "update_id_and_backfill" if backfilled else "update_id_only"
+            return {
+                "action": action,
+                "cls_id": cls_id,
+                "prev_crm_lead_no": prev_crm_lead_no,
+                "new_crm_lead_no": crm_lead_no_val,
+                "backfilled": backfilled,
+                "warnings": warnings,
+            }
+
+        # ═══════════════════════════════════════════════════════
+        # NO MATCH — brand-new historical lead -> insert
+        # ═══════════════════════════════════════════════════════
+
+        # Idempotency guard (belt-and-suspenders — see docstring): if
+        # activity_log already shows this exact selldo_lead_id was
+        # imported before, do NOT insert a second lead for it.
+        already = conn.execute(
+            "SELECT cls_id FROM activity_log "
+            "WHERE activity_type='imported_from_selldo' AND new_value=? LIMIT 1",
+            (sid,)
+        ).fetchone()
+        if already:
+            warnings.append(
+                f"activity_log already shows selldo_lead_id {sid} imported previously "
+                f"(cls_id={already['cls_id']}); skipping duplicate insert"
+            )
+            return {
+                "action": "skip_invalid_row",
+                "cls_id": already["cls_id"],
+                "prev_crm_lead_no": None,
+                "new_crm_lead_no": None,
+                "backfilled": [],
+                "warnings": warnings,
+            }
+
+        if not commit:
+            return {
+                "action": "insert",
+                "cls_id": None,
+                "prev_crm_lead_no": None,
+                "new_crm_lead_no": crm_lead_no_val,
+                "backfilled": [],
+                "warnings": warnings,
+            }
+
+        cls_id = str(uuid.uuid4())
+        conn.execute("""
+            INSERT INTO leads (
+                cls_id, leadgen_id, form_id, project, full_name,
+                phone_raw, phone_norm, email_raw, email_norm,
+                selldo_lead_id, current_stage, stage_updated_at, match_tier,
+                last_fired_stage, last_fired_at,
+                source, lead_owner, selldo_url, opportunity_temperature,
+                crm_lead_no, campaign, lead_source_detail,
+                drip_paused, drip_enrolled_at, owner_notified,
+                cls_created_at, cls_updated_at
+            ) VALUES (?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?, ?,?,?,?, ?,?,?, ?,?,?, ?,?)
+        """, (
+            cls_id, None, None, project, full_name,
+            phone_raw, phone_norm, email_raw, email_norm,
+            sid, lead_stage, created_at_str, "imported",
+            lead_stage, created_at_str,
+            "selldo_only", lead_owner, None, None,
+            crm_lead_no_val, campaign, None,
+            1, created_at_str, 1,
+            created_at_str, now,
+        ))
+
+        description = (
+            f"Imported from Sell.do CSV. Sell.do ID: {sid}. "
+            f"Owner: {lead_owner or 'Unassigned'}. "
+            f"Projects raw: {projects_raw}. "
+            f"Stage: {lead_stage}."
+        )
+        _log_activity(
+            conn, cls_id, "imported_from_selldo", "cls_import_selldo_csv",
+            prev_value=None, new_value=sid, description=description,
+        )
+        conn.commit()
+
+        return {
+            "action": "insert",
+            "cls_id": cls_id,
+            "prev_crm_lead_no": None,
+            "new_crm_lead_no": crm_lead_no_val,
+            "backfilled": [],
+            "warnings": warnings,
+        }
+    finally:
+        conn.close()
+
+
+def log_duplicate_selldo_import(cls_id, old_selldo_id, description):
+    """
+    Called by cls_import_selldo_csv.py ONLY, once per older Sell.do ID
+    its own phone-based dedupe collapses into an already imported/
+    matched primary lead. Appends a single 'duplicate_selldo_id_from_
+    import' activity_log row.
+
+    Kept as its own tiny function rather than folded into
+    import_selldo_csv_row() (which is scoped to importing ONE CSV row
+    at a time, and has no reason to know about sibling rows in the
+    same phone group) so the CLI script never needs to open sqlite3
+    directly — per CLS's "all DB access through cls_db.py" rule.
+    """
+    conn = _connect()
+    try:
+        _log_activity(
+            conn, cls_id, "duplicate_selldo_id_from_import", "cls_import_selldo_csv",
+            prev_value=None, new_value=old_selldo_id, description=description,
+        )
+        conn.commit()
     finally:
         conn.close()
 
