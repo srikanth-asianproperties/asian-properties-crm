@@ -1,4 +1,4 @@
-{# leads_filter.html (v0.7) — dedicated filter screen (items 8 of
+{# leads_filter.html (v0.8) — dedicated filter screen (items 8 of
    Srikanth's spec). His spec described a two-pane "list of categories
    on the left, options revealed per category" layout — that's a
    desktop pattern that doesn't fit a phone-width screen, so this
@@ -10,7 +10,20 @@
 
    One GET form, submitted once via "Apply Filters" at the bottom —
    not per-category — so every selection across every category applies
-   together in a single request, same as the old top-bar form did. #}
+   together in a single request, same as the old top-bar form did.
+
+   v0.8 (July 2026) — item 4 of Srikanth's bug-fix batch: Date Range's
+   plain From/To inputs replaced with an 11-option quick-select dropdown
+   (Today / Yesterday / Last 7 days / Last 14 days / Last 30 days /
+   This week / Last week / This month / Last month / Maximum / Custom),
+   mirroring cls_reports.py's QUICK_RANGES pattern (see app.py's
+   DATE_PRESETS). Selecting anything except "Custom" auto-submits the
+   form immediately (Srikanth wants results without a manual Apply
+   click); "Custom" reveals the original From/To date inputs and still
+   requires "Apply Filters", unchanged from before. Old bookmarked URLs
+   with raw date_from/date_to and no date_preset keep working exactly
+   as before — app.py's _parse_lead_filters() detects and labels the
+   matching preset, or shows "Custom" if the dates don't match one. #}
 {% extends "base.html" %}
 {% block title %}Filter Leads{% endblock %}
 
@@ -47,17 +60,26 @@
 
   <div id="filterAccordion">
 
-    {# ── DATE RANGE ── #}
-    <div class="filter-accordion-item{% if filters.date_from or filters.date_to %} open{% endif %}" data-fa="date">
+    {# ── DATE RANGE ── (v0.8: quick-select dropdown, item 4) #}
+    <div class="filter-accordion-item{% if filters.date_preset %} open{% endif %}" data-fa="date">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('date')">
-        <span>Date Range{% if filters.date_from or filters.date_to %}<span class="fa-current"> · set</span>{% endif %}</span>
+        <span>Date Range{% if filters.date_preset %}<span class="fa-current"> · {{ date_preset_labels.get(filters.date_preset, 'Custom') }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <div class="field-label">From</div>
-        <input type="date" name="date_from" value="{{ filters.date_from }}" style="width:100%; margin-bottom:10px;">
-        <div class="field-label">To</div>
-        <input type="date" name="date_to" value="{{ filters.date_to }}" style="width:100%;">
+        <div class="field-label">Quick select</div>
+        <select name="date_preset" id="datePresetSelect" style="width:100%; margin-bottom:10px;" onchange="onDatePresetChange(this)">
+          <option value="" {% if not filters.date_preset %}selected{% endif %}>— Select —</option>
+          {% for key in date_preset_order %}
+          <option value="{{ key }}" {% if filters.date_preset == key %}selected{% endif %}>{{ date_preset_labels[key] }}</option>
+          {% endfor %}
+        </select>
+        <div id="customDateFields" style="{% if filters.date_preset != 'custom' %}display:none;{% endif %}">
+          <div class="field-label">From</div>
+          <input type="date" name="date_from" value="{{ filters.date_from }}" style="width:100%; margin-bottom:10px;">
+          <div class="field-label">To</div>
+          <input type="date" name="date_to" value="{{ filters.date_to }}" style="width:100%;">
+        </div>
       </div>
     </div>
 
@@ -244,6 +266,23 @@ function toggleFA(name){
       item.classList.remove('open');
     }
   });
+}
+
+// v0.8 — item 4: selecting any preset except "Custom" resolves to
+// concrete dates server-side and auto-applies immediately (Srikanth
+// wants results "directly without manually applying dates"). "Custom"
+// just reveals the From/To inputs and waits for the existing
+// "Apply Filters" button, same as before this change.
+function onDatePresetChange(sel){
+  var customBox = document.getElementById('customDateFields');
+  if (sel.value === 'custom') {
+    customBox.style.display = 'block';
+    return;
+  }
+  customBox.style.display = 'none';
+  if (sel.value !== '') {
+    document.getElementById('filterForm').submit();
+  }
 }
 </script>
 {% endblock %}

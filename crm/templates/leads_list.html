@@ -1,8 +1,23 @@
-{# leads_list.html (v0.7) — top filter bar removed per Srikanth's spec.
+{# leads_list.html (v0.8) — top filter bar removed per Srikanth's spec.
    Header is now just "Leads (N)" + Add lead. Filter/Search/Fields
    moved to the bottom icon bar (_leads_list_actionbar.html) — Filter
    and Search open dedicated full-screen panels; Fields stays an
-   in-place popover, just relocated. #}
+   in-place popover, just relocated.
+
+   v0.8 (July 2026) — item 3 (Option A) of Srikanth's bug-fix batch: the
+   "Upd" field now shows stage_updated_at instead of cls_updated_at.
+   ROOT CAUSE (see cls_db.py v2.19's Option B for the source-of-truth
+   companion fix): upsert_selldo_lead() (Job B's per-lead sync call) was
+   setting cls_updated_at=now() on every sync pass, even a true no-op —
+   so "Upd" read as today for every lead regardless of whether anyone
+   had touched it. stage_updated_at only ever moves on a REAL stage
+   change, so it's immune to that bug. TRADE-OFF: stage_updated_at won't
+   reflect non-stage edits (notes, contact/property edits) made in the
+   CRM itself — a lead edited today but with no stage change will still
+   show an older "Upd" date. Ship this (Option A) now for the immediate
+   fix; cls_db.py v2.19 Option B fixes cls_updated_at at the source, so a
+   future version can switch this back to cls_updated_at once Option B
+   has been live long enough to trust. #}
 {% extends "base.html" %}
 {% block title %}Leads{% endblock %}
 
@@ -71,7 +86,7 @@
       <span class="lc-field"><span class="lc-label">Source</span> {{ lead.source or '—' }}</span>
       {% endif %}
       {% if 'updated' in active_fields %}
-      <span class="lc-field"><span class="lc-label">Upd</span> {{ lead.cls_updated_at.split(' ')[0] if lead.cls_updated_at else '—' }}</span>
+      <span class="lc-field"><span class="lc-label">Upd</span> {{ lead.stage_updated_at.split(' ')[0] if lead.stage_updated_at else '—' }}</span>
       {% endif %}
     </div>
   </div>

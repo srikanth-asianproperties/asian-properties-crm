@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.11
+Version : 0.11.1
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,45 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.11.1 (July 2026) — APX bug-fix + scoped-enhancement batch (items 2 and
+  4 of Srikanth's 4-item batch; item 1 is cls_db.py-only, item 3 Option A
+  is leads_list.html-only — see those files' own changelogs). Requires
+  cls_db.py v2.19.
+
+  ITEM 2 — _is_lead_owner_or_admin() now also returns True when
+  cls_db.can_write_any_lead(user["role"]) is True, alongside the existing
+  owner-or-admin check. REVERSES v0.9.5's deliberate manager write
+  restriction: a manager can now write to ANY lead (stage, notes, assign,
+  site visit/follow-up, property/contact edits, call tap), not just their
+  own — flagged to Srikanth as security-relevant, proceeding on his
+  explicit call. Every write route already funnels through
+  _check_lead_ownership -> _is_lead_owner_or_admin, so this ONE function
+  change covers all of them; no route-level changes needed.
+  lead_detail()'s can_write/restricted split (v0.9.5) confirmed to fall
+  out of this naturally — a manager now gets can_write=True on every
+  lead without a separate patch (its explanatory comment updated to say
+  so). Settings, the Team page, lead deletion, and source-editing are
+  UNCHANGED — still admin_required / role=="admin" only, not touched by
+  this constant. activity_log continues to record the ACTUAL acting
+  user, never the lead's owner — unaffected, confirmed still true.
+
+  ITEM 4 — NEW date-range quick-select dropdown on /leads/filter.
+  NEW DATE_PRESETS (+ _dr_* helpers, DATE_PRESET_ORDER, DATE_PRESET_
+  LABELS, _detect_active_date_preset()) near _parse_lead_filters() —
+  mirrors cls_reports.py's QUICK_RANGES/resolve_date_range() naming and
+  structure and the SAME Monday-Sunday week-start convention, but is its
+  own dict here (not imported from cls_reports.py) since the Leads
+  filter needs 11 presets vs Reports' 4 and the two screens are
+  otherwise unrelated — touches fewer files than extending cls_reports.py
+  for a screen it doesn't otherwise serve. cls_db.py needed ZERO changes
+  for this item — it already just takes date_from/date_to strings.
+  _parse_lead_filters() now resolves an incoming date_preset param into
+  concrete dates BEFORE calling cls_db.get_leads_page(), and back-fills
+  filters["date_preset"] (by detection) even for old bookmarked URLs
+  that only carry raw date_from/date_to — full backward compatibility,
+  date_preset is additive, not a replacement. leads_filter_screen() now
+  passes date_preset_order/date_preset_labels to the template.
+
 v0.11  (July 2026) — APX v0.11 Admin "View as" (impersonation), with
   dual-attribution on every write. Requires cls_db.py v2.15.
   settings_users.html extended, base.html extended (impersonation
@@ -610,7 +649,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import (
@@ -1097,6 +1136,134 @@ ALL_LIST_FIELDS = ["phone", "project", "owner", "source", "updated"]
 DEFAULT_LIST_FIELDS = ["phone", "project", "updated"]  # today's existing look
 
 
+# ─────────────────────────────────────────────────────────────
+# LEADS FILTER — DATE RANGE PRESETS  (v0.11.1, item 4 of Srikanth's
+# bug-fix batch)
+# ─────────────────────────────────────────────────────────────
+# Mirrors cls_reports.py's QUICK_RANGES/resolve_date_range() naming and
+# structure (same Monday-Sunday week-start convention, Srikanth's
+# confirmed 2026-07 decision — see cls_reports.py v1.1's changelog) but
+# is its OWN small dict here rather than importing cls_reports' helpers:
+# the Leads filter needs a longer preset list (11 vs Reports' 4 — adds
+# Yesterday/Last 7/Last 14/Last week/Last month/Maximum, none of which
+# Reports currently has), and this screen is otherwise unrelated to the
+# Reports module. Duplicating ~10 lines of date math here avoids coupling
+# the Leads filter's lifecycle to Reports' — touches fewer files than
+# extending cls_reports.py's dict to serve a screen it doesn't otherwise
+# know about, while keeping the exact same convention.
+#
+# All computed server-side (no client-side date math, no timezone drift).
+
+def _dr_today():
+    d = datetime.now().strftime("%Y-%m-%d")
+    return d, d
+
+
+def _dr_yesterday():
+    d = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    return d, d
+
+
+def _dr_last_n_days(n):
+    now = datetime.now()
+    start = now - timedelta(days=n - 1)  # inclusive of today
+    return start.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
+
+
+def _dr_this_week():
+    """Monday of current week through TODAY (month-to-date style, never
+    extends into the future) — same convention as
+    cls_reports._this_week_range()."""
+    now = datetime.now()
+    monday = now - timedelta(days=now.weekday())
+    return monday.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
+
+
+def _dr_last_week():
+    """Full previous Monday-Sunday (7 days), not to-date."""
+    now = datetime.now()
+    this_monday = now - timedelta(days=now.weekday())
+    last_monday = this_monday - timedelta(days=7)
+    last_sunday = last_monday + timedelta(days=6)
+    return last_monday.strftime("%Y-%m-%d"), last_sunday.strftime("%Y-%m-%d")
+
+
+def _dr_this_month():
+    """1st of the current month through TODAY (month-to-date) — same
+    convention as cls_reports._this_month_range()."""
+    now = datetime.now()
+    first = now.replace(day=1)
+    return first.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
+
+
+def _dr_last_month():
+    """Full previous calendar month, 1st through last day."""
+    now = datetime.now()
+    first_this_month = now.replace(day=1)
+    last_day_prev_month = first_this_month - timedelta(days=1)
+    first_prev_month = last_day_prev_month.replace(day=1)
+    return first_prev_month.strftime("%Y-%m-%d"), last_day_prev_month.strftime("%Y-%m-%d")
+
+
+def _dr_maximum():
+    """"Maximum" clears date_from/date_to entirely (no date filter at
+    all — all-time), NOT a huge literal date range. Returned as ("", "")
+    so it round-trips through the same "" == no-filter convention every
+    other filter in this dict already uses."""
+    return "", ""
+
+
+# Config-not-code: the dropdown's option order AND the resolver share
+# this one dict — add a preset here and both follow automatically.
+DATE_PRESETS = {
+    "today":        _dr_today,
+    "yesterday":    _dr_yesterday,
+    "last_7_days":  lambda: _dr_last_n_days(7),
+    "last_14_days": lambda: _dr_last_n_days(14),
+    "last_30_days": lambda: _dr_last_n_days(30),
+    "this_week":    _dr_this_week,
+    "last_week":    _dr_last_week,
+    "this_month":   _dr_this_month,
+    "last_month":   _dr_last_month,
+    "maximum":      _dr_maximum,
+}
+
+# Display order for the dropdown (dict insertion order above already
+# matches this, but spelled out explicitly since template iteration
+# order mattering silently is the kind of thing that's easy to break
+# later by reordering DATE_PRESETS for an unrelated reason).
+DATE_PRESET_ORDER = list(DATE_PRESETS.keys()) + ["custom"]
+
+DATE_PRESET_LABELS = {
+    "today": "Today", "yesterday": "Yesterday",
+    "last_7_days": "Last 7 days", "last_14_days": "Last 14 days",
+    "last_30_days": "Last 30 days",
+    "this_week": "This week", "last_week": "Last week",
+    "this_month": "This month", "last_month": "Last month",
+    "maximum": "Maximum", "custom": "Custom",
+}
+
+
+def _detect_active_date_preset(date_from, date_to):
+    """
+    Given the currently-resolved date_from/date_to ("" meaning unset),
+    figure out which preset (if any) produced them — used to show the
+    right label when a bookmarked URL carries raw date_from/date_to with
+    no date_preset param (backward compatibility, see _parse_lead_filters).
+    Returns "" if neither is set (no filter, nothing to label), or
+    "custom" if they're set but don't match any known preset.
+    """
+    if not date_from and not date_to:
+        return ""
+    for key, fn in DATE_PRESETS.items():
+        if key == "maximum":
+            continue  # maximum's own output is ("",""), already handled above
+        f, t = fn()
+        if f == date_from and t == date_to:
+            return key
+    return "custom"
+
+
 def _parse_lead_filters():
     """
     v0.7 — reads every leads-list filter param from the query string
@@ -1110,14 +1277,40 @@ def _parse_lead_filters():
     caller either feeds this straight into a template's hidden-input
     re-population (wants strings) or passes it to get_leads_page()
     (which treats "" the same as None, since `if x:` is falsy either way).
+
+    v0.11.1 — NEW date_preset resolution (item 4). A `date_preset` query
+    param (one of DATE_PRESETS' keys, or "custom") is resolved into
+    concrete date_from/date_to server-side BEFORE this dict is used —
+    get_leads_page() itself needs zero changes, it already just takes
+    date_from/date_to strings. Backward compatible: any existing
+    bookmarked URL with date_from/date_to and NO date_preset keeps
+    working exactly as before (date_preset is additive); this function
+    additionally back-fills filters["date_preset"] by DETECTING which
+    preset those raw dates match (or "custom" if none), purely so the
+    filter screen can show the right "· <preset>" summary label.
     """
+    date_preset_param = request.args.get("date_preset") or ""
+    date_from = request.args.get("date_from") or ""
+    date_to = request.args.get("date_to") or ""
+
+    if date_preset_param and date_preset_param != "custom" and date_preset_param in DATE_PRESETS:
+        date_from, date_to = DATE_PRESETS[date_preset_param]()
+        active_preset = date_preset_param
+    elif date_preset_param == "custom":
+        active_preset = "custom"
+    elif date_from or date_to:
+        active_preset = _detect_active_date_preset(date_from, date_to)
+    else:
+        active_preset = ""
+
     return {
         "q":             request.args.get("q") or "",
         "stage":         request.args.get("stage") or "",
         "project":       request.args.get("project") or "",
         "owner":         request.args.get("owner") or "",
-        "date_from":     request.args.get("date_from") or "",
-        "date_to":       request.args.get("date_to") or "",
+        "date_from":     date_from,
+        "date_to":       date_to,
+        "date_preset":   active_preset,
         "sort_by":       request.args.get("sort_by") or "recent",
         "stage_reason":  request.args.get("stage_reason") or "",
         "campaign":      request.args.get("campaign") or "",
@@ -1270,6 +1463,9 @@ def leads_filter_screen():
         facing_options=cls_db.FACING_OPTIONS,
         owner_options=cls_db.get_distinct_owners() if cls_db.can_view_all_leads(user["role"]) else [],
         can_view_all_owners=cls_db.can_view_all_leads(user["role"]),
+        # v0.11.1 — item 4: date-range quick-select dropdown.
+        date_preset_order=DATE_PRESET_ORDER,
+        date_preset_labels=DATE_PRESET_LABELS,
     )
 
 
@@ -1278,17 +1474,38 @@ def _is_lead_owner_or_admin(lead, user):
     v0.9 — non-aborting ownership check, factored out of
     _check_lead_ownership below.
 
-    v0.9.5 — this is the WRITE gate: True only for the lead's own owner
-    or an admin. It is INTENTIONALLY not widened to managers — a manager
-    sees every lead (that's cls_db.can_view_all_leads, the READ side) but
-    writes only to their own, so every write stays attributable to one
-    owner. lead_detail() combines this (write side) with
-    can_view_all_leads() (read side) to render a manager a full-but-read-
-    only view of leads that aren't theirs. Every write route still calls
-    _check_lead_ownership (which aborts) — this predicate only decides
-    whether write CONTROLS render on a plain GET.
+    v0.9.5 — this was the WRITE gate: True only for the lead's own owner
+    or an admin, INTENTIONALLY not widened to managers — a manager saw
+    every lead (cls_db.can_view_all_leads, the READ side) but wrote only
+    to their own, so every write stayed attributable to one owner.
+
+    v0.11.1 (July 2026) — REVERSES that split for managers. Srikanth's
+    explicit call, flagged as security-relevant before building: a
+    manager may now write to ANY lead, exactly as if they owned it, not
+    just their own pipeline. Implemented as an added OR against
+    cls_db.can_write_any_lead(user["role"]) — the existing owner-or-admin
+    check is untouched, this just widens who else satisfies it. A FUTURE
+    READER MUST NOT ASSUME THE OLD v0.9.5 READ/WRITE SPLIT STILL HOLDS —
+    see cls_db.py v2.19's changelog and can_view_all_leads()'s docstring
+    for the same note on the read side. activity_log still records the
+    ACTUAL acting user (never the lead's owner) on every write — that
+    behavior is untouched and is the whole reason this grant is safe.
+
+    Scope: this function (and _check_lead_ownership below) governs ONLY
+    lead-level write routes (stage, notes, assign, site visit/follow-up,
+    property/contact edits, call tap). Settings, the Team page, lead
+    deletion, and source-editing are gated separately by admin_required /
+    role=="admin" and are NOT affected by this change.
+
+    lead_detail() combines this (write side) with can_view_all_leads()
+    (read side) to render a manager a full, writable view of leads that
+    aren't theirs (previously: full but read-only). Every write route
+    still calls _check_lead_ownership (which aborts) — this predicate
+    only decides whether write CONTROLS render on a plain GET.
     """
     if user["role"] == "admin":
+        return True
+    if cls_db.can_write_any_lead(user["role"]):
         return True
     owner = (user.get("owner_match_name") or "").strip().lower()
     lead_owner = (lead.get("lead_owner") or "").strip().lower()
@@ -1331,14 +1548,17 @@ def lead_detail(cls_id):
     user = cls_db.get_user_by_id(session["user_id"])
 
     # v0.9.5 — two separate booleans, splitting what used to be one flag:
-    #   can_write   : may this user WRITE to this lead? (owner or admin)
-    #                 Drives whether write controls render at all.
+    #   can_write   : may this user WRITE to this lead? (owner, admin, or
+    #                 — v0.11.1 — any oversight-write role per
+    #                 cls_db.can_write_any_lead()). Drives whether write
+    #                 controls render at all.
     #   restricted  : is this a contact-info-ONLY view? True only when the
     #                 user can neither write to NOR oversee this lead.
-    # A manager (oversight, can_view_all_leads) is never `restricted` — they
-    # see the lead in FULL — but on a lead they don't own can_write is False,
-    # so the template renders a full, read-only view (no write UI to 403 on).
-    # For everyone who existed before v0.9.5, can_write == (not restricted).
+    # v0.11.1 — a manager is never `restricted` (can_view_all_leads) AND now
+    # naturally gets can_write=True on every lead too (falls out of
+    # _is_lead_owner_or_admin()'s new can_write_any_lead() OR — no separate
+    # patch needed here). A salesperson is unaffected: can_write stays
+    # owner-only, restricted stays True for anything not theirs.
     can_write = _is_lead_owner_or_admin(lead, user)
     restricted = not (can_write or cls_db.can_view_all_leads(user["role"]))
 

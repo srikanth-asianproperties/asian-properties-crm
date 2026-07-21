@@ -2,11 +2,88 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.17
+Version : 2.19
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.19 (July 2026) — APX bug-fix + scoped-enhancement batch (3 items from
+  Srikanth, parallel-run continues unaffected). ADDITIVE ONLY except where
+  noted — no existing table, function signature, or call site removed.
+
+  ITEM 1 — get_leads_page() search: lead-ID match now ONLY when the term
+  is prefixed with "#" or "apx-" (case-insensitive, whitespace-trimmed).
+  Previously a bare numeric term like "250" was OR'd into name/phone/
+  email/lead-ID all at once, so it could accidentally match a phone
+  number, an email, AND a lead ID in the same query. Now: "#250" or
+  "APX-250" matches crm_lead_no exclusively (name/phone/email NOT
+  searched in this case); anything else searches name/phone/email as
+  before but crm_lead_no is excluded entirely — a bare "250" no longer
+  matches lead ID 250. app.py/leads_search.html need no changes to call
+  this function; only the caption text changes (see app.py's own
+  changelog).
+
+  ITEM 2 — NEW WRITE_ANYWHERE_ROLES = ("admin", "manager") and
+  can_write_any_lead(role), mirroring OVERSIGHT_ROLES/can_view_all_leads()'s
+  exact pattern (same fail-closed posture: unrecognised role -> False).
+  Srikanth's explicit call (2026-07, flagged as security-relevant before
+  building): a manager may now WRITE to ANY lead (stage, notes, assign,
+  site visit/follow-up, property/contact edits, call tap), not just their
+  own pipeline — REVERSING v2.9/v0.9.5's deliberate read/write split for
+  the manager role. can_view_all_leads()'s docstring updated to flag this
+  explicitly so a future reader doesn't assume the old split still holds.
+  activity_log continues to record the ACTUAL acting user (the manager's
+  own identity), never the lead's owner — unchanged, and the whole reason
+  this is safe to grant. This constant does NOT touch Settings, the Team
+  page, lead deletion, or source-editing — those stay admin-only exactly
+  as today; see app.py's changelog for the corresponding write-gate change.
+
+  ITEM 3 (Option B) — upsert_selldo_lead() existing-row UPDATE branch:
+  cls_updated_at now only advances when something actually changed.
+  ROOT CAUSE: this function (called by Job B on every sync pass, for
+  every lead) unconditionally set cls_updated_at=now() even on a true
+  no-op sync — stage_updated_at already avoided this via a CASE WHEN
+  keyed off stage_changed, but cls_updated_at never got the same
+  treatment, so the CRM's "Upd" column read as today for every lead
+  regardless of whether anyone/anything had touched it. FIX: a new
+  anything_changed boolean (mirrors stage_changed's existing pattern)
+  is computed by predicting each COALESCE'd column's post-update value
+  in Python — current_stage, project, full_name, phone_raw/norm,
+  email_raw/norm, lead_owner, selldo_url, opportunity_temperature — and
+  comparing against what's already stored; cls_updated_at now uses the
+  same CASE WHEN ? THEN ? ELSE cls_updated_at END pattern already used
+  for stage_updated_at. Every OTHER write path that sets cls_updated_at
+  (pause_drip, mark_opt_out, mark_hard_bounce, contact/property edits,
+  etc.) is untouched — those already only fire on genuine actions.
+  Requires the EXISTING SELECT this function already ran to fetch more
+  columns (project, full_name, phone/email raw+norm, lead_owner,
+  selldo_url, opportunity_temperature) alongside the cls_id/current_stage
+  it already fetched — read-only addition, no new query round-trip.
+  DOES NOT touch selldo_to_cls.py (Job B) itself — only this shared
+  function it calls. Tested against a throwaway DB with both no-op and
+  real-change Sell.do-shaped rows before being considered done (see
+  Srikanth's session for the test transcript).
+
+v2.18 (July 2026) — stats() baseline fix for historical-import leads.
+  ADDITIVE ONLY — no existing key removed or renamed, no existing
+  caller's behavior changed.
+
+  stats() now also returns "imported_historical" (COUNT(*) FROM leads
+  WHERE match_tier='imported') and "syncable_leads" (total_leads minus
+  imported_historical).
+
+  Why: the v2.17 Sell.do historical CSV bulk import permanently added
+  leads to cls.db with match_tier='imported'. Sell.do's own day-to-day
+  export will never report these leads again by design — they were a
+  one-time historical backfill, not leads Sell.do is currently tracking.
+  Job B's CSV lead-count sanity check (selldo_to_cls.py v1.2 Fix 4)
+  compares the CSV's row count against cls_db.stats()["total_leads"],
+  which now permanently overcounts what Sell.do's export can ever
+  contain again post-import. "syncable_leads" gives Job B (and any
+  other caller) a baseline that excludes the imported rows, so the
+  sanity check's 85% threshold is measured against leads Sell.do can
+  actually still report.
+
 v2.17 (July 2026) — Sell.do historical CSV bulk import (Option B).
   ALL additive — no existing table, function, or call site touched.
   No schema change: every column the import needs (selldo_lead_id,
@@ -1613,15 +1690,47 @@ def can_view_all_leads(role):
     falls through to the most restricted view (own leads only), never
     the widest one. Fails CLOSED, not open.
 
-    IMPORTANT — this is a VISIBILITY capability, not a write capability.
-    A manager can VIEW any lead in full but can only change stage / add
-    notes / reassign / schedule visits on leads they personally own. The
-    write gate is app.py's _check_lead_ownership() (owner-or-admin), with
-    admin as the only write-anywhere role. app.py's lead_detail() combines
-    this read predicate with the ownership write-gate to render a manager
-    a full-but-read-only view of leads that aren't theirs.
+    IMPORTANT — this used to be a VISIBILITY-only capability, deliberately
+    separate from write (v2.9/v0.9.5: a manager could view any lead but
+    write only to their own). As of v2.19 that split is REVERSED for
+    managers — see can_write_any_lead() below, which now also covers
+    (admin, manager). A future reader must not assume read and write are
+    still split for this role; they happen to be checked by two separate
+    functions (this one, and can_write_any_lead()) but currently cover the
+    same role set. app.py's _is_lead_owner_or_admin() is the write gate;
+    it ORs the existing owner-or-admin check with can_write_any_lead().
     """
     return role in OVERSIGHT_ROLES
+
+
+# v2.19 — WRITE side, reversing v2.9/v0.9.5's deliberate split. Srikanth's
+# explicit call (2026-07): a manager must be able to WRITE to any lead
+# (stage change, notes, assign, site visit/follow-up, property/contact
+# edits, call tap) exactly as if they owned it, not just their own
+# pipeline. Previously only admin could write anywhere; a manager could
+# view every lead (can_view_all_leads above) but write only to their own.
+# A FUTURE READER MUST NOT ASSUME THE OLD READ/WRITE SPLIT STILL HOLDS —
+# read (can_view_all_leads) and write (can_write_any_lead) now cover the
+# same role set (admin, manager), they just remain two separate functions/
+# checks by design (app.py's _is_lead_owner_or_admin() calls this one
+# alongside its existing owner-or-admin check) so the two concerns stay
+# independently adjustable if they ever need to diverge again. Deliberately
+# NOT widened past lead-level write routes: Settings, the Team page, lead
+# deletion, and source-editing stay admin_required / role=="admin" only —
+# this constant does not touch those.
+WRITE_ANYWHERE_ROLES = ("admin", "manager")
+
+
+def can_write_any_lead(role):
+    """
+    (v2.19) True for roles allowed to write to ANY lead, not just their
+    own — mirrors can_view_all_leads()'s fail-closed posture: an unknown/
+    unrecognised role returns False, never the widest permission. Used by
+    app.py's _is_lead_owner_or_admin() as an additional OR alongside the
+    existing "is this lead's own owner, or admin" check — it does not
+    replace that check, it widens who satisfies it.
+    """
+    return role in WRITE_ANYWHERE_ROLES
 
 
 PBKDF2_ITERATIONS = 260_000  # OWASP-recommended floor for PBKDF2-SHA256 (2024+)
@@ -1861,17 +1970,29 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
 
         if has_active_search:
             search_term = search.strip().lower()
-            # v2.16 — accept "APX-183" or just "183" for lead ID search.
-            # The prefix is a UI convention only; crm_lead_no is stored as
-            # a bare INTEGER, so strip the prefix before matching.
-            if search_term.startswith("apx-"):
+            # v2.19 — "#" or "apx-" prefix now means LEAD-ID-ONLY search:
+            # match crm_lead_no exclusively, not name/phone/email at all.
+            # A bare numeric term (e.g. "250") no longer implicitly matches
+            # lead ID — it used to be OR'd in with name/phone/email, so a
+            # plain "250" could accidentally match a phone number AND a
+            # lead ID AND an email at once. The explicit prefix is now the
+            # only way to search by lead ID.
+            lead_id_only = False
+            if search_term.startswith("#"):
+                search_term = search_term[1:].strip()
+                lead_id_only = True
+            elif search_term.startswith("apx-"):
                 search_term = search_term[4:].strip()
+                lead_id_only = True
             like = f"%{search_term}%"
-            where.append(
-                "(LOWER(full_name) LIKE ? OR phone_norm LIKE ? "
-                "OR email_norm LIKE ? OR CAST(crm_lead_no AS TEXT) LIKE ?)"
-            )
-            params.extend([like, like, like, like])
+            if lead_id_only:
+                where.append("CAST(crm_lead_no AS TEXT) LIKE ?")
+                params.append(like)
+            else:
+                where.append(
+                    "(LOWER(full_name) LIKE ? OR phone_norm LIKE ? OR email_norm LIKE ?)"
+                )
+                params.extend([like, like, like])
 
         if date_from:
             where.append("cls_created_at >= ?")
@@ -4065,8 +4186,11 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
     conn = _connect()
     try:
         # Prefer matching by Sell.do's own id if we've seen it before.
+        existing_cols = ("cls_id, current_stage, project, full_name, "
+                         "phone_raw, phone_norm, email_raw, email_norm, "
+                         "lead_owner, selldo_url, opportunity_temperature")
         existing = conn.execute(
-            "SELECT cls_id, current_stage FROM leads WHERE selldo_lead_id=? LIMIT 1",
+            f"SELECT {existing_cols} FROM leads WHERE selldo_lead_id=? LIMIT 1",
             (selldo_lead_id,)
         ).fetchone()
         match_tier = "selldo_id"
@@ -4076,7 +4200,7 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
             cls_id, match_tier = find_match(conn, phone_norm, email_norm)
             if cls_id:
                 existing = conn.execute(
-                    "SELECT cls_id, current_stage FROM leads WHERE cls_id=?",
+                    f"SELECT {existing_cols} FROM leads WHERE cls_id=?",
                     (cls_id,)
                 ).fetchone()
 
@@ -4085,6 +4209,39 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
             cls_id        = existing["cls_id"]
             prev_stage    = existing["current_stage"]
             stage_changed = (prev_stage != current_stage)
+
+            # v2.19 (Option B) — anything_changed mirrors stage_changed's
+            # existing pattern, extended to the other COALESCE'd fields
+            # this UPDATE can actually change. Computed by predicting, in
+            # Python, exactly what each column's post-COALESCE value would
+            # be (same NULL/'' rules as the SQL below), then comparing
+            # against what's already stored. Without this, cls_updated_at
+            # was set to now() unconditionally on EVERY sync pass — even a
+            # true no-op — which is why "Upd" read as today for every lead
+            # regardless of whether anything had actually changed.
+            new_project    = existing["project"] if existing["project"] is not None else project
+            new_full_name  = existing["full_name"] or full_name
+            new_phone_raw  = existing["phone_raw"] or phone_raw
+            new_phone_norm = existing["phone_norm"] or phone_norm
+            new_email_raw  = existing["email_raw"] or email_raw
+            new_email_norm = existing["email_norm"] or email_norm
+            new_lead_owner = lead_owner or existing["lead_owner"]
+            new_selldo_url = selldo_url or existing["selldo_url"]
+            new_opp_temp   = opportunity_temperature or None
+
+            anything_changed = (
+                stage_changed
+                or new_project    != existing["project"]
+                or new_full_name  != existing["full_name"]
+                or new_phone_raw  != existing["phone_raw"]
+                or new_phone_norm != existing["phone_norm"]
+                or new_email_raw  != existing["email_raw"]
+                or new_email_norm != existing["email_norm"]
+                or new_lead_owner != existing["lead_owner"]
+                or new_selldo_url != existing["selldo_url"]
+                or new_opp_temp   != existing["opportunity_temperature"]
+            )
+
             conn.execute("""
                 UPDATE leads SET
                     selldo_lead_id=?, current_stage=?, match_tier=?,
@@ -4098,7 +4255,7 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
                     lead_owner=COALESCE(NULLIF(?,  ''), lead_owner),
                     selldo_url=COALESCE(NULLIF(?,  ''), selldo_url),
                     opportunity_temperature=?,
-                    cls_updated_at=?
+                    cls_updated_at=CASE WHEN ? THEN ? ELSE cls_updated_at END
                 WHERE cls_id=?
             """, (selldo_lead_id, current_stage, match_tier,
                   project, full_name,
@@ -4106,7 +4263,7 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
                   stage_changed, now,
                   lead_owner, selldo_url,
                   opportunity_temperature or None,
-                  now, cls_id))
+                  anything_changed, now, cls_id))
             conn.commit()
             return cls_id, stage_changed
 
@@ -6069,11 +6226,14 @@ def stats():
         with_lg    = conn.execute("SELECT COUNT(*) c FROM leads WHERE leadgen_id IS NOT NULL").fetchone()["c"]
         selldo_only= conn.execute("SELECT COUNT(*) c FROM leads WHERE source='selldo_only'").fetchone()["c"]
         unfired    = len(get_unfired_leads())
+        imported_historical = conn.execute("SELECT COUNT(*) c FROM leads WHERE match_tier='imported'").fetchone()["c"]
         return {
             "total_leads"      : total,
             "with_leadgen_id"  : with_lg,
             "selldo_only"      : selldo_only,
             "pending_fire"     : unfired,
+            "imported_historical" : imported_historical,
+            "syncable_leads"   : total - imported_historical,
         }
     finally:
         conn.close()

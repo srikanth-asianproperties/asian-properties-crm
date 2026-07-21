@@ -1,12 +1,19 @@
-{# leads_search.html (v0.8) — dedicated search screen (item 7 of
+{# leads_search.html (v0.9) — dedicated search screen (item 7 of
    Srikanth's spec). Every OTHER currently-active filter is carried
    forward as a hidden input so searching doesn't silently clear a
    filter someone already set.
 
-   v0.8 — Search by Lead ID (cls_db.py v2.16). Placeholder and
-   descriptive caption updated to mention lead ID matching (accepts
-   'APX-183' or plain '183'). No form/route change — same GET to
-   leads_list, same field name `q`. #}
+   v0.9 (July 2026) — item 1 of Srikanth's bug-fix batch (cls_db.py
+   v2.19): lead-ID search is now PREFIX-GATED, not implicit. A bare
+   numeric term like "250" used to also match lead ID 250 alongside
+   name/phone/email — it no longer does. Only a term starting with "#"
+   or "apx-" matches by lead ID, and does so EXCLUSIVELY (name/phone/
+   email are not searched in that case). Caption/placeholder updated to
+   document this explicitly. No form/route change — same GET to
+   leads_list, same field name `q`.
+
+   v0.8 — Search by Lead ID (cls_db.py v2.16, now superseded by v2.19
+   above). #}
 {% extends "base.html" %}
 {% block title %}Search Leads{% endblock %}
 
@@ -15,11 +22,12 @@
 
 <h2 style="margin-top:10px;">Search Leads</h2>
 <p style="font-size:13px; color:var(--ink-soft); margin-top:-8px;">
-  Matches name, phone, email, or lead ID (with or without the APX- prefix).
+  Search name, phone, or email — or type "#" followed by the lead number
+  (e.g. #250, or apx-250) to search by Lead ID only.
 </p>
 
 <form method="get" action="{{ url_for('leads_list') }}" class="card" style="margin-top:16px;">
-  <input type="text" name="q" value="{{ filters.q }}" placeholder="Search name, phone, email, or lead ID (e.g. APX-183)"
+  <input type="text" name="q" value="{{ filters.q }}" placeholder="Search name, phone, email, or #250 for lead ID"
          autofocus style="width:100%; margin-bottom:14px;">
 
   {# Carry every other active filter forward untouched #}
@@ -28,6 +36,7 @@
   <input type="hidden" name="owner" value="{{ filters.owner }}">
   <input type="hidden" name="date_from" value="{{ filters.date_from }}">
   <input type="hidden" name="date_to" value="{{ filters.date_to }}">
+  <input type="hidden" name="date_preset" value="{{ filters.date_preset }}">
   <input type="hidden" name="sort_by" value="{{ filters.sort_by }}">
   <input type="hidden" name="stage_reason" value="{{ filters.stage_reason }}">
   <input type="hidden" name="campaign" value="{{ filters.campaign }}">
@@ -41,7 +50,7 @@
   <div class="write-form-row">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if filters.q %}
-    <a href="{{ url_for('leads_list', stage=filters.stage, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" class="btn">Clear search</a>
+    <a href="{{ url_for('leads_list', stage=filters.stage, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, date_preset=filters.date_preset, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" class="btn">Clear search</a>
     {% endif %}
   </div>
 </form>

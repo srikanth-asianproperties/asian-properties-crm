@@ -2,11 +2,30 @@
 =============================================================
 selldo_to_cls.py  —  CLS Job B  |  Sell.do CRM -> CLS Sync
 =============================================================
-Version : 1.4
+Version : 1.5
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.5  (July 2026) — CSV lead-count sanity check baseline fix (Fix 4 companion):
+  The v1.2 Fix 4 sanity check compared the CSV's row count against
+  cls_db.stats()["total_leads"] * 0.85. Starting 21-Jul-2026, this
+  began failing on EVERY cycle, not just on genuine wrong-email picks:
+  cls_db.py v2.17 (Sell.do historical CSV bulk import) permanently
+  added leads to cls.db with match_tier='imported', which inflated
+  total_leads with rows Sell.do's own day-to-day export will never
+  report again by design (a one-time historical backfill, not leads
+  Sell.do is currently tracking). The CSV's real lead count could
+  never clear 85% of a total that now includes leads structurally
+  absent from every future export.
+  FIX — compare against the new cls_db.py v2.18 stats()["syncable_leads"]
+  (total_leads minus imported_historical) instead of total_leads. The
+  SANITY FAIL log message now also reports syncable_leads and
+  imported_historical alongside the CSV count, so the log is
+  self-explanatory if this ever fires again. This is the ONLY change
+  in this version — nothing else in Job B (Playwright login, Gmail
+  polling, CSV parsing, matching logic) was touched.
+
 v1.4  (July 2026) — Opportunity Warm/Hot temperature passthrough (v0.5 CRM):
   Sell.do's export has a separate "Lead Status" column (confirmed
   distinct from "Lead Stage" — Lead Stage itself stays exactly
@@ -788,7 +807,7 @@ def run(force=False, latest_email=False):
         log("CSV parsing failed — aborting this run.", "ERROR")
         return False
 
-    # ── v1.2 Fix 4: CSV lead-count sanity check ──
+    # ── v1.2 Fix 4: CSV lead-count sanity check (v1.5: syncable_leads baseline) ──
     # Sell.do sometimes sends TWO emails per export cycle: one with export
     # criteria summary and one with the actual file link. When both arrive
     # simultaneously, the script (sorted newest IMAP ID first) may pick the
@@ -798,11 +817,17 @@ def run(force=False, latest_email=False):
     # Guard: if the CSV has < 85% of the leads CLS already holds, the script
     # almost certainly picked a wrong/partial export. Abort cleanly — the next
     # cycle triggers a fresh export and self-heals.
+    # v1.5: baseline switched from total_leads to syncable_leads (total_leads
+    # minus imported_historical) — total_leads is now permanently inflated by
+    # the v2.17 Sell.do historical CSV bulk import, whose match_tier='imported'
+    # rows Sell.do's own export will never report again by design.
     s_pre = cls_db.stats()
-    if s_pre["total_leads"] > 0 and len(df) < s_pre["total_leads"] * 0.85:
+    if s_pre["syncable_leads"] > 0 and len(df) < s_pre["syncable_leads"] * 0.85:
         log(
             f"SANITY FAIL — CSV has {len(df)} leads but CLS holds "
-            f"{s_pre['total_leads']} (threshold 85%). "
+            f"{s_pre['syncable_leads']} syncable leads (threshold 85%; "
+            f"total_leads={s_pre['total_leads']}, "
+            f"imported_historical={s_pre['imported_historical']}). "
             "Likely picked the wrong export email. "
             "Aborting — next cycle will re-trigger and recover.",
             "ERROR",
