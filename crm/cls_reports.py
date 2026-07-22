@@ -2,7 +2,7 @@
 =============================================================
 cls_reports.py — Asian Properties CRM (APX) | v0.6.1 Reports Enhancements
 =============================================================
-Version : 1.1
+Version : 1.2
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -85,6 +85,42 @@ don't print reliably, and the underlying table is the honest fallback.
 
 CHANGELOG
 ---------
+v1.2 (July 2026) — 3 scoped tasks from Srikanth, all additive.
+
+  TASK 1 — date-range picker dropdown. NEW REPORT_DATE_PRESETS (11 keys,
+  same option set as leads_filter.html/app.py's DATE_PRESETS) +
+  REPORT_DATE_PRESET_ORDER/REPORT_DATE_PRESET_LABELS +
+  _detect_active_report_preset(), deliberately duplicated from app.py
+  rather than cross-imported (same convention app.py itself already
+  uses). Where a preset key overlaps an existing QUICK_RANGES entry
+  (today/this_week/this_month/last_30_days), it reuses that SAME
+  function, so "This Week" stays Monday-Sunday (full week) and "This
+  Month" stays month-to-date — this file's own existing conventions,
+  not app.py's leads-filter variants. resolve_date_range() now also
+  accepts an optional `preset` query param, resolved before the
+  existing raw from/to validation; a bookmarked ?from=&to= URL with no
+  preset still works exactly as before. build_report() now includes
+  date_preset/date_preset_order/date_preset_labels in its returned
+  dict so _report_date_picker.html needs no new context passed from
+  app.py's routes — app.py itself is UNCHANGED. Each report's own
+  configured default range (QUICK_RANGES/default_range_for()) is
+  UNCHANGED — only the picker widget's option set expanded.
+
+  TASK 2 — mobile transpose. NEW transpose_table(columns, rows,
+  label_key) helper. NEW "mobile_transpose": True on 5 REPORTS entries
+  (salesperson-scorecard, weekly-site-visits-conducted, weekly-site-
+  visits-scheduled, owner-workload, source-performance) — none of
+  which use report_view_charts.html. build_report() now additionally
+  computes display_columns/display_rows for those 5 (label_key inferred
+  as each report's own first column — verified true for all 5), leaving
+  columns/rows untouched so export_to_excel()/_report_sheets() need no
+  changes.
+
+  TASK 3 — reengagement redefinition (see cls_db.py v2.20). Updated the
+  "reengagement" REPORTS entry's caveat text (precise definition, no
+  longer "approximate/can't distinguish...") and _build_reengagement()'s
+  "Reengaged At" column to read reengaged_at instead of cls_updated_at.
+
 v1.1 (July 2026) — APX v0.6.1 Reports Enhancements. All 10 requirements
   from Srikanth's build prompt, confirmed decisions: Chart.js via CDN,
   build Campaign Insights now (with "Unknown/Manual" fallback bucket) not
@@ -261,12 +297,26 @@ def resolve_date_range(report_id, args):
     Returns (None, None) for a "live" report — callers should treat that
     as "don't show a date picker" (report_view.html/report_view_charts.html
     branch on report.is_live for this).
+
+    v1.2 — Task 1: now ALSO accepts an optional `preset` param (one of
+    REPORT_DATE_PRESETS' keys, or "custom"), mirroring app.py's
+    _parse_lead_filters() preset-detection logic. A valid non-"custom"
+    preset is resolved directly (no _DATE_RE check needed — it comes
+    from our own trusted date-math functions, same as app.py's
+    DATE_PRESETS[preset]() call). "custom", or no preset at all, falls
+    through to the EXISTING raw from/to validation below unchanged — so
+    a bookmarked ?from=&to= URL with no preset param still works exactly
+    as before; build_report() separately back-fills which preset label
+    (if any) those resolved dates match, via _detect_active_report_preset().
     """
     meta = REPORTS_BY_ID.get(report_id)
     if meta is None:
         return None, None
     if meta.get("date_default", "this_month") == "live":
         return None, None
+    preset_arg = args.get("preset")
+    if preset_arg and preset_arg != "custom" and preset_arg in REPORT_DATE_PRESETS:
+        return REPORT_DATE_PRESETS[preset_arg]()
     from_arg = args.get("from")
     to_arg = args.get("to")
     if from_arg and to_arg and _DATE_RE.match(from_arg) and _DATE_RE.match(to_arg) and from_arg <= to_arg:
@@ -282,6 +332,11 @@ def quick_select_links():
     "Custom" isn't in this list; it's just the two always-visible
     <input type="date"> fields in the picker partial, pre-filled with
     whatever range is currently showing.
+
+    v1.2: still called by app.py's report_view() route and still a
+    valid public helper, but the picker partial itself no longer reads
+    its output (see REPORT_DATE_PRESETS below) — left in place rather
+    than paused since it's genuinely unchanged and still invoked.
     """
     return [
         ("Today", "today") + _today_range(),
@@ -289,6 +344,114 @@ def quick_select_links():
         ("This Month", "this_month") + _this_month_range(),
         ("Last 30 Days", "last_30_days") + _last_30_days_range(),
     ]
+
+
+# ─────────────────────────────────────────────────────────────
+# DATE RANGE PRESETS (v1.2) — the 11-option picker dropdown, mirroring
+# leads_filter.html / app.py's DATE_PRESETS structure (Task 1, July
+# 2026). This is a SEPARATE, wider preset list from QUICK_RANGES above
+# — QUICK_RANGES/default_range_for() still drive each report's own
+# configured DEFAULT range (unchanged by this task); REPORT_DATE_PRESETS
+# drives the picker WIDGET's full option set. Deliberately duplicated
+# from app.py's DATE_PRESETS rather than cross-imported (same
+# duplication convention app.py itself already uses for leads_filter,
+# see app.py's changelog on _dr_* — this screen's lifecycle is
+# otherwise unrelated to the Leads filter's).
+#
+# Where a key overlaps an existing QUICK_RANGES entry (today, this_week,
+# this_month, last_30_days), it reuses that SAME function — so "This
+# Week" here is Monday-Sunday (full week, cls_reports's own existing
+# convention, NOT app.py's leads-filter to-date variant) and "This
+# Month" is month-to-date, exactly as documented at the top of this
+# file. The remaining keys are new, same date math as app.py's _dr_*.
+# ─────────────────────────────────────────────────────────────
+
+def _yesterday_range():
+    d = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    return d, d
+
+
+def _last_n_days_range(n):
+    now = datetime.now()
+    start = now - timedelta(days=n - 1)  # inclusive of today
+    return start.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
+
+
+def _last_week_range():
+    """Full previous Monday-Sunday (7 days), not to-date."""
+    now = datetime.now()
+    this_monday = now - timedelta(days=now.weekday())
+    last_monday = this_monday - timedelta(days=7)
+    last_sunday = last_monday + timedelta(days=6)
+    return last_monday.strftime("%Y-%m-%d"), last_sunday.strftime("%Y-%m-%d")
+
+
+def _last_month_range():
+    """Full previous calendar month, 1st through last day."""
+    now = datetime.now()
+    first_this_month = now.replace(day=1)
+    last_day_prev_month = first_this_month - timedelta(days=1)
+    first_prev_month = last_day_prev_month.replace(day=1)
+    return first_prev_month.strftime("%Y-%m-%d"), last_day_prev_month.strftime("%Y-%m-%d")
+
+
+def _maximum_range():
+    """"Maximum" clears the range entirely (all-time), returned as
+    ("", "") so it round-trips through the same "" == no-filter
+    convention every builder's `if date_from and date_to:` guard
+    already uses (see e.g. get_source_performance())."""
+    return "", ""
+
+
+# Config-not-code: the dropdown's option order AND the resolver share
+# this one dict — add a preset here and both follow automatically.
+REPORT_DATE_PRESETS = {
+    "today":        _today_range,
+    "yesterday":    _yesterday_range,
+    "last_7_days":  lambda: _last_n_days_range(7),
+    "last_14_days": lambda: _last_n_days_range(14),
+    "last_30_days": _last_30_days_range,
+    "this_week":    _this_week_range,
+    "last_week":    _last_week_range,
+    "this_month":   _this_month_range,
+    "last_month":   _last_month_range,
+    "maximum":      _maximum_range,
+}
+
+REPORT_DATE_PRESET_ORDER = list(REPORT_DATE_PRESETS.keys()) + ["custom"]
+
+REPORT_DATE_PRESET_LABELS = {
+    "today": "Today", "yesterday": "Yesterday",
+    "last_7_days": "Last 7 days", "last_14_days": "Last 14 days",
+    "last_30_days": "Last 30 days",
+    "this_week": "This week", "last_week": "Last week",
+    "this_month": "This month", "last_month": "Last month",
+    "maximum": "Maximum", "custom": "Custom",
+}
+
+
+def _detect_active_report_preset(date_from, date_to):
+    """
+    Given the currently-resolved date_from/date_to, figure out which
+    preset (if any) produced them — used to pre-select the right
+    dropdown option, both for a preset-driven navigation and for a
+    bookmarked ?from=&to= URL carrying no preset param at all.
+
+    Unlike leads_filter's blank-date convention (blank means "no filter
+    active"), every cls_reports report ALWAYS resolves to a concrete
+    range — resolve_date_range() never returns ("", "") except via an
+    explicit "maximum" selection, so blank/blank is unambiguous here
+    and maps directly to "maximum" rather than to an unset state.
+    """
+    if not date_from and not date_to:
+        return "maximum"
+    for key, fn in REPORT_DATE_PRESETS.items():
+        if key == "maximum":
+            continue  # maximum's own output is ("",""), already handled above
+        f, t = fn()
+        if f == date_from and t == date_to:
+            return key
+    return "custom"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -349,6 +512,37 @@ def _per_salesperson_activity(current_user, date_from, date_to):
         perf = cls_db.get_activity_counts_range(actor_email=current_user["email"], date_from=date_from, date_to=date_to)
         rows.append((current_user["full_name"] or current_user["email"], perf))
     return rows
+
+
+def transpose_table(columns, rows, label_key):
+    """
+    (v1.2, Task 2) Swaps a {columns, rows} table's axes for mobile
+    display: the original row-identity column (label_key) becomes the
+    new header row, and each original metric column becomes a new row.
+    For reports shaped one-row-per-person with many metric columns
+    (unreadable on a phone-width table), the transposed view reads as
+    metric-rows x person-columns instead.
+
+    label_key : the column key whose per-row value becomes each new
+                column's header (e.g. "name" or "owner") — excluded
+                from the transposed metric rows, since it's now the
+                header rather than a metric.
+
+    Returns (display_columns, display_rows), same {key, label} tuple /
+    dict-per-row shape report_view.html already knows how to render.
+    """
+    display_columns = [("metric", "Metric")] + [
+        (str(row.get(label_key, "")), row.get(label_key, "")) for row in rows
+    ]
+    display_rows = []
+    for key, label in columns:
+        if key == label_key:
+            continue
+        display_row = {"metric": label}
+        for row in rows:
+            display_row[str(row.get(label_key, ""))] = row.get(key)
+        display_rows.append(display_row)
+    return display_columns, display_rows
 
 
 # ─────────────────────────────────────────────────────────────
@@ -455,7 +649,7 @@ def _build_reengagement(current_user, date_from=None, date_to=None, **kwargs):
     leads = cls_db.get_reengaged_leads(owner=owner, date_from=date_from, date_to=date_to)
     columns = [
         ("crm_lead_no", "Lead #"), ("full_name", "Name"), ("current_stage", "Stage"),
-        ("lead_owner", "Owner"), ("cls_created_at", "First Created"), ("cls_updated_at", "Reengaged At"),
+        ("lead_owner", "Owner"), ("cls_created_at", "First Created"), ("reengaged_at", "Reengaged At"),
     ]
     rows = [{k: lead.get(k) for k, _ in columns} for lead in leads]
     return {"columns": columns, "rows": rows}
@@ -636,6 +830,7 @@ REPORTS = [
         "description": "Calls tapped, notes added, follow-ups and site visits created/conducted, for the selected period.",
         "cadence": "Daily", "admin_only": False, "owner_filterable": True,
         "caveat": None, "build": _build_salesperson_scorecard, "date_default": "today",
+        "mobile_transpose": True,
     },
     {
         "id": "pipeline-funnel", "title": "Pipeline Funnel Snapshot",
@@ -655,6 +850,7 @@ REPORTS = [
             "here yet."
         ),
         "build": _build_source_performance, "date_default": "last_30_days",
+        "mobile_transpose": True,
     },
     {
         "id": "project-pipeline", "title": "Project-wise Pipeline",
@@ -698,8 +894,9 @@ REPORTS = [
         "description": "Which existing leads came back during the selected period.",
         "cadence": "Weekly", "admin_only": False, "owner_filterable": True,
         "caveat": (
-            "Approximate signal — leads that existed before the selected period but were touched again within it. "
-            "Can't yet distinguish a genuine new inquiry from a routine stage sync."
+            "Precise signal (v2.20) — an existing contact re-entered through Meta (matched by phone/email to a "
+            "prior lead) and no activity has been logged against it since. Clears the moment any activity is "
+            "logged, computed live, same as \"missed\" statuses elsewhere in the app."
         ),
         "build": _build_reengagement, "date_default": "this_week",
     },
@@ -714,6 +911,7 @@ REPORTS = [
         "description": "Open leads and open follow-ups/site-visits per salesperson, right now.",
         "cadence": "Live", "admin_only": False, "owner_filterable": True,
         "caveat": None, "build": _build_owner_workload, "date_default": "live",
+        "mobile_transpose": True,
     },
     {
         "id": "call-activity", "title": "Call Activity Report",
@@ -736,12 +934,14 @@ REPORTS = [
         "description": "Site visits marked completed by each salesperson during the selected week.",
         "cadence": "Weekly", "admin_only": False, "owner_filterable": True,
         "caveat": None, "build": _build_weekly_site_visits_conducted, "date_default": "this_week",
+        "mobile_transpose": True,
     },
     {
         "id": "weekly-site-visits-scheduled", "title": "Weekly Site Visits Scheduled",
         "description": "Site visits created (scheduled) by each salesperson during the selected week.",
         "cadence": "Weekly", "admin_only": False, "owner_filterable": True,
         "caveat": None, "build": _build_weekly_site_visits_scheduled, "date_default": "this_week",
+        "mobile_transpose": True,
     },
     {
         "id": "lead-stage-analysis", "title": "Lead Stage Analysis",
@@ -860,16 +1060,35 @@ def build_report(report_id, current_user, date_from=None, date_to=None, **kwargs
     """
     meta = REPORTS_BY_ID[report_id]
     table = meta["build"](current_user, date_from=date_from, date_to=date_to, **kwargs)
-    return {
+    columns = table.get("columns", [])
+    rows = table.get("rows", [])
+    result = {
         "id": meta["id"], "title": meta["title"], "description": meta["description"],
         "cadence": meta["cadence"], "caveat": meta["caveat"],
         "date_default": meta.get("date_default", "this_month"),
         "is_live": meta.get("date_default") == "live",
         "template": meta.get("template", "report_view.html"),
         "date_from": date_from, "date_to": date_to,
-        "columns": table.get("columns", []), "rows": table.get("rows", []),
+        # v1.2 — Task 1: which preset (if any) the resolved date_from/
+        # date_to matches, so the picker dropdown can pre-select it.
+        # None for "live" reports (date_from is None, not ""), which
+        # never show the picker at all.
+        "date_preset": _detect_active_report_preset(date_from, date_to) if date_from is not None else None,
+        "date_preset_order": REPORT_DATE_PRESET_ORDER,
+        "date_preset_labels": REPORT_DATE_PRESET_LABELS,
+        "columns": columns, "rows": rows,
         "chart": table.get("chart"), "views": table.get("views"),
     }
+    # v1.2 — Task 2: mobile transpose, additive alongside columns/rows
+    # (export_to_excel() keeps reading columns/rows only, untouched).
+    # The row-identity column is always this report's FIRST column for
+    # all 5 mobile_transpose reports (verified against each builder).
+    if meta.get("mobile_transpose") and columns and rows:
+        label_key = columns[0][0]
+        display_columns, display_rows = transpose_table(columns, rows, label_key)
+        result["display_columns"] = display_columns
+        result["display_rows"] = display_rows
+    return result
 
 
 # ─────────────────────────────────────────────────────────────

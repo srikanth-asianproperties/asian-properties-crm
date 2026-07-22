@@ -1,9 +1,15 @@
-{# report_view.html (v0.6.1) — generic template for every PLAIN-TABLE
+{# report_view.html (v0.7) — generic template for every PLAIN-TABLE
    report (everything except Lead Stage Analysis + the chart-bearing
    Campaign Insights reports, which use report_view_charts.html
    instead — see report.template, set by app.py's report_view() route).
    Every report shapes its data into the same {columns, rows} table via
    cls_reports.build_report() — this template just renders that shape.
+
+   v0.7 (July 2026, Task 2) — renders report.display_columns/
+   report.display_rows when cls_reports.build_report() supplies them
+   (the 5 mobile_transpose reports), falling back to the original
+   columns/rows for every other report. Excel export is unaffected —
+   export_to_excel() reads columns/rows only, never the display_* pair.
 
    v0.6.1: gained the shared date-range picker (_report_date_picker.html)
    in place of the old daily/weekly period toggle; Export Excel now
@@ -58,20 +64,22 @@
 </div>
 {% endif %}
 
+{% set view_columns = report.display_columns if report.display_columns else report.columns %}
+{% set view_rows = report.display_rows if report.display_rows else report.rows %}
 {% if report.rows %}
 <div class="report-table-wrap">
   <table class="report-table">
     <thead>
       <tr>
-        {% for key, label in report.columns %}
+        {% for key, label in view_columns %}
         <th>{{ label }}</th>
         {% endfor %}
       </tr>
     </thead>
     <tbody>
-      {% for row in report.rows %}
+      {% for row in view_rows %}
       <tr>
-        {% for key, label in report.columns %}
+        {% for key, label in view_columns %}
         <td>{{ row.get(key, '—') if row.get(key, '—') is not none else '—' }}</td>
         {% endfor %}
       </tr>

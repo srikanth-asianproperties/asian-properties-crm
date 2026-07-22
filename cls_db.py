@@ -2,11 +2,58 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.19
+Version : 2.20
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.20 (July 2026) — Task 3: precise "Re-engaged" redefinition (Srikanth's
+  explicit call). ADDITIONS ONLY — nothing existing removed or modified,
+  except get_reengaged_count()/get_reengaged_leads() which are commented
+  out in place (tagged PAUSED, full bodies retained for reference
+  directly above their replacements) and replaced by two new functions
+  of the SAME names and SAME call signatures, so every existing call
+  site (app.py's dashboard()/reengaged_list(), cls_reports.py's
+  _build_reengagement()) needed zero changes.
+
+  NEW COLUMN — leads.reengaged_at (TEXT, nullable), added via the
+  existing self-healing drip_migrations ALTER TABLE loop in init_db().
+  NULL for every pre-existing row at deploy; only ever set going
+  forward. NEW CONFIG — RESET_STAGES_ON_REENGAGEMENT = ("Unqualified",
+  "Lost", "Booked"), next to STAGE_TRANSITIONS.
+
+  NEW TRIGGER — upsert_meta_lead()'s existing branch 2 (contact-match/
+  enrich path, no leadgen_id row but phone/email matches an existing
+  row — typically a Sell.do-only lead) now calls a new helper,
+  _apply_reengagement_marker(conn, cls_id, prev_stage, now), BEFORE
+  that branch's existing UPDATE. Always stamps reengaged_at=now; when
+  the matched row's prior stage was in RESET_STAGES_ON_REENGAGEMENT,
+  also resets current_stage='Incoming', stage_updated_at=now,
+  stage_reason=NULL — otherwise the existing stage is left exactly as
+  today. This is a raw sync write, same posture as every other Job A/B
+  write on this row: it does NOT go through update_lead_stage()'s
+  STAGE_TRANSITIONS gate (that gate is for CRM-initiated user actions
+  only). Branch 1 (same-leadgen_id refresh) and branch 3 (brand-new
+  insert) are UNTOUCHED. upsert_selldo_lead() / Job B are NOT touched —
+  selldo_to_cls.py remains off-limits per standing instruction.
+
+  NEW get_reengaged_count()/get_reengaged_leads() — LIVE-computed
+  (reengaged_at IS NOT NULL AND no activity_log row since), same
+  "computed at query time, no stored cleared flag" principle as every
+  other missed/due status in this file. Both still accept a `days`
+  kwarg for call-site signature compatibility only — it is UNUSED,
+  since the new definition has no trailing-window concept.
+
+  KNOWN LIMITATION, flagged not built: a Booked->Incoming reset does
+  NOT also auto-cancel any open site visit/follow-up via the existing
+  _auto_cancel_open_schedules() — recommended to skip since Booked
+  leads essentially never have anything open scheduled; see
+  _apply_reengagement_marker()'s docstring.
+
+  EXPECTED, not a bug: every existing lead has reengaged_at=NULL right
+  after this deploys, so get_reengaged_count() reads 0 until new
+  re-entries happen through Job A's enrich path.
+
 v2.19 (July 2026) — APX bug-fix + scoped-enhancement batch (3 items from
   Srikanth, parallel-run continues unaffected). ADDITIVE ONLY except where
   noted — no existing table, function signature, or call site removed.
@@ -1010,6 +1057,15 @@ STAGE_TRANSITIONS = {
     "Booked"       : ["Prospect"],
 }
 
+# v2.20 (July 2026) — Task 3: which stages get reset to "Incoming" when
+# a lead re-enters through upsert_meta_lead()'s contact-match (enrich)
+# branch. Config-not-code: to change which stages count as "dead enough
+# to restart the funnel", edit only this tuple — see
+# _apply_reengagement_marker() for where it's applied. A lead currently
+# in any OTHER stage keeps its stage exactly as today (only
+# reengaged_at gets stamped).
+RESET_STAGES_ON_REENGAGEMENT = ("Unqualified", "Lost", "Booked")
+
 # Allowed INITIAL stages for a manually-entered lead (v1.9). Never
 # "Incoming" — a manual entry is definitionally not a fresh digital
 # inquiry; it's a walk-in, a reference, or an offline call, so it
@@ -1460,6 +1516,11 @@ def init_db():
         # v2.11 changelog note for why.
         ("alt_phone_raw",           "TEXT"),   # as typed, optional
         ("alt_phone_norm",          "TEXT"),   # normalized via norm_phone(), display/tel: link only
+        # v2.20 — precise reengagement marker (Task 3). NULL until a
+        # contact match re-enters through upsert_meta_lead()'s enrich
+        # branch (see _apply_reengagement_marker()); never cleared once
+        # set. Existing rows all start NULL at deploy.
+        ("reengaged_at",            "TEXT"),
     ]
     for col_name, col_type in drip_migrations:
         if col_name not in lead_cols:
@@ -2183,29 +2244,118 @@ def get_new_enquiries_leads():
         conn.close()
 
 
+# PAUSED — superseded by precise reengaged_at-based definition,
+# Srikanth's July 2026 decision; retained for reference.
+#
+# def get_reengaged_count(days=7):
+#     """
+#     APPROXIMATE reengagement signal — labelled as such in the UI on
+#     purpose. Counts leads that already existed BEFORE the window
+#     (cls_created_at older than `days`) but were touched INSIDE the
+#     window (cls_updated_at within `days`).
+#
+#     The caveat (deliberately not hidden): this can't yet distinguish
+#     "a genuine new inbound inquiry from a returning customer" from "a
+#     routine stage re-sync on an old lead" — both bump cls_updated_at
+#     identically. A precise version means adding a marker at the exact
+#     moment find_match() succeeds inside upsert_meta_lead/
+#     upsert_selldo_lead, which is a production write-path change —
+#     deliberately deferred rather than rushed into a read-only polish
+#     pass. Until then, treat this number as directional, not exact.
+#     """
+#     conn = _connect()
+#     try:
+#         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+#         row = conn.execute("""
+#             SELECT COUNT(*) c FROM leads
+#             WHERE cls_created_at < ? AND cls_updated_at >= ?
+#         """, (cutoff, cutoff)).fetchone()
+#         return row["c"]
+#     finally:
+#         conn.close()
+#
+#
+# def get_reengaged_leads(days=7, owner=None, date_from=None, date_to=None):
+#     """
+#     List-returning counterpart to get_reengaged_count() above — SAME
+#     approximate criteria (see that function's docstring for the full
+#     caveat), just returning rows instead of a count, so the dashboard
+#     card can link through to an actual filtered list.
+#
+#     owner (v2.12): optional, default None (existing behavior,
+#     unchanged — reengaged_list() keeps calling this with no owner
+#     arg). Pass a lead_owner to scope to one salesperson's own leads,
+#     for Report #9's owner-filtered view.
+#
+#     date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings, default
+#     None (existing behavior unchanged — `days` trailing window from
+#     right now). When both given, the cutoff becomes date_from's start
+#     of day (leads created before the selected period, reengaged AT OR
+#     AFTER it starts) and matches are additionally capped at date_to's
+#     end of day — "which existing leads came back DURING this period,"
+#     not "...since N days ago."
+#     """
+#     conn = _connect()
+#     try:
+#         if date_from and date_to:
+#             cutoff = f"{date_from} 00:00:00"
+#             upper = f"{date_to} 23:59:59"
+#             query = """
+#                 SELECT * FROM leads
+#                 WHERE cls_created_at < ? AND cls_updated_at >= ? AND cls_updated_at <= ?
+#             """
+#             params = [cutoff, cutoff, upper]
+#         else:
+#             cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+#             query = """
+#                 SELECT * FROM leads
+#                 WHERE cls_created_at < ? AND cls_updated_at >= ?
+#             """
+#             params = [cutoff, cutoff]
+#         if owner:
+#             query += " AND lead_owner = ?"
+#             params.append(owner)
+#         query += " ORDER BY cls_updated_at DESC"
+#         rows = conn.execute(query, params).fetchall()
+#         return [dict(r) for r in rows]
+#     finally:
+#         conn.close()
+
+
 def get_reengaged_count(days=7):
     """
-    APPROXIMATE reengagement signal — labelled as such in the UI on
-    purpose. Counts leads that already existed BEFORE the window
-    (cls_created_at older than `days`) but were touched INSIDE the
-    window (cls_updated_at within `days`).
+    (v2.20, Task 3) PRECISE reengagement signal, superseding the old
+    approximate cls_updated_at-window definition above. Counts leads
+    whose reengaged_at marker is set (stamped by
+    _apply_reengagement_marker(), called from upsert_meta_lead()'s
+    contact-match/enrich branch) AND that have had NO activity_log
+    entry since that marker — i.e. "came back, and nobody's touched it
+    since." Computed LIVE at query time (no stored "cleared" flag),
+    same principle as missed-status computation elsewhere in this file
+    (get_due_by_kind() etc.) — the moment any activity is logged
+    against the lead, it naturally drops out of this count on the very
+    next read.
 
-    The caveat (deliberately not hidden): this can't yet distinguish
-    "a genuine new inbound inquiry from a returning customer" from "a
-    routine stage re-sync on an old lead" — both bump cls_updated_at
-    identically. A precise version means adding a marker at the exact
-    moment find_match() succeeds inside upsert_meta_lead/
-    upsert_selldo_lead, which is a production write-path change —
-    deliberately deferred rather than rushed into a read-only polish
-    pass. Until then, treat this number as directional, not exact.
+    `days` is accepted but UNUSED — kept only so this function's
+    existing call sites (dashboard()'s get_reengaged_count(days=7))
+    need no changes. There is no trailing-window concept in the new
+    definition; a lead stays counted for as long as it remains
+    genuinely untouched since re-entering, however long that is.
+
+    EXPECTED AT DEPLOY: every existing lead has reengaged_at=NULL (the
+    migration is additive, nothing is backfilled), so this reads 0
+    until new re-entries happen through Job A's enrich path — not a bug.
     """
     conn = _connect()
     try:
-        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         row = conn.execute("""
             SELECT COUNT(*) c FROM leads
-            WHERE cls_created_at < ? AND cls_updated_at >= ?
-        """, (cutoff, cutoff)).fetchone()
+            WHERE reengaged_at IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM activity_log a
+                WHERE a.cls_id = leads.cls_id AND a.created_at > leads.reengaged_at
+              )
+        """).fetchone()
         return row["c"]
     finally:
         conn.close()
@@ -2213,45 +2363,40 @@ def get_reengaged_count(days=7):
 
 def get_reengaged_leads(days=7, owner=None, date_from=None, date_to=None):
     """
-    List-returning counterpart to get_reengaged_count() above — SAME
-    approximate criteria (see that function's docstring for the full
-    caveat), just returning rows instead of a count, so the dashboard
-    card can link through to an actual filtered list.
+    (v2.20, Task 3) List-returning counterpart to get_reengaged_count()
+    above — SAME precise, live-computed criteria (see that function's
+    docstring). `days` is accepted but UNUSED, same reason as above —
+    kept purely so reengaged_list()'s existing get_reengaged_leads(days=7)
+    call needs no changes.
 
-    owner (v2.12): optional, default None (existing behavior,
-    unchanged — reengaged_list() keeps calling this with no owner
-    arg). Pass a lead_owner to scope to one salesperson's own leads,
-    for Report #9's owner-filtered view.
+    owner : optional, default None (unchanged call-site behavior) —
+    scopes to one salesperson's lead_owner, same as before.
 
-    date_from/date_to (v2.13): optional 'YYYY-MM-DD' strings, default
-    None (existing behavior unchanged — `days` trailing window from
-    right now). When both given, the cutoff becomes date_from's start
-    of day (leads created before the selected period, reengaged AT OR
-    AFTER it starts) and matches are additionally capped at date_to's
-    end of day — "which existing leads came back DURING this period,"
-    not "...since N days ago."
+    date_from/date_to : optional 'YYYY-MM-DD' strings, default None
+    (unchanged call-site behavior). v2.20 CHANGE: when both given, they
+    now bound reengaged_at (which existing leads came back DURING this
+    period), not cls_updated_at as the old definition did — cls_reports.
+    _build_reengagement() already passes these through unchanged, so
+    the report's date-range picker keeps working with the new meaning.
     """
     conn = _connect()
     try:
+        query = """
+            SELECT * FROM leads
+            WHERE reengaged_at IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM activity_log a
+                WHERE a.cls_id = leads.cls_id AND a.created_at > leads.reengaged_at
+              )
+        """
+        params = []
         if date_from and date_to:
-            cutoff = f"{date_from} 00:00:00"
-            upper = f"{date_to} 23:59:59"
-            query = """
-                SELECT * FROM leads
-                WHERE cls_created_at < ? AND cls_updated_at >= ? AND cls_updated_at <= ?
-            """
-            params = [cutoff, cutoff, upper]
-        else:
-            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-            query = """
-                SELECT * FROM leads
-                WHERE cls_created_at < ? AND cls_updated_at >= ?
-            """
-            params = [cutoff, cutoff]
+            query += " AND reengaged_at >= ? AND reengaged_at <= ?"
+            params.extend([f"{date_from} 00:00:00", f"{date_to} 23:59:59"])
         if owner:
             query += " AND lead_owner = ?"
             params.append(owner)
-        query += " ORDER BY cls_updated_at DESC"
+        query += " ORDER BY reengaged_at DESC"
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -4071,6 +4216,44 @@ def find_match(conn, phone_norm, email_norm):
 # UPSERT  —  Job A:  insert/update a row from a META lead
 # ─────────────────────────────────────────────────────────────
 
+def _apply_reengagement_marker(conn, cls_id, prev_stage, now):
+    """
+    (v2.20, Task 3) Called from INSIDE upsert_meta_lead()'s existing
+    transaction, right before its enrich-branch UPDATE, whenever a
+    contact match is found for a leadgen_id-less Meta lead — i.e. an
+    existing contact is genuinely re-entering through Meta. Any FUTURE
+    webhook/API ingestion function that re-matches an existing contact
+    this same way should call this SAME helper rather than
+    reimplementing the logic.
+
+    Always stamps reengaged_at=now on the matched row. Additionally
+    resets it back to the top of the funnel (current_stage='Incoming',
+    stage_updated_at=now, stage_reason=NULL) when prev_stage is "dead
+    enough" to restart — see RESET_STAGES_ON_REENGAGEMENT. Any other
+    prev_stage is left exactly as-is by this helper — the caller's own
+    COALESCE-based field merge (unchanged) handles retaining it.
+
+    This is a raw sync write, like Job A/B's other writes on this row —
+    it deliberately does NOT go through update_lead_stage()'s
+    STAGE_TRANSITIONS validation gate, which exists for CRM-initiated
+    user actions only, not pipeline sync writes.
+
+    KNOWN LIMITATION (flagged, not built): a Booked->Incoming reset
+    does NOT also auto-cancel any open site visit/follow-up via
+    _auto_cancel_open_schedules() — deliberately skipped since Booked
+    leads essentially never have anything open scheduled; revisit if
+    that assumption turns out to be wrong in practice.
+    """
+    if prev_stage in RESET_STAGES_ON_REENGAGEMENT:
+        conn.execute("""
+            UPDATE leads SET reengaged_at=?, current_stage='Incoming',
+                stage_updated_at=?, stage_reason=NULL
+            WHERE cls_id=?
+        """, (now, now, cls_id))
+    else:
+        conn.execute("UPDATE leads SET reengaged_at=? WHERE cls_id=?", (now, cls_id))
+
+
 def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                      phone_raw, email_raw, meta_created_time):
     """
@@ -4116,6 +4299,17 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
         # ── 2. No leadgen_id row — does a contact match exist? (enrich it) ──
         cls_id, tier = find_match(conn, phone_norm, email_norm)
         if cls_id:
+            # v2.20 — Task 3: this contact-match IS the reengagement
+            # trigger point (branch 2 only — never branch 1's same-
+            # leadgen_id refresh above, never branch 3's brand-new
+            # insert below). Read the matched row's stage BEFORE any
+            # UPDATE below touches it, so the reset decision uses the
+            # genuine pre-sync value.
+            prev_row = conn.execute(
+                "SELECT current_stage FROM leads WHERE cls_id=?", (cls_id,)
+            ).fetchone()
+            _apply_reengagement_marker(conn, cls_id, prev_row["current_stage"] if prev_row else None, now)
+
             # An existing row (likely selldo_only) is the same person.
             # Stamp the leadgen_id onto it — this is the back-fill case.
             conn.execute("""

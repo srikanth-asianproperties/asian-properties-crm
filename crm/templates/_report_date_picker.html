@@ -1,13 +1,27 @@
-{# _report_date_picker.html (v0.6.1) — shared date-range picker, included
+{# _report_date_picker.html (v0.7) — shared date-range picker, included
    by both report_view.html and report_view_charts.html so the markup/
    logic for "which range is this report showing" lives in exactly one
-   place. Expects `report` (from cls_reports.build_report()) and
-   `quick_select_links` (from cls_reports.quick_select_links()) in
-   context — both templates' routes already pass these.
+   place. Expects `report` (from cls_reports.build_report()) in context
+   — both templates' routes already pass this; `quick_select_links` is
+   no longer read here (see below).
 
    report.is_live reports (Pipeline Funnel Snapshot, Lead Score
    Distribution, Owner-wise Workload) get a small "Live snapshot" note
-   instead of a picker — Requirement 1's explicit exemption list. #}
+   instead of a picker — Requirement 1's explicit exemption list,
+   unchanged.
+
+   v0.7 (July 2026, Task 1) — the old row of 4 quick-link buttons
+   (Today/This Week/This Month/Last 30 Days) is replaced with an
+   11-option <select> dropdown (Today / Yesterday / Last 7 days /
+   Last 14 days / Last 30 days / This week / Last week / This month /
+   Last month / Maximum / Custom), same option set and same auto-submit-
+   unless-Custom JS pattern as leads_filter.html's onDatePresetChange().
+   Selecting anything except "Custom" submits immediately; "Custom"
+   reveals the From/To inputs and still requires the Apply button.
+   Driven entirely by cls_reports.build_report()'s new
+   report.date_preset / report.date_preset_order / report.date_preset_labels
+   keys — no new template context needed from app.py's routes, so
+   app.py itself is untouched by this change. #}
 {% if report.is_live %}
 <div class="card no-print" style="margin-top:14px; background:#F0F4FF; border-color:#C9D6F5;">
   <p style="font-size:12px; color:var(--ink-soft); margin:0;">
@@ -15,18 +29,35 @@
   </p>
 </div>
 {% else %}
-<div class="no-print" style="margin-top:14px; display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
-  {% for label, key, f, t in quick_select_links %}
-  <a href="{{ url_for('report_view', report_id=report.id, **{'from': f, 'to': t}) }}"
-     class="btn {{ 'btn-primary' if report.date_from == f and report.date_to == t }}"
-     style="padding:5px 14px; font-size:13px;">{{ label }}</a>
-  {% endfor %}
-  <form method="get" action="{{ url_for('report_view', report_id=report.id) }}"
-        style="display:flex; gap:6px; align-items:center; margin-left:4px;">
+<form method="get" action="{{ url_for('report_view', report_id=report.id) }}"
+      id="reportDateForm" class="no-print"
+      style="margin-top:14px; display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+  <select name="preset" id="reportDatePresetSelect" onchange="onReportDatePresetChange(this)"
+          style="height:34px; font-size:13px; padding:4px 8px;">
+    <option value="" {% if not report.date_preset %}selected{% endif %}>— Select —</option>
+    {% for key in report.date_preset_order %}
+    <option value="{{ key }}" {% if report.date_preset == key %}selected{% endif %}>{{ report.date_preset_labels[key] }}</option>
+    {% endfor %}
+  </select>
+  <div id="customReportDateFields"
+       style="display:{{ 'flex' if report.date_preset == 'custom' else 'none' }}; gap:6px; align-items:center;">
     <input type="date" name="from" value="{{ report.date_from }}" style="height:34px; font-size:13px; padding:4px 8px;" aria-label="From date">
     <span style="font-size:13px; color:var(--ink-soft);">to</span>
     <input type="date" name="to" value="{{ report.date_to }}" style="height:34px; font-size:13px; padding:4px 8px;" aria-label="To date">
-    <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">Apply</button>
-  </form>
-</div>
+  </div>
+  <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">Apply</button>
+</form>
+<script>
+function onReportDatePresetChange(sel){
+  var customBox = document.getElementById('customReportDateFields');
+  if (sel.value === 'custom') {
+    customBox.style.display = 'flex';
+    return;
+  }
+  customBox.style.display = 'none';
+  if (sel.value !== '') {
+    sel.form.submit();
+  }
+}
+</script>
 {% endif %}

@@ -1,7 +1,14 @@
-{# dashboard.html (v0.11) — "Stats" tab of the 3-tab dashboard (Stats /
+{# dashboard.html (v0.12) — "Stats" tab of the 3-tab dashboard (Stats /
    Today's Performance / Pipeline Analysis). Bottom tab bar unchanged
    from v0.6. Kept at the /dashboard route/filename so every existing
    url_for('dashboard') link elsewhere still works.
+
+   v0.12 (July 2026, Task 3) — Reengaged card/caption copy updated for
+   the precise reengaged_at-based definition (cls_db.py v2.20):
+   dropped the "(approx.)" header span and "Directional, not exact"
+   caption, rewrote the explanatory paragraph below the grid. No
+   route/context changes — reengaged_count still comes from the same
+   dashboard() call, now backed by the new cls_db.get_reengaged_count().
 
    v0.11 — Stat tiles migrated from ad-hoc .card markup to the shared
    .stat-card / .stat-card-grid classes (base.html v0.12), matching the
@@ -40,10 +47,10 @@
   </a>
 
   <a href="{{ url_for('reengaged_list') }}" class="stat-card">
-    <div class="stat-card-header">Reengaged <span style="text-transform:none; font-weight:400;">(approx.)</span></div>
+    <div class="stat-card-header">Reengaged</div>
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-blue">{{ reengaged_count }}</div>
-      <div class="stat-card-caption">Directional, not exact &middot; tap to view</div>
+      <div class="stat-card-caption">Untouched since re-entry &middot; tap to view</div>
     </div>
   </a>
 
@@ -76,9 +83,9 @@
 </a>
 
 <p style="font-size:13px; color:var(--ink-soft); margin-top:18px; max-width:560px;">
-  "Reengaged" counts existing leads touched again this week — it can't yet tell
-  a genuine new inquiry apart from a routine stage sync, so treat it as a
-  signal, not a precise count.
+  "Reengaged" counts existing contacts who came back in through Meta (matched
+  by phone/email to a prior lead) and haven't had any activity logged since —
+  it clears the moment someone touches the lead.
 </p>
 
 <div style="margin-top:24px;">
