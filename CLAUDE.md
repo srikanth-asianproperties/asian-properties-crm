@@ -106,6 +106,34 @@ The app runs in **parallel-run mode** alongside Sell.do (by explicit design, not
 
 Static Cloudflare Pages site + two Pages Functions (`functions/api/snapshot.js`, `functions/_middleware.js`) that serve the JSON blob `cls_snapshot.py` pushes to Workers KV (binding `CLS_SNAPSHOT`). The PWA never touches `cls.db` directly — it only ever reads the last pushed snapshot, so a failed push just means a stale (not broken) view. Access is gated by Cloudflare Access in front of the Pages project, not by any app-level auth.
 
+## Future direction: Native Android APK (not PWA/TWA)
+
+The end-plan for team-facing CRM access is a TRUE NATIVE Android APK —
+an installable file sent directly to the team (not published to Play
+Store, not a PWA-wrapper/TWA). Reasons: native app feel, native call
+log / call recording auto-fetch access (READ_CALL_LOG permission),
+and future ad-hoc native features not achievable in a browser context.
+
+Implication for v1.0 Telephony: this likely REPLACES the originally-
+planned rclone + Google Drive bridge and per-device OEM recording
+folder matching, rather than coexisting with it. Do not build the
+rclone/Drive bridge without re-confirming this with Srikanth first —
+the 9 open Telephony architecture decisions need to be revisited
+against "native app has direct call log access" before any of them
+are locked.
+
+Implication for auth: a native app cannot use Flask's session-cookie
+login as-is. Moving to this will require token-based auth (app logs
+in once, gets a token, sends it in a header on every request) and a
+JSON API layer alongside (or replacing, for native clients) today's
+HTML routes. This is real v1.0-scale scope — do not treat it as a
+small addition to the current PWA.
+
+Note: the User Activity Log (user_sessions / user_action_log,
+cls_db.py v2.21+) is server-side and auth-mechanism-agnostic — it
+will continue working unchanged once auth moves to tokens; only the
+lookup of session_row_id needs to shift from session cookie to token.
+
 ## Conventions worth knowing before editing
 
 - **"Never discard" / "never fail silently"**: recurring design rules referenced throughout the job scripts' docstrings (e.g. Sell.do's export window is a fixed historical anchor, not a rolling window, specifically so old leads can't silently age out of sync; `cls_snapshot.py` swallows all its own errors so a KV outage can never block Job C). Preserve this posture when modifying pipeline code — prefer loud logging + safe skip over exceptions that could kill a scheduled job.
