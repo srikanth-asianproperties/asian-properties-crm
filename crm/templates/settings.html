@@ -1,9 +1,10 @@
-{# settings.html (v0.10) — admin Settings hub. A grid of tiles; each
+{# settings.html (v0.12) — admin Settings hub. A grid of tiles; each
    future admin tool drops in here as another tile, inheriting the
    /settings admin gate rather than adding its own hamburger link.
 
    v0.10 — NEW "WhatsApp Reminder Templates" tile (site-visit reminders,
-   separate from the existing WhatsApp Templates tile/table). #}
+   separate from the existing WhatsApp Templates tile/table).
+   v0.12 — NEW "User Activity Log" tile. #}
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 
@@ -42,6 +43,16 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
       One reminder message per project, sent the day before a scheduled site visit.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_user_activity') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <span style="font-weight:700; font-size:16px;">User Activity Log</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Every login session and the actions taken during it.
     </p>
   </a>
 

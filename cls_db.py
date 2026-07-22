@@ -2,11 +2,31 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.20
+Version : 2.21
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.21 (July 2026) — admin "User Activity Log" (Settings > User Activity).
+  ADDITIONS ONLY — nothing existing removed or modified.
+
+  NEW TABLES (self-healing CREATE IF NOT EXISTS in init_db(), same
+  section style as impersonation_log): user_sessions (one row per login,
+  auto-closed 'superseded' by a fresh login for the same user_id if a
+  prior row is still open) and user_action_log (one row per logged-in
+  request, FK'd to user_sessions.session_id). Kept separate from both
+  activity_log (lead-scoped, pre-existing) and impersonation_log
+  (account-level but flat, no parent/child grouping) — this feature
+  needs one-session-has-many-actions grouping for the admin UI's one-
+  card-per-session rendering.
+
+  NEW start_user_session()/end_user_session()/log_user_action()/
+  get_user_timeline() — see each docstring below. app.py v0.12 calls
+  start_user_session() from login() and end_user_session() from
+  logout(), and a new before_request hook calls log_user_action() on
+  every logged-in request. None of these touch any existing table,
+  function signature, or call site.
+
 v2.20 (July 2026) — Task 3: precise "Re-engaged" redefinition (Srikanth's
   explicit call). ADDITIONS ONLY — nothing existing removed or modified,
   except get_reengaged_count()/get_reengaged_leads() which are commented
@@ -1712,6 +1732,40 @@ def init_db():
             created_at   TEXT NOT NULL
         );
     """)
+
+    # ── v2.21 — admin "User Activity Log" (Settings > User Activity) ──
+    # Session-level audit trail, additive alongside (not replacing)
+    # activity_log: activity_log is lead-scoped and existed long before
+    # this; these two tables record EVERY logged-in request, lead-scoped
+    # or not, grouped by login session. See the "USER ACTIVITY LOG"
+    # section further down for the functions that read/write these.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            session_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id        INTEGER,
+            actor          TEXT,
+            login_at       TEXT,
+            logout_at      TEXT,
+            logout_reason  TEXT,
+            ip_address     TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_login ON user_sessions(login_at);")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_action_log (
+            log_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   INTEGER,
+            actor        TEXT,
+            method       TEXT,
+            label        TEXT,
+            cls_id       TEXT,
+            created_at   TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_useraction_session ON user_action_log(session_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_useraction_created ON user_action_log(created_at);")
 
     conn.commit()
     conn.close()
@@ -3735,6 +3789,168 @@ def log_impersonation(admin_email, target_email, event):
             (admin_email, target_email, event, _now())
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# USER ACTIVITY LOG  —  CRM v2.21 (Settings > User Activity)
+# ─────────────────────────────────────────────────────────────
+# Session-level audit trail: one user_sessions row per login (auto-
+# closed 'superseded' if a stale session for that user is still open
+# when a new one starts), one user_action_log row per request app.py's
+# before_request hook logs against that session's session_id.
+
+def start_user_session(user_id, actor, ip_address):
+    """
+    (v2.21) Opens a new user_sessions row for a just-authenticated
+    login. Before inserting, auto-closes any session for this user_id
+    that is still open (logout_at IS NULL) — logout_reason='superseded'
+    — so a user who closes their browser without logging out (or logs
+    in again from a second device) never leaves two "still active"
+    cards showing at once. Returns the new session_id (int) for
+    app.py's login() to stash in session["session_row_id"].
+    """
+    conn = _connect()
+    try:
+        now = _now()
+        conn.execute(
+            "UPDATE user_sessions SET logout_at=?, logout_reason='superseded' "
+            "WHERE user_id=? AND logout_at IS NULL",
+            (now, user_id)
+        )
+        cur = conn.execute(
+            "INSERT INTO user_sessions (user_id, actor, login_at, ip_address) "
+            "VALUES (?, ?, ?, ?)",
+            (user_id, actor, now, ip_address)
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def end_user_session(session_id, reason="manual"):
+    """
+    (v2.21) Closes a user_sessions row — sets logout_at/logout_reason,
+    but ONLY if logout_at is still NULL, so calling this on a session
+    that's already closed (e.g. already auto-closed as 'superseded' by
+    a later login elsewhere) never overwrites the existing close.
+    """
+    if not session_id:
+        return
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE user_sessions SET logout_at=?, logout_reason=? "
+            "WHERE session_id=? AND logout_at IS NULL",
+            (_now(), reason, session_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def log_user_action(session_id, actor, method, label, cls_id=None):
+    """
+    (v2.21) Appends one row to user_action_log. Guard: if session_id is
+    None (e.g. a request that hit before any session existed, such as
+    /login itself), this is a no-op — there is nothing to attach the
+    action to, and logging a sessionless action would break the "one
+    card per session" grouping get_user_timeline() relies on.
+    """
+    if session_id is None:
+        return
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO user_action_log (session_id, actor, method, label, cls_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, actor, method, label, cls_id, _now())
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_user_timeline(user_id=None, date_from=None, date_to=None):
+    """
+    (v2.21) Admin Settings > User Activity Log data source. Returns a
+    list of session dicts (most recent login first), each carrying an
+    "events" list already merged in chronological order: a synthetic
+    "Logged in" event first, then every user_action_log row for that
+    session (in created_at order), then a synthetic "Logged out" (or
+    "Still active" if logout_at IS NULL) event last — so the template
+    can render one card per session with no grouping/sorting of its own.
+
+    user_id=None means every user (the admin's default view).
+    date_from/date_to are 'YYYY-MM-DD' strings, both optional; if
+    neither is given, both default to today. If only one is given, the
+    other is set equal to it (a single-day view).
+    """
+    if not date_from and not date_to:
+        today = datetime.now().strftime("%Y-%m-%d")
+        date_from = date_to = today
+    elif not date_from:
+        date_from = date_to
+    elif not date_to:
+        date_to = date_from
+
+    conn = _connect()
+    try:
+        query = (
+            "SELECT session_id, user_id, actor, login_at, logout_at, "
+            "logout_reason, ip_address FROM user_sessions "
+            "WHERE substr(login_at, 1, 10) BETWEEN ? AND ?"
+        )
+        params = [date_from, date_to]
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY login_at DESC"
+        sessions = [dict(r) for r in conn.execute(query, params).fetchall()]
+
+        actions_by_session = {}
+        session_ids = [s["session_id"] for s in sessions]
+        if session_ids:
+            placeholders = ",".join("?" * len(session_ids))
+            action_rows = conn.execute(
+                f"SELECT session_id, actor, method, label, cls_id, created_at "
+                f"FROM user_action_log WHERE session_id IN ({placeholders}) "
+                f"ORDER BY created_at ASC",
+                session_ids
+            ).fetchall()
+            for r in action_rows:
+                actions_by_session.setdefault(r["session_id"], []).append(dict(r))
+
+        timeline = []
+        for s in sessions:
+            events = [{
+                "type": "login",
+                "label": "Logged in",
+                "at": s["login_at"],
+                "ip_address": s["ip_address"],
+            }]
+            for a in actions_by_session.get(s["session_id"], []):
+                events.append({
+                    "type": "action",
+                    "label": a["label"],
+                    "method": a["method"],
+                    "cls_id": a["cls_id"],
+                    "at": a["created_at"],
+                })
+            if s["logout_at"]:
+                events.append({
+                    "type": "logout",
+                    "label": "Logged out" if s["logout_reason"] != "superseded"
+                             else "Logged out (new login elsewhere)",
+                    "at": s["logout_at"],
+                })
+            else:
+                events.append({"type": "active", "label": "Still active", "at": None})
+            s["events"] = events
+            timeline.append(s)
+        return timeline
     finally:
         conn.close()
 

@@ -1,0 +1,75 @@
+{# settings_user_activity.html (v0.12) — admin Settings > User Activity
+   Log. Full session-level audit trail: one card per login session,
+   chronological "Logged in" -> actions -> "Logged out"/"Still active",
+   sourced from cls_db.get_user_timeline(). Optional filters (user +
+   date range) are plain GET querystring params, same no-JS-state
+   pattern as leads_filter.html/the reports date picker — "Custom"
+   dates always shown since this screen has no quick-preset dropdown,
+   just From/To (simpler than reusing _report_date_picker.html, which
+   is coupled to cls_reports.py's `report` object). Admin-only — linked
+   only from settings.html's tile, never from base.html's nav drawer. #}
+{% extends "base.html" %}
+{% block title %}User Activity Log{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+<h2 style="margin-top:10px;">User Activity Log</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  Every logged-in session and the actions taken during it. Admin-only.
+</p>
+
+<form method="get" action="{{ url_for('settings_user_activity') }}"
+      style="margin-top:16px; display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+  <select name="user_id" style="height:34px; font-size:13px; padding:4px 8px;">
+    <option value="">All users</option>
+    {% for u in users %}
+    <option value="{{ u.user_id }}" {% if selected_user_id == u.user_id %}selected{% endif %}>
+      {{ u.full_name or u.email }}
+    </option>
+    {% endfor %}
+  </select>
+  <input type="date" name="date_from" value="{{ date_from }}" style="height:34px; font-size:13px; padding:4px 8px;" aria-label="From date">
+  <span style="font-size:13px; color:var(--ink-soft);">to</span>
+  <input type="date" name="date_to" value="{{ date_to }}" style="height:34px; font-size:13px; padding:4px 8px;" aria-label="To date">
+  <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">Apply</button>
+</form>
+
+<div style="display:flex; flex-direction:column; gap:12px; margin-top:16px;">
+  {% for s in timeline %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <strong style="font-size:15px;">{{ s.actor }}</strong>
+      {% if not s.logout_at %}
+      <span class="badge" style="background:var(--green);">Still active</span>
+      {% elif s.logout_reason == 'superseded' %}
+      <span class="badge" style="background:var(--ink-soft);">Superseded</span>
+      {% else %}
+      <span class="badge" style="background:var(--ink-soft);">Ended</span>
+      {% endif %}
+    </div>
+    <ul style="list-style:none; padding:0; margin:10px 0 0; font-size:13px;">
+      {% for ev in s.events %}
+      <li style="padding:5px 0; border-top:1px solid var(--border, #EEE); display:flex; justify-content:space-between; gap:10px;">
+        <span>
+          {{ ev.label }}
+          {% if ev.type == 'action' and ev.cls_id %}
+          <span style="color:var(--ink-soft);">— lead {{ ev.cls_id }}</span>
+          {% endif %}
+          {% if ev.type == 'login' and ev.ip_address %}
+          <span style="color:var(--ink-soft);">({{ ev.ip_address }})</span>
+          {% endif %}
+        </span>
+        <span style="color:var(--ink-soft); white-space:nowrap;">{{ ev.at|ampm if ev.at else '' }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
+</div>
+
+{% if not timeline %}
+<div class="card empty-state">
+  <p>No activity in this range.</p>
+</div>
+{% endif %}
+{% endblock %}

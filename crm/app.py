@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.11.1
+Version : 0.12.1
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,53 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.12.1 (July 2026) — User Activity Log, 2 fixes from first real-world
+  testing behind the Cloudflare Tunnel. app.py-only, no schema change.
+
+  FIX 1 — login()'s call to cls_db.start_user_session() was capturing
+  request.remote_addr, which is always 127.0.0.1 in production since
+  traffic arrives via cloudflared (Cloudflare Tunnel) rather than a
+  direct connection. Now reads request.headers.get('CF-Connecting-IP',
+  request.remote_addr) instead — Cloudflare's own header carrying the
+  real visitor IP, falling back to remote_addr for local/dev testing
+  where that header is absent.
+
+  FIX 2 — _log_user_action() before_request hook's skip list now also
+  excludes the 'service_worker' endpoint (the @app.route("/sw.js")
+  route, confirmed at its def service_worker() — served from the root
+  path rather than under /static/, which is why the existing 'static'
+  skip didn't already cover it). The browser fetches sw.js on its own
+  in the background; it was showing up as a fake "action" after every
+  real page view.
+
+v0.12 (July 2026) — admin "User Activity Log" (Settings > User Activity).
+  Requires cls_db.py v2.21. NEW settings_user_activity.html, settings.html
+  gained one tile. ADDITIONS ONLY — no existing route, function signature,
+  or call site changed.
+
+  NEW ENDPOINT_LABELS config dict + NEW @app.before_request hook
+  (_log_user_action) — logs every logged-in request via cls_db.
+  log_user_action(), against the current login's session_row_id. Skips
+  static/login/logout endpoints and any request with no logged-in
+  user_id; wrapped in try/except so a logging failure can never break a
+  real request (same "never fail silently, but never let logging kill
+  a request either" posture as cls_snapshot.py's swallowed errors).
+
+  MODIFIED login() — on successful verify_login(), now also calls
+  cls_db.start_user_session() and stashes the returned id as
+  session["session_row_id"] (set fresh AFTER session.clear(), same as
+  session["user_id"] already was — ordering unchanged, just one more
+  key set at the same point).
+
+  MODIFIED logout() — now calls cls_db.end_user_session() (guarded by
+  session.get("session_row_id") existing) BEFORE session.clear() wipes
+  it.
+
+  NEW GET /settings/user-activity (settings_user_activity) — admin-only,
+  optional user_id/date_from/date_to query params, calls cls_db.
+  get_user_timeline() + cls_db.get_all_users_detailed() (existing
+  function, reused for the filter dropdown).
+
 v0.11.1 (July 2026) — APX bug-fix + scoped-enhancement batch (items 2 and
   4 of Srikanth's 4-item batch; item 1 is cls_db.py-only, item 3 Option A
   is leads_list.html-only — see those files' own changelogs). Requires
@@ -896,6 +943,51 @@ def _actor():
 
 
 # ─────────────────────────────────────────────────────────────
+# USER ACTIVITY LOG  —  v0.12, request-level audit hook
+# ─────────────────────────────────────────────────────────────
+# config-not-code: an endpoint not listed here just logs under its raw
+# endpoint name instead of a friendly label — nothing is ever silently
+# unlogged, this dict only controls display text.
+ENDPOINT_LABELS = {
+    "dashboard": "Viewed Dashboard",
+    "dashboard_today": "Viewed Today's Performance",
+    "dashboard_pipeline": "Viewed Pipeline Analysis",
+    "leads_search_screen": "Searched Leads",
+    "lead_detail": "Viewed Lead",
+    "settings_home": "Opened Settings",
+}
+
+
+@app.before_request
+def _log_user_action():
+    """
+    (v0.12) Records every logged-in request against the current login's
+    session (cls_db.log_user_action()), for the admin User Activity Log.
+    Skipped entirely for static assets, the login/logout routes
+    themselves (nothing to attach the action to yet, or the session is
+    about to be torn down), the service worker (sw.js — the browser
+    fetches this on its own in the background, not a user action; it's
+    a separate skip from 'static' since it's served from the root path,
+    not /static/), and any request with no logged-in user_id. Wrapped
+    in try/except that swallows and logs any failure — same "never let
+    logging break a real request" posture as cls_snapshot.py's
+    swallowed errors elsewhere in this codebase.
+    """
+    try:
+        if request.endpoint in (None, "static", "login", "logout", "service_worker"):
+            return
+        if not session.get("user_id"):
+            return
+        label = ENDPOINT_LABELS.get(request.endpoint, request.endpoint)
+        cls_id = request.view_args.get("cls_id") if request.view_args else None
+        cls_db.log_user_action(
+            session.get("session_row_id"), _actor(), request.method, label, cls_id=cls_id
+        )
+    except Exception as e:
+        _log(f"_log_user_action failed: {e}", level="ERROR")
+
+
+# ─────────────────────────────────────────────────────────────
 # ROUTES — AUTH
 # ─────────────────────────────────────────────────────────────
 
@@ -910,8 +1002,18 @@ def login():
         password = request.form.get("password", "")
         user = cls_db.verify_login(email, password)
         if user:
+            # Cloudflare Tunnel (cloudflared) proxies every request, so
+            # request.remote_addr is always 127.0.0.1 in production —
+            # the real visitor IP only survives in Cloudflare's own
+            # CF-Connecting-IP header. Falls back to remote_addr for
+            # local/dev testing where that header is never set.
+            ip = request.headers.get("CF-Connecting-IP", request.remote_addr)
+            session_row_id = cls_db.start_user_session(
+                user["user_id"], user["email"], ip
+            )
             session.clear()
             session["user_id"] = user["user_id"]
+            session["session_row_id"] = session_row_id
             next_url = request.args.get("next") or url_for("dashboard")
             return redirect(next_url)
         error = "Incorrect email or password."
@@ -921,6 +1023,8 @@ def login():
 
 @app.route("/logout")
 def logout():
+    if session.get("session_row_id"):
+        cls_db.end_user_session(session["session_row_id"], reason="manual")
     session.clear()
     return redirect(url_for("login"))
 
@@ -2110,6 +2214,38 @@ def settings_users():
     for a flag that already worked, not a new permission concept."""
     users = cls_db.get_all_users_detailed()
     return render_template("settings_users.html", users=users)
+
+
+@app.route("/settings/user-activity")
+@login_required
+@admin_required
+def settings_user_activity():
+    """
+    (v0.12) Admin Settings > User Activity Log — full session-level
+    audit trail (cls_db.get_user_timeline()). Optional query params:
+    user_id (filter to one login), date_from/date_to ('YYYY-MM-DD').
+    With no params at all this defaults to today — resolved here (not
+    left to get_user_timeline()'s own internal default) so the date
+    inputs on the page can show the actual range being displayed.
+    """
+    user_id = request.args.get("user_id", type=int)
+    date_from = request.args.get("date_from") or None
+    date_to = request.args.get("date_to") or None
+    if not date_from and not date_to:
+        today = datetime.now().strftime("%Y-%m-%d")
+        date_from = date_to = today
+    elif not date_from:
+        date_from = date_to
+    elif not date_to:
+        date_to = date_from
+
+    timeline = cls_db.get_user_timeline(user_id=user_id, date_from=date_from, date_to=date_to)
+    users = cls_db.get_all_users_detailed()
+    return render_template(
+        "settings_user_activity.html",
+        timeline=timeline, users=users,
+        selected_user_id=user_id, date_from=date_from, date_to=date_to,
+    )
 
 
 @app.route("/settings/users/<int:user_id>/toggle", methods=["POST"])
