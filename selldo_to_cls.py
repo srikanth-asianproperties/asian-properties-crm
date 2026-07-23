@@ -2,11 +2,29 @@
 =============================================================
 selldo_to_cls.py  —  CLS Job B  |  Sell.do CRM -> CLS Sync
 =============================================================
-Version : 1.5
+Version : 1.6
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.6  (July 2026) — 7-minute no-fail Gmail polling window (Task Scheduler
+  trigger move :10 -> :02, external change, not in this file):
+  CHANGE — MAX_ATTEMPTS : 6 -> 13
+    Job B must now poll for a full 7 minutes (420s) total, without fail.
+    Formula: EMAIL_WAIT_SECS (60) + (MAX_ATTEMPTS - 1) x CHECK_INTERVAL
+    = 60 + 12x30 = 420s = 7 minutes exactly, checked every 30 seconds
+    throughout. EMAIL_WAIT_SECS (60) and CHECK_INTERVAL (30) unchanged.
+  FIX — fetch_csv_from_gmail()'s IMAP connection block used to return
+    None (give up entirely) on the FIRST connection failure, regardless
+    of how many attempts remained. A single transient Gmail hiccup could
+    end the whole widened 7-minute window early. Now a connection failure
+    on any attempt logs a WARNING and falls through to the same
+    wait-CHECK_INTERVAL-and-retry path as a normal not-found-yet result;
+    the function only returns None/gives up after all 13 attempts are
+    exhausted. The per-email try/except blocks (search queries,
+    INTERNALDATE fetch, RFC822 fetch) were not touched — they already
+    retried correctly.
+
 v1.5  (July 2026) — CSV lead-count sanity check baseline fix (Fix 4 companion):
   The v1.2 Fix 4 sanity check compared the CSV's row count against
   cls_db.stats()["total_leads"] * 0.85. Starting 21-Jul-2026, this
@@ -202,12 +220,13 @@ EXPORT_URL = ("https://app.sell.do/client/export/export_types"
 # before CLS went live, and never move it forward.
 EXPORT_START_DATE = datetime(2025, 12, 1)
 
-# Gmail wait tuning — tuned for 1-hour cadence (v1.1).
+# Gmail wait tuning — tuned for 1-hour cadence (v1.1); widened in v1.6.
 # Sell.do emails typically arrive in 45-90s; 60s catches the first check.
-# 4 retries × 30s = 2 min worst-case retry window.
-# Total Job B budget: ~5-7 min — fits the :10→:25 Task Scheduler window.
+# 13 attempts × 30s = 6 min worst-case retry window.
+# Total polling window: 7 min (60s initial wait + 12×30s) — must never
+# fail early. Task Scheduler trigger now fires at :02 (external change).
 EMAIL_WAIT_SECS = 60    # initial wait for Sell.do's export email (was 180)
-MAX_ATTEMPTS    = 6     # Gmail retry attempts (was 4; v1.2 increase for slow exports)
+MAX_ATTEMPTS    = 13    # Gmail retry attempts (was 6; v1.6 increase for :02-trigger 7-min no-fail window)
 CHECK_INTERVAL  = 30    # seconds between retries (was 60)
 
 # How fresh Job A's completion must be for Job B to proceed (Risk 1).
@@ -456,8 +475,15 @@ def fetch_csv_from_gmail(gmail_user, gmail_app_pass, run_start_utc_ts,
             mail.login(gmail_user, gmail_app_pass)
             mail.select("inbox")
         except Exception as e:
-            log(f"Gmail connection failed: {e}", "ERROR")
-            return None
+            # v1.6: don't give up on the first connection failure — fall
+            # through to the same wait-and-retry path as a normal
+            # not-found-yet result. Only return None once all attempts
+            # are exhausted (see MAX_ATTEMPTS).
+            log(f"Gmail connection failed: {e}", "WARNING")
+            if attempt < attempts:
+                log(f"Export email not found yet. Waiting {CHECK_INTERVAL}s...")
+                time.sleep(CHECK_INTERVAL)
+            continue
 
         since_date = datetime.now().strftime("%d-%b-%Y")
         search_queries = [
