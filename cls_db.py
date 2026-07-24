@@ -2,11 +2,27 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.21
+Version : 2.22
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.22 (July 2026) — Job A insert-time stage/owner defaults (bug fix):
+  upsert_meta_lead()'s brand-new-insert branch never set current_stage
+  or lead_owner, leaving them NULL. Harmless when Job B syncs the same
+  session and fills both in — but on a Job B failure, salespeople saw
+  the lead with stage "Unknown" (unchangeable — STAGE_TRANSITIONS has
+  no NULL key) and got "not the owner" on every action (lead_owner=""
+  never matches any real owner name). FIX: insert now sets
+  current_stage='Incoming' (the stage STAGE_TRANSITIONS' own comment
+  already assumed Job A was setting) and lead_owner from the new
+  DEFAULT_OWNER_BY_PROJECT map (fallback: Mounika Peddi). SAFE: Job
+  B's existing-row UPDATE branch always overwrites current_stage
+  unconditionally, and lead_owner via COALESCE(NULLIF(?,''), lead_owner)
+  — so the moment Job B succeeds, these placeholders are corrected
+  with the real Sell.do values. No schema change. Branches 1/2 of
+  this function are untouched.
+
 v2.21 (July 2026) — admin "User Activity Log" (Settings > User Activity).
   ADDITIONS ONLY — nothing existing removed or modified.
 
@@ -1091,6 +1107,19 @@ RESET_STAGES_ON_REENGAGEMENT = ("Unqualified", "Lost", "Booked")
 # inquiry; it's a walk-in, a reference, or an offline call, so it
 # starts wherever it genuinely is in the funnel already.
 MANUAL_ENTRY_STAGES = ["Prospect", "Opportunity", "Site Visited"]
+
+# v2.22 (July 2026) — placeholder owner assigned at Job A insert time
+# (upsert_meta_lead() branch 3 only), so a brand-new lead is never left
+# with lead_owner=NULL/"" if Job B fails to sync that session.
+# Config-not-code: to change a project's default owner, edit only this
+# dict. Job B's own upsert (upsert_selldo_lead()) always overwrites
+# this placeholder with the real Sell.do "Attended By" the moment it
+# syncs successfully.
+DEFAULT_OWNER_BY_PROJECT = {
+    "Naishka":       "Elohar Peddi",
+    "Grace Classic": "Devender Goud",
+}
+FALLBACK_DEFAULT_OWNER = "Mounika Peddi"
 
 # v2.0 — source options for manually-entered leads only. Auto-captured
 # leads keep their system-level source ('meta'/'selldo_only') as
@@ -4542,16 +4571,19 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
         # ── 3. Genuinely new lead — insert. ──
         cls_id = str(uuid.uuid4())
         crm_lead_no = _next_crm_lead_no(conn)
+        default_owner = DEFAULT_OWNER_BY_PROJECT.get(project, FALLBACK_DEFAULT_OWNER)
         conn.execute("""
             INSERT INTO leads (
                 cls_id, leadgen_id, form_id, project, full_name,
                 phone_raw, phone_norm, email_raw, email_norm,
                 meta_created_time, source, crm_lead_no,
+                current_stage, stage_updated_at, lead_owner,
                 cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (cls_id, leadgen_id, form_id, project, full_name,
               phone_raw, phone_norm, email_raw, email_norm,
-              meta_created_time, "meta", crm_lead_no, now, now))
+              meta_created_time, "meta", crm_lead_no,
+              "Incoming", now, default_owner, now, now))
         conn.commit()
         return cls_id
     finally:
