@@ -2,11 +2,21 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.1
+Version : 1.2
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.2 (2026-07-24) : CLS1/CLS2 database split support. ADDITIONS ONLY.
+                    Added cls_db.write_job_result() calls at every
+                    existing return point in run() (both failure gates
+                    and the final success path) — one line to
+                    C:\\CLS\\job_results.txt per run, reusing the
+                    total_pulled/total_upserted counters this job
+                    already computes. No new counting logic. DB target
+                    itself is unchanged code-wise — Job A picks up
+                    CLS1.db automatically via cls_db.py's new
+                    CLS_DB_PATH env var default (see cls_db.py v2.23).
 v1.1 (2026-06-18) : Removed 2 paused-campaign forms from LEAD_FORMS.
                     Kept: GraceClassic (Camp1) + Naishka (Camp5).
                     Paused forms preserved as comments below for easy
@@ -432,6 +442,8 @@ def run():
     if not system_user_token or not app_secret:
         log("META_SYSTEM_USER_TOKEN or META_APP_SECRET missing in .env — aborting.",
             "ERROR")
+        cls_db.write_job_result("Job A (Meta Leads Fetcher)", False,
+                                 "META_SYSTEM_USER_TOKEN or META_APP_SECRET missing in .env")
         return False
 
     # ── Resolve a Page token once per unique Page (Stage 1) ──
@@ -448,6 +460,8 @@ def run():
 
     if not page_tokens:
         log("No Page tokens could be resolved — aborting.", "ERROR")
+        cls_db.write_job_result("Job A (Meta Leads Fetcher)", False,
+                                 "No Page tokens could be resolved")
         return False
 
     # ── Pull each form and upsert into CLS (Stages 2-4) ──
@@ -520,6 +534,8 @@ def run():
     log("=" * 55)
     log("CLS JOB A — Meta Leads Fetcher — DONE")
     log("=" * 55)
+    cls_db.write_job_result("Job A (Meta Leads Fetcher)", True,
+                             f"{total_pulled} leads pulled, {total_upserted} upserted")
     return True
 
 

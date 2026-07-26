@@ -2,11 +2,19 @@
 =============================================================
 cls_watchdog.py  —  CLS Health Monitor & Alert System
 =============================================================
-Version : 2.4
+Version : 2.5
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.5  (July 2026) — CLS1/CLS2 database split support. ADDITIONS ONLY.
+  check_database_accessible() now checks BOTH C:\\CLS\\CLS1.db and
+  C:\\CLS\\CLS2.db exist and are non-empty (lightweight file-existence
+  and size check, not a second cls_db.stats() call) before attempting
+  the existing single cls_db.stats() query against this process's own
+  DB_FILE. Catches "one half of the split silently went missing" even
+  though the watchdog itself only ever connects to one DB at a time.
+
 v2.4  (July 2026) — Real cycle count + per-salesperson daily summary:
   FIXED   — Daily summary said "CLS ran 5 cycles today (10:30 -> 18:30)"
               as a hardcoded string, left over from the old every-2-hours
@@ -518,17 +526,30 @@ def check_pending_fire_queue():
 
 def check_database_accessible():
     """
-    Verify cls.db can be opened and the leads table is queryable.
+    Verify CLS1.db and CLS2.db both exist and are non-empty (v2.5,
+    CLS1/CLS2 split — lightweight file check only, not a second
+    cls_db.stats() call), then verify this process's own DB (via
+    cls_db.stats()) is queryable.
     Returns a list of problem strings.
     """
     problems = []
-    db_path  = os.path.join(BASE_DIR, "cls.db")
-    if not os.path.exists(db_path):
-        problems.append(
-            f"🚨 <b>cls.db NOT FOUND</b> at {db_path}.\n"
-            f"   The entire CLS pipeline is broken — no data can be read or written."
-        )
-        log("cls.db missing!", "ERROR")
+
+    for label, purpose in (("CLS1.db", "your CRM"), ("CLS2.db", "the Sell.do mirror")):
+        path = os.path.join(BASE_DIR, label)
+        if not os.path.exists(path):
+            problems.append(
+                f"🚨 <b>{label} NOT FOUND</b> at {path}.\n"
+                f"   {purpose} database is missing — its jobs cannot read or write."
+            )
+            log(f"{label} missing!", "ERROR")
+        elif os.path.getsize(path) == 0:
+            problems.append(
+                f"🚨 <b>{label} is EMPTY</b> at {path}.\n"
+                f"   File exists but has zero bytes — likely a failed copy/migration."
+            )
+            log(f"{label} is empty!", "ERROR")
+
+    if problems:
         return problems
 
     try:
@@ -536,7 +557,7 @@ def check_database_accessible():
         log(f"DB OK — {s['total_leads']} leads, {s['pending_fire']} pending fire.")
     except Exception as e:
         problems.append(
-            f"🚨 <b>cls.db QUERY FAILED</b>: {e}\n"
+            f"🚨 <b>DB QUERY FAILED</b>: {e}\n"
             f"   The database file exists but cannot be read. Possible corruption."
         )
         log(f"DB query failed: {e}", "ERROR")

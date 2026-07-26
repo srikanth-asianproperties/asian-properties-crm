@@ -2,11 +2,26 @@
 =============================================================
 selldo_to_cls.py  —  CLS Job B  |  Sell.do CRM -> CLS Sync
 =============================================================
-Version : 1.6
+Version : 1.7
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.7  (July 2026) — CLS1/CLS2 database split support. Explicit one-time
+  override of the "Never touch Job B" rule, approved by Srikanth after
+  reviewing the exact diff for this file specifically.
+  PAUSED (commented out, not deleted) — the 'meta_fetch' flag gate at
+    the top of run(). Post-split, CLS2 is a self-contained Sell.do
+    mirror that Job A never writes to, so gating Job B on Job A's flag
+    no longer applies. Original logic preserved in a comment block for
+    reference/rollback.
+  ADDED — cls_db.write_job_result() calls at all 7 of run()'s existing
+    return points (6 failure paths + the final success path), reusing
+    counters/reasons each already computes/logs. No new counting logic.
+  DB target itself needs no code change here — CLS2.db targeting is a
+    Task Scheduler CLS_DB_PATH env var setting on Job B's task (see
+    cls_db.py v2.23).
+
 v1.6  (July 2026) — 7-minute no-fail Gmail polling window (Task Scheduler
   trigger move :10 -> :02, external change, not in this file):
   CHANGE — MAX_ATTEMPTS : 6 -> 13
@@ -763,21 +778,23 @@ def run(force=False, latest_email=False):
 
     cls_db.init_db()
 
-    # ── Risk 1: completion-flag gate ──
-    # Job B must run AFTER Job A. Instead of a fixed clock offset, we
-    # check Job A's 'meta_fetch' flag is fresh. Stale/missing -> skip.
-    if not force:
-        if cls_db.is_flag_fresh("meta_fetch", META_FLAG_MAX_AGE_MIN):
-            log("Gate OK — Job A's 'meta_fetch' flag is fresh.")
-        else:
-            ts = cls_db.get_flag("meta_fetch")
-            log(f"Gate BLOCKED — 'meta_fetch' flag missing or stale (last: {ts}).",
-                "WARNING")
-            log("Job A has not completed recently. Skipping this cycle.")
-            log("(Use --force to override, e.g. for manual testing.)")
-            return False
-    else:
-        log("Gate SKIPPED — --force flag used.")
+    # PAUSED — post-CLS1/CLS2 split, Job B no longer depends on Job A's
+    # output. CLS2 is now a self-contained Sell.do mirror (Job A never
+    # writes to CLS2), so gating Job B on Job A's flag no longer applies.
+    # Original flag-gate logic preserved below for reference / rollback.
+    # if not force:
+    #     if cls_db.is_flag_fresh("meta_fetch", META_FLAG_MAX_AGE_MIN):
+    #         log("Gate OK — Job A's 'meta_fetch' flag is fresh.")
+    #     else:
+    #         ts = cls_db.get_flag("meta_fetch")
+    #         log(f"Gate BLOCKED — 'meta_fetch' flag missing or stale (last: {ts}).",
+    #             "WARNING")
+    #         log("Job A has not completed recently. Skipping this cycle.")
+    #         log("(Use --force to override, e.g. for manual testing.)")
+    #         return False
+    # else:
+    #     log("Gate SKIPPED — --force flag used.")
+    log("Gate PAUSED — Job B no longer depends on Job A's flag (CLS1/CLS2 split).")
 
     # ── Credentials ──
     env = load_env()
@@ -794,6 +811,8 @@ def run(force=False, latest_email=False):
     if not all(needed):
         log("Missing required credentials in .env — aborting.", "ERROR")
         log("Normal run needs: SELLDO_EMAIL, SELLDO_PASSWORD, GMAIL_USER, GMAIL_APP_PASS")
+        cls_db.write_job_result("Job B (Sell.do Sync)", False,
+                                 "Missing required credentials in .env")
         return False
 
     run_start_utc_ts = time.time()
@@ -825,12 +844,16 @@ def run(force=False, latest_email=False):
 
     if not csv_data:
         log("Could not retrieve CSV — aborting this run.", "ERROR")
+        cls_db.write_job_result("Job B (Sell.do Sync)", False,
+                                 "Could not retrieve CSV")
         return False
 
     # ── Step 3: parse ──
     df = parse_csv(csv_data)
     if df is None:
         log("CSV parsing failed — aborting this run.", "ERROR")
+        cls_db.write_job_result("Job B (Sell.do Sync)", False,
+                                 "CSV parsing failed")
         return False
 
     # ── v1.2 Fix 4: CSV lead-count sanity check (v1.5: syncable_leads baseline) ──
@@ -858,12 +881,17 @@ def run(force=False, latest_email=False):
             "Aborting — next cycle will re-trigger and recover.",
             "ERROR",
         )
+        cls_db.write_job_result("Job B (Sell.do Sync)", False,
+                                 f"Sanity check failed — CSV had {len(df)} leads, "
+                                 f"expected at least {int(s_pre['syncable_leads'] * 0.85)}")
         return False
 
     # ── Step 4: sync into CLS ──
     report = sync_csv_to_cls(df)
     if report is None:
         log("CLS sync failed — flag NOT set.", "ERROR")
+        cls_db.write_job_result("Job B (Sell.do Sync)", False,
+                                 "CLS sync failed")
         return False
 
     # ── CLS health snapshot ──
@@ -888,6 +916,9 @@ def run(force=False, latest_email=False):
     log("=" * 55)
     log("CLS JOB B — Sell.do -> CLS Sync — DONE")
     log("=" * 55)
+    cls_db.write_job_result("Job B (Sell.do Sync)", True,
+                             f"{report['stage_changes']} stage changes detected "
+                             f"({report['synced']} synced, {report['skipped']} skipped)")
     return True
 
 

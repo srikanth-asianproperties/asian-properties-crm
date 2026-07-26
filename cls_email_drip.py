@@ -2,8 +2,20 @@
 =============================================================
 cls_email_drip.py  —  CLS Job D  |  Automated Email Drip
 =============================================================
-Version : 1.2
+Version : 1.3
 Author  : Built for Asian Properties / Srikanth
+
+WHAT CHANGED IN v1.3
+--------------------
+- CLS1/CLS2 database split support. ADDITIONS ONLY. Added
+  cls_db.write_job_result() calls at run()'s two existing return
+  points (missing Brevo key, and the final success path) — one line
+  to C:\\CLS\\job_results.txt per run, reusing the total_sent/
+  total_failed/total_skipped counters already computed. No new
+  counting logic. Per Srikanth's explicit call, Job D continues
+  reading from CLS2.db (the Sell.do-trusted mirror) during
+  parallel-run — a Task Scheduler CLS_DB_PATH env var setting, not a
+  code change (see cls_db.py v2.23).
 
 WHAT CHANGED IN v1.2
 --------------------
@@ -753,6 +765,8 @@ def run(dry_run=False, img_overrides=None):
     brevo_key = env.get("BREVO_API_KEY", "")
     if not brevo_key and not dry_run:
         log("BREVO_API_KEY missing in .env — aborting.", "ERROR")
+        cls_db.write_job_result("Job D (Email Drip)", False,
+                                 "BREVO_API_KEY missing in .env")
         return False
 
     api_instance = None
@@ -882,6 +896,8 @@ def run(dry_run=False, img_overrides=None):
     log("=" * 55)
     log("CLS JOB D — Email Drip — DONE")
     log("=" * 55)
+    cls_db.write_job_result("Job D (Email Drip)", True,
+                             f"{total_sent} sent, {total_failed} failed, {total_skipped} skipped")
     return True
 
 
@@ -940,7 +956,7 @@ def selftest():
         print(f"  {k:18s}: {v}")
 
     print("=" * 55)
-    print(" SELF TEST COMPLETE (v1.2)")
+    print(" SELF TEST COMPLETE (v1.3)")
     print("=" * 55)
 
 

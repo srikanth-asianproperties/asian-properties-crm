@@ -2,11 +2,39 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.22
+Version : 2.23
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.23 (July 2026) — CLS1/CLS2 database split support. ADDITIONS ONLY —
+  nothing existing removed or modified, except DB_FILE's assignment
+  (see below; every function that reads/writes data still goes through
+  DB_FILE exactly as before, only where that constant points changed).
+
+  DB_FILE now reads from the CLS_DB_PATH environment variable, defaulting
+  to CLS1.db (was: hardcoded to cls.db). This is the mechanism behind
+  splitting one shared database into CLS1.db ("our own CRM" — fed by
+  Job A + the CRM app) and CLS2.db (Sell.do mirror — fed only by Job B).
+  Each process's target DB is now config (an OS environment variable set
+  per Task Scheduler task), not a code branch — consistent with the
+  existing config-not-code convention used for roles/stages/thresholds
+  elsewhere in this file. IMPORTANT: this must be a real Windows/OS
+  environment variable, not a line in C:\\CLS\\.env — DB_FILE is computed
+  once at import time from os.environ, and every script's .env loader
+  (including this file's own callers) reads .env into a local dict well
+  after that point, so a .env-only value would never be seen.
+
+  NEW get_leads_snapshot(db_path) — the ONLY function in this module that
+  opens a database file OTHER than DB_FILE. Read-only, narrowly scoped
+  to cross-database diffing (cls_parallel_diff.py) — never used by any
+  job or the CRM app during normal operation.
+
+  NEW write_job_result(job_name, success, summary) — appends one line to
+  C:\\CLS\\job_results.txt after a job run, for a human to glance at
+  without opening per-job log files. Full detail stays in each job's own
+  log file as before.
+
 v2.22 (July 2026) — Job A insert-time stage/owner defaults (bug fix):
   upsert_meta_lead()'s brand-new-insert branch never set current_stage
   or lead_owner, leaving them NULL. Harmless when Job B syncs the same
@@ -1053,8 +1081,11 @@ from datetime import datetime, timedelta
 # so paths stay consistent with selldo_capi_automation.py (C:\automation).
 
 BASE_DIR  = r"C:\CLS"
-DB_FILE   = os.path.join(BASE_DIR, "cls.db")          # the Centralised Leads System
-FLAG_FILE = os.path.join(BASE_DIR, "cls_flags.json")  # completion flags between jobs
+# v2.23: DB target is now config, not code — CLS_DB_PATH env var, defaulting
+# to CLS1.db. Set per-process (Task Scheduler task / service launcher) as a
+# real OS environment variable — NOT a line in .env (see v2.23 changelog).
+DB_FILE   = os.environ.get("CLS_DB_PATH", os.path.join(BASE_DIR, "CLS1.db"))
+FLAG_FILE = os.path.join(BASE_DIR, "cls_flags.json")  # completion flags between jobs — shared, unaffected by DB split
 
 # Target CRM stages — same three as the existing CAPI script.
 # Kept here so all CLS jobs share one definition.
@@ -6679,6 +6710,55 @@ def stats():
         }
     finally:
         conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# CROSS-DATABASE DIFF  —  v2.23, CLS1/CLS2 split support
+# ─────────────────────────────────────────────────────────────
+# The ONLY function in this module that opens a database file other than
+# DB_FILE. Kept narrowly scoped and read-only — this is the sole exception
+# to "every job/route reads/writes through this module's own DB_FILE."
+
+def get_leads_snapshot(db_path):
+    """
+    Read-only. Opens db_path directly (NOT the module DB_FILE) and
+    returns every lead's comparison-relevant fields, for cross-database
+    diffing only (cls_parallel_diff.py). Never used by any job or the
+    CRM app during normal operation.
+    Returns a list of dicts: cls_id, crm_lead_no, full_name, phone_raw,
+    phone_norm, email_norm, project, current_stage, lead_owner,
+    stage_updated_at.
+    """
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("""
+            SELECT cls_id, crm_lead_no, full_name, phone_raw, phone_norm,
+                   email_norm, project, current_stage, lead_owner,
+                   stage_updated_at
+            FROM leads
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# JOB RESULT LOG  —  v2.23, one-line-per-run human-glance status
+# ─────────────────────────────────────────────────────────────
+
+def write_job_result(job_name, success, summary):
+    """
+    Appends ONE line to C:\\CLS\\job_results.txt after every job run.
+    Format: [YYYY-MM-DD HH:MM:SS] Job Name: SUCCESS/FAILED — summary
+    This file is for a human to glance at — no stack traces, no
+    multi-line detail. Full detail stays in the job's own log file.
+    """
+    status = "SUCCESS" if success else "FAILED"
+    line = f"[{_now()}] {job_name}: {status} — {summary}\n"
+    path = os.path.join(BASE_DIR, "job_results.txt")
+    with open(path, "a", encoding="utf-8", errors="replace") as f:
+        f.write(line)
 
 
 # ─────────────────────────────────────────────────────────────

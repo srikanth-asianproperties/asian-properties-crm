@@ -2,8 +2,15 @@
 =============================================================
 cls_telegram_listener.py  —  CLS Telegram Command Interface
 =============================================================
-Version : 1.0
+Version : 1.1
 Author  : Built for Asian Properties / Srikanth
+
+CHANGELOG
+---------
+v1.1 (July 2026) — CLS1/CLS2 database split support. DB_FILE now reads
+  from the CLS_DB_PATH env var (default CLS1.db) instead of a hardcoded
+  cls.db, matching cls_db.py v2.23's pattern — keeps _db()'s direct
+  queries and this script's cls_db.* calls pointed at the same file.
 
 WHAT THIS SCRIPT DOES
 ----------------------
@@ -89,7 +96,11 @@ import cls_db   # public functions: stats(), get_flag(), get_unfired_leads()
 ENV_FILE     = os.path.join(BASE_DIR, ".env")
 LOG_FILE     = os.path.join(BASE_DIR, "cls_listener_log.txt")
 OFFSET_FILE  = os.path.join(BASE_DIR, "cls_telegram_offset.json")
-DB_FILE      = os.path.join(BASE_DIR, "cls.db")
+# v1.1: same CLS_DB_PATH env var cls_db.py reads, so _db()'s direct
+# queries and this script's cls_db.* calls always target the same file
+# within one process. Must be a real OS env var, not a line in .env —
+# see cls_db.py v2.23 changelog for why.
+DB_FILE      = os.environ.get("CLS_DB_PATH", os.path.join(BASE_DIR, "CLS1.db"))
 
 # Flag staleness threshold — same as watchdog (3 hours = one missed cycle)
 FLAG_MAX_AGE_MIN = 180

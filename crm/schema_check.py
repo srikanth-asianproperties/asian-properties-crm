@@ -3,41 +3,52 @@
 =============================================================
 schema_check.py — CLS/CRM Live Schema Diagnostic (read-only)
 =============================================================
-Version : 1.0
+Version : 1.1
 Author  : Built for Asian Properties / Srikanth
+
+CHANGELOG
+---------
+v1.1 (July 2026) — CLS1/CLS2 database split support. DB_FILE is no
+  longer hardcoded to cls.db — it now takes an optional command-line
+  argument (filename, resolved against C:\\CLS), defaulting to CLS1.db.
 
 WHAT THIS DOES
 --------------
-Connects to the LIVE C:\\CLS\\cls.db and reports:
+Connects to the LIVE database (CLS1.db by default, or whatever file
+you pass as an argument) and reports:
   - every table that currently exists
   - every column in each table (name + type)
   - a row count per table
   - whether the 'users' table (needed for CRM v0.1 login) exists yet
 
 This script NEVER writes anything — not even init_db(). It exists so
-you can see the real, current state of cls.db before running any
-migration, per the "verify the live version before editing" rule.
+you can see the real, current state of a CLS database before running
+any migration, per the "verify the live version before editing" rule.
 Safe to run any time, any number of times, including while Jobs A-D
 are running (WAL mode allows concurrent reads).
 
-IMPORTANT — do NOT run cls_db.py directly against the live DB
+IMPORTANT — do NOT run cls_db.py directly against a live DB
 --------------------------------------------------------------
 `python cls_db.py` runs that file's built-in self-test, which INSERTS
 test rows (TEST_LG_1001, SD_555, SD_999, TEST_LG_OPTOUT) into whatever
 database it's pointed at. That's fine on a throwaway DB, but you do
-not want those rows in your real C:\\CLS\\cls.db. This script is the
+not want those rows in your real CLS1.db/CLS2.db. This script is the
 safe way to look at the live schema instead.
 
 USAGE
 -----
-  python schema_check.py
+  python schema_check.py            (checks CLS1.db)
+  python schema_check.py CLS2.db    (checks CLS2.db)
 =============================================================
 """
 
 import os
+import sys
 import sqlite3
 
-DB_FILE = r"C:\CLS\cls.db"
+BASE_DIR = r"C:\CLS"
+DB_NAME  = sys.argv[1] if len(sys.argv) > 1 else "CLS1.db"
+DB_FILE  = os.path.join(BASE_DIR, DB_NAME)
 
 
 def _p(msg=""):
@@ -51,8 +62,8 @@ def _p(msg=""):
 
 def main():
     if not os.path.exists(DB_FILE):
-        _p(f"[FAIL] cls.db not found at {DB_FILE}")
-        _p("       Check the path, or run this on the machine where CLS lives.")
+        _p(f"[FAIL] Database not found at {DB_FILE}")
+        _p("       Check the path/filename, or run this on the machine where CLS lives.")
         return
 
     conn = sqlite3.connect(DB_FILE, timeout=30)

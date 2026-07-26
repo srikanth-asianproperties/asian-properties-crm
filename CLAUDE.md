@@ -4,83 +4,118 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-CLS ("Centralised Leads System") is a real-estate lead-management platform built for **Asian Properties**. It runs unattended on a single Windows laptop (Task Scheduler jobs) plus a small Cloudflare edge layer, backed by one SQLite database (`C:\CLS\cls.db`). There is no git repo here (`git-log.txt` is a stray export, not history) and no automated test suite — validation is done via each script's built-in `--selftest` / dry-run mode and manual review.
+CLS ("Centralised Leads System") is a real-estate lead-management platform built for **Asian Properties**. It runs unattended on a single Windows laptop (Task Scheduler jobs) plus a small Cloudflare edge layer. As of **2026-07-26** it is backed by **two** SQLite databases, `C:\CLS\CLS1.db` and `C:\CLS\CLS2.db` (previously a single `cls.db` — see "The CLS1/CLS2 database split" below). There is no git repo here (`git-log.txt` is a stray export, not history) and no automated test suite — validation is done via each script's built-in `--selftest` / dry-run mode and manual review.
 
 The system has three layers:
-1. **Automation pipeline** (root `C:\CLS\*.py`) — scheduled jobs that pull leads from Meta and Sell.do, sync them into `cls.db`, and fire conversion events back to Meta.
-2. **CRM web app** (`crm/`) — a Flask app where the sales team works leads directly (writes to `cls.db`).
-3. **PWA / mobile dashboard** (`pwa/`) — a Cloudflare Pages site that reads a read-only JSON snapshot of `cls.db` via Workers KV, for phone access.
+1. **Automation pipeline** (root `C:\CLS\*.py`) — scheduled jobs that pull leads from Meta and Sell.do, sync them into CLS1.db/CLS2.db, and fire conversion events back to Meta.
+2. **CRM web app** (`crm/`) — a Flask app where the sales team works leads directly (writes to CLS1.db).
+3. **PWA / mobile dashboard** (`pwa/`) — a Cloudflare Pages site that reads a read-only JSON snapshot (sourced from CLS2.db, the DB Job C reads from) via Workers KV, for phone access.
 
-`cls_db.py` is the shared data-access layer imported by every Python component (`sys.path.insert(0, r"C:\CLS")` + `import cls_db`) — it is the single source of truth for schema, stage-transition rules, and business logic. Read its module docstring/changelog before touching schema or lead-lifecycle logic anywhere else in the codebase.
+`cls_db.py` is the shared data-access layer imported by every Python component (`sys.path.insert(0, r"C:\CLS")` + `import cls_db`) — it is the single source of truth for schema, stage-transition rules, business logic, **and which of the two databases a given process talks to** (via `CLS_DB_PATH`, see below). Read its module docstring/changelog before touching schema or lead-lifecycle logic anywhere else in the codebase.
+
+## The CLS1/CLS2 database split (since 2026-07-26)
+
+The original single `cls.db` was forked into two databases that now serve different roles:
+
+- **CLS1.db** — "our own CRM" database. Fed by **Job A** (`meta_leads_fetcher.py`) and the **CRM app** (`crm/app.py`). This is the database the sales team's own CRM writes to and reads from.
+- **CLS2.db** — the Sell.do mirror. Fed **only** by **Job B** (`selldo_to_cls.py`).
+- **Job C** (`cls_capi_firer.py`) and **Job D** (`cls_email_drip.py`) both read/write **CLS2.db** during parallel-run. CAPI fires against real ad spend, so it deliberately stays on the Sell.do-trusted source rather than CLS1 — moving Job C/D onto CLS1 is a future decision that has **not** been made yet, contingent on parallel-run proving CLS1 reliable.
+
+**How the target DB is chosen**: `cls_db.py` reads the `CLS_DB_PATH` environment variable once at import time (`DB_FILE = os.environ.get("CLS_DB_PATH", ...\CLS1.db default...)`, `cls_db.py:1087`). This **must** be a real Windows/OS environment variable — **never** a line in `.env`. Reason: `crm/app.py` does `import cls_db` (which reads `os.environ` immediately) before it loads `.env` via `dotenv_values()` later in the file, and in any case `.env` values loaded via `dotenv_values()`/similar are read into a local dict, not written into `os.environ` — so a `.env`-only setting would never be seen by `cls_db.py`.
+
+**How it's actually set in practice**: small `.bat` wrapper files set `CLS_DB_PATH` before invoking Python, and Task Scheduler's Program/script field points at the wrapper instead of `python.exe`/`pythonw.exe` directly:
+
+```
+run_selldo_to_cls.bat        set CLS_DB_PATH=C:\CLS\CLS2.db   (Job B)
+run_cls_capi_firer.bat       set CLS_DB_PATH=C:\CLS\CLS2.db   (Job C)
+run_cls_email_drip.bat       set CLS_DB_PATH=C:\CLS\CLS2.db   (Job D)
+run_cls_watchdog.bat         set CLS_DB_PATH=C:\CLS\CLS2.db
+run_cls_telegram_listener.bat set CLS_DB_PATH=C:\CLS\CLS2.db
+run_app.bat                  set CLS_DB_PATH=C:\CLS\CLS1.db   (CRM app)
+```
+Job A (`meta_leads_fetcher.py`) has **no** wrapper — it relies on `cls_db.py`'s default (CLS1.db), which is correct for Job A and not accidental.
+
+**Documented gotcha (real incident, 2026-07-26)**: a Task Scheduler task pointed directly at `python.exe`/a script — bypassing the `.bat` wrapper — silently falls back to the `CLS_DB_PATH` default (CLS1.db) instead of erroring. This is exactly what happened the day of the split: Job A and Job C briefly ran against the wrong database until their Task Scheduler entries were repointed at the correct wrapper `.bat` files. When adding or auditing a scheduled task, always confirm the Program/script field is the wrapper `.bat`, not the interpreter/script directly.
+
+**The flag file is unaffected by the split.** `cls_flags.json` (`cls_db.set_flag`/`get_flag`/`is_flag_fresh`) is a single shared file on disk, not stored in either database — so flag-based hand-offs between jobs work exactly as before regardless of which DB each process targets.
+
+**Rollback point**: the original `cls.db` was preserved as `cls.db.pre_split_backup` (not deleted). Keep it for at least several weeks from 2026-07-26 before considering removal.
 
 ## Commands
 
-There is no build step; everything runs as plain Python scripts against `cls.db`. Standard library + these third-party packages are used (installed globally, no root `requirements.txt`):
+There is no build step; everything runs as plain Python scripts against CLS1.db/CLS2.db (selected via `CLS_DB_PATH` — see above). Standard library + these third-party packages are used (installed globally, no root `requirements.txt`):
 `requests`, `pandas`, `beautifulsoup4`, `python-dotenv`, `playwright` (+ `playwright install chromium`), `sib_api_v3_sdk` (Brevo).
 
 **Always use `python -m pip`, never bare `pip`** — the Scripts folder is not on this machine's PATH, so a bare `pip` command fails immediately.
 
 ```
-# CRM web app
+# CRM web app (targets CLS1.db)
 cd crm
 python -m pip install -r requirements.txt
 python create_admin.py        # first-time: creates a login (users table starts empty)
 python app.py                 # dev server -> http://127.0.0.1:5000
                                # set CRM_ENV=production in .env to serve via Waitress instead of Flask's dev server
+                               # in production, launch via ..\run_app.bat, not `python app.py` directly, so CLS_DB_PATH is set
 
 # One-off DB migration/schema check
-python migrate_db.py          # additive column migration, safe to re-run
-python crm\schema_check.py
+python migrate_db.py                # additive column migration, safe to re-run
+python crm\schema_check.py           # checks CLS1.db by default
+python crm\schema_check.py CLS2.db   # or pass a filename to check CLS2.db instead
 
-# Pipeline jobs — normally run by Windows Task Scheduler, but runnable manually:
-python meta_leads_fetcher.py      # Job A
-python selldo_to_cls.py           # Job B  — see "Never touch Job B" rule below
-python cls_capi_firer.py          # Job C  (--force skips the Job B freshness gate)
-python cls_email_drip.py          # Job D
+# Pipeline jobs — normally run by Windows Task Scheduler via the .bat wrappers below, but runnable manually:
+python meta_leads_fetcher.py      # Job A  -> CLS1.db (default, no wrapper needed)
+python selldo_to_cls.py           # Job B  -> CLS2.db (via run_selldo_to_cls.bat) — see "Never touch Job B" rule below
+python cls_capi_firer.py          # Job C  -> CLS2.db (via run_cls_capi_firer.bat) (--force skips the Job B freshness gate)
+python cls_email_drip.py          # Job D  -> CLS2.db (via run_cls_email_drip.bat)
 python cleanup_comms_log.py       # Job D maintenance helper
 
 # Supporting scripts
-python cls_dashboard.py           # regenerate dashboard.html from cls.db
+python cls_dashboard.py           # regenerate dashboard.html
 python cls_snapshot.py            # push JSON snapshot to Cloudflare KV (also: --selftest)
-python cls_watchdog.py            # health check + Telegram/Slack-style alert digest
-python cls_telegram_listener.py   # long-polling Telegram command bot (/stats /today /health /pending)
+python cls_watchdog.py            # health check + Telegram/Slack-style alert digest (via run_cls_watchdog.bat -> CLS2.db)
+python cls_telegram_listener.py   # long-polling Telegram command bot (/stats /today /health /pending) (via run_cls_telegram_listener.bat -> CLS2.db)
 python cls_telecaller_report.py   # weekend Opportunity-stage report email
 python cls_backup.py              # daily backup of C:\CLS to Google Drive via rclone
 python setup_task_scheduler.py    # registers Job D in Windows Task Scheduler (run once, as Admin)
+python cls_parallel_diff.py       # compares CLS1.db vs CLS2.db directly -> parallel_diff_report.txt (primary parallel-run health tool, see below)
 
 # Self-tests (each job's own offline sanity check; look for --selftest / SELFTEST in the file)
 python cls_capi_firer.py --selftest   # style varies per script — check top-of-file docstring
 ```
 
-Each job writes to its own `C:\CLS\*_log.txt` (e.g. `meta_leads_log.txt`, `selldo_cls_log.txt`, `cls_capi_log.txt`, `cls_drip_log.txt`, `cls_watchdog_log.txt`, `crm_app_log.txt`) — check these first when debugging a run instead of re-running blind.
+Each job writes to its own `C:\CLS\*_log.txt` (e.g. `meta_leads_log.txt`, `selldo_cls_log.txt`, `cls_capi_log.txt`, `cls_drip_log.txt`, `cls_watchdog_log.txt`, `crm_app_log.txt`) — check these first when debugging a run instead of re-running blind. See also `job_results.txt` below for a quick one-line-per-run status check across all jobs.
 
 ## Architecture
 
 ### The A→B→C→D pipeline
 
-Jobs run hourly (10:00–18:00) via Windows Task Scheduler and hand off through **completion flags** stored via `cls_db.set_flag()`/`get_flag()`/`is_flag_fresh()` (persisted in `cls_flags.json`), not direct chaining:
+Jobs run hourly (10:00–18:00) via Windows Task Scheduler and hand off through **completion flags** stored via `cls_db.set_flag()`/`get_flag()`/`is_flag_fresh()` (persisted in `cls_flags.json`, a single shared file unaffected by the CLS1/CLS2 split), not direct chaining:
 
 ```
-[Job A] meta_leads_fetcher.py   Pulls Meta Lead Ads leads -> cls.db (with leadgen_id), sets 'meta_fetch' flag
+[Job A] meta_leads_fetcher.py   Pulls Meta Lead Ads leads -> CLS1.db (with leadgen_id), sets 'meta_fetch' flag
     |
     v
-[Job B] selldo_to_cls.py        Waits for a fresh Job A flag; logs into Sell.do via Playwright, exports
-    |                           CSV via Gmail polling, matches rows onto cls.db leads by phone/email,
-    |                           writes current_stage. Sets 'selldo_sync' flag. NEVER MODIFIED — see rule below.
+[Job B] selldo_to_cls.py        Logs into Sell.do via Playwright, exports CSV via Gmail polling, matches
+    |                           rows onto CLS2.db leads by phone/email, writes current_stage into CLS2.db.
+    |                           Sets 'selldo_sync' flag. NEVER MODIFIED — see rule below.
+    |                           Its former gate on Job A's 'meta_fetch' flag is now PAUSED (commented out,
+    |                           not deleted) — CLS2 is a self-contained Sell.do mirror that no longer
+    |                           depends on Job A's output at all. See "database split" section above.
     v
-[Job C] cls_capi_firer.py       Waits for a fresh Job B flag (15-min slack: B runs :10, C runs :25;
-    |                           --force bypasses the gate). Fires stage-change events to Meta Conversions
-    |                           API (CAPI) for match-quality-scored ad optimization. Calls
-    |                           cls_dashboard.generate_dashboard() and cls_snapshot.push_snapshot() at
-    |                           the end of every run (snapshot failures are always swallowed — must never
-    |                           block CAPI firing).
+[Job C] cls_capi_firer.py       Waits for a fresh Job B 'selldo_sync' flag (15-min slack: B runs :10, C runs
+    |                           :25; --force bypasses the gate) — UNCHANGED and still correct, since Job C
+    |                           reads CLS2.db, the same database Job B just wrote to. Fires stage-change
+    |                           events to Meta Conversions API (CAPI) for match-quality-scored ad
+    |                           optimization. Calls cls_dashboard.generate_dashboard() and
+    |                           cls_snapshot.push_snapshot() at the end of every run (snapshot failures are
+    |                           always swallowed — must never block CAPI firing).
     v
 [Job D] cls_email_drip.py       Independent of the A-B-C flag chain (own 10:00/12:00/14:00/16:00/18:00
-                                schedule via setup_task_scheduler.py). Sends staged nurture emails via
-                                Brevo, syncs bounces, respects email_bounced/opted_out flags.
+                                schedule via setup_task_scheduler.py). Reads/writes CLS2.db. Sends staged
+                                nurture emails via Brevo, syncs bounces, respects email_bounced/opted_out flags.
 ```
 
-`cls_telecaller_report.py` (weekend cron) and `cls_watchdog.py`/`cls_telegram_listener.py` (monitoring) read `cls.db` but sit outside this chain.
+`cls_telecaller_report.py` (weekend cron) and `cls_watchdog.py`/`cls_telegram_listener.py` (monitoring, both targeting CLS2.db via their `.bat` wrappers) read their target database but sit outside this chain.
 
 Stage names and their legal transitions are defined once in `cls_db.STAGE_TRANSITIONS` (`Incoming → Prospect → Opportunity → Site Visited → Booked`, plus `Unqualified`/`Lost`/`Re Assigned` side-states) — both Sell.do's own rule engine and the CRM app's `change_lead_stage()` route enforce these same one-way rules. Do not add free-form stage changes; extend `STAGE_TRANSITIONS` instead.
 
@@ -92,19 +127,42 @@ BASE_DIR = r"C:\CLS"
 sys.path.insert(0, BASE_DIR)
 import cls_db
 ```
-It owns: SQLite connection/schema init (self-healing additive `ALTER TABLE`s, never destructive), user auth (`create_user`/`verify_login`, password hashing), lead CRUD and stage/ownership logic, site-visit and follow-up scheduling, WhatsApp template CRUD, Meta-lead/Sell.do-lead upsert + phone/email matching (`norm_phone`, `norm_email`, `find_match`), CAPI event recording, email-drip queries, and the flag store used for pipeline gating. Read the top-of-file changelog before modifying schema or role/permission logic — it documents the reasoning behind non-obvious design decisions (e.g. why `role` is free-text with no CHECK constraint, why manager write access is deliberately NOT granted alongside its read access).
+It owns: SQLite connection/schema init (self-healing additive `ALTER TABLE`s, never destructive), the `CLS_DB_PATH`-driven `DB_FILE` target (see database-split section above), user auth (`create_user`/`verify_login`, password hashing), lead CRUD and stage/ownership logic, site-visit and follow-up scheduling, WhatsApp template CRUD, Meta-lead/Sell.do-lead upsert + phone/email matching (`norm_phone`, `norm_email`, `find_match`), CAPI event recording, email-drip queries, the flag store used for pipeline gating, `write_job_result()` (see below), and `get_leads_snapshot(db_path)` — the **one** function in this module that opens a database file other than its own `DB_FILE`, narrowly scoped to `cls_parallel_diff.py`'s cross-database comparison and never used by any job or the CRM app during normal operation. Read the top-of-file changelog before modifying schema or role/permission logic — it documents the reasoning behind non-obvious design decisions (e.g. why `role` is free-text with no CHECK constraint, why manager write access is deliberately NOT granted alongside its read access, why `DB_FILE` is config-driven rather than hardcoded).
 
 ### CRM app (`crm/app.py`)
 
-Flask app, single file, session-based auth via `login_required`/`admin_required` decorators. Three roles with a strict hierarchy: `admin` > `manager` > `salesperson` (`cls_db.CRM_ROLES`, `cls_db.OVERSIGHT_ROLES`). Visibility (who can *see* a lead) and write access (who can *change* a lead) are governed by two separate checks — do not conflate them when adding a role or a new view:
+Flask app, single file, session-based auth via `login_required`/`admin_required` decorators. Targets **CLS1.db** (via `run_app.bat` setting `CLS_DB_PATH`). Three roles with a strict hierarchy: `admin` > `manager` > `salesperson` (`cls_db.CRM_ROLES`, `cls_db.OVERSIGHT_ROLES`). Visibility (who can *see* a lead) and write access (who can *change* a lead) are governed by two separate checks — do not conflate them when adding a role or a new view:
 - **Read/visibility**: `cls_db.can_view_all_leads(role)` — admins and managers see every lead; salespeople see only their own (`owner_match_name`). Fails closed (unrecognized role → most-restricted view).
 - **Write**: `_is_lead_owner_or_admin` / `_check_lead_ownership` in `app.py` — owner-or-admin only, unchanged by the manager role. A manager only writes to leads they personally own.
 
-The app runs in **parallel-run mode** alongside Sell.do (by explicit design, not a migration bug) — writes made in the CRM do not yet replace Sell.do as the system of record; Job B's next sync can still overwrite `current_stage`/`lead_owner` from Sell.do. `CRM_ENV=production` in `.env` switches the session cookie to `Secure` and swaps the dev server for Waitress (see `run_production()`), intended to run as an unattended Windows service behind a Cloudflare Tunnel (never bind `CRM_HOST=0.0.0.0` in production — Cloudflare Tunnel connects over localhost).
+The app runs in **parallel-run mode** alongside Sell.do (by explicit design, not a migration bug) — CLS1 (fed by the CRM app + Job A) and CLS2 (fed by Job B/Sell.do) are compared via `cls_parallel_diff.py` (see below), not reconciled automatically; CLS1 does not yet replace Sell.do/CLS2 as the system of record for CAPI/drip. `CRM_ENV=production` in `.env` switches the session cookie to `Secure` and swaps the dev server for Waitress (see `run_production()`), intended to run as an unattended Windows service behind a Cloudflare Tunnel (never bind `CRM_HOST=0.0.0.0` in production — Cloudflare Tunnel connects over localhost).
 
 ### PWA (`pwa/`)
 
-Static Cloudflare Pages site + two Pages Functions (`functions/api/snapshot.js`, `functions/_middleware.js`) that serve the JSON blob `cls_snapshot.py` pushes to Workers KV (binding `CLS_SNAPSHOT`). The PWA never touches `cls.db` directly — it only ever reads the last pushed snapshot, so a failed push just means a stale (not broken) view. Access is gated by Cloudflare Access in front of the Pages project, not by any app-level auth.
+Static Cloudflare Pages site + two Pages Functions (`functions/api/snapshot.js`, `functions/_middleware.js`) that serve the JSON blob `cls_snapshot.py` pushes to Workers KV (binding `CLS_SNAPSHOT`), sourced from whichever DB Job C targets (CLS2.db during parallel-run). The PWA never touches either database directly — it only ever reads the last pushed snapshot, so a failed push just means a stale (not broken) view. Access is gated by Cloudflare Access in front of the Pages project, not by any app-level auth.
+
+## Parallel-run health checking: `cls_parallel_diff.py`
+
+The primary tool for judging parallel-run health, replacing the old manual "eyeball 5-10 leads" approach. Compares **CLS1.db** and **CLS2.db** directly — hardcoded to those two files regardless of any process's `CLS_DB_PATH` — and writes a full report to `parallel_diff_report.txt`, overwritten each run.
+
+Leads are matched between the two databases by **`phone_norm`/`email_norm`, not `cls_id`**: Job A gives a lead one `cls_id` in CLS1, but Job B independently creates its own row for the same person in CLS2 (CLS2 never inherits Job A's `cls_id`), so `cls_id` cannot be used as a join key across the two databases.
+
+Three output sections, each with full lead detail (not just counts):
+1. **Stage differs** — matched leads where `current_stage` disagrees between CLS1 and CLS2.
+2. **Not yet in your CRM** — in CLS2 (Sell.do) but no match in CLS1 (e.g. walk-ins/referrals never entered into the new CRM).
+3. **Not yet in Sell.do** — in CLS1 but no match in CLS2 — usually **expected/benign** (brand-new Meta leads Job A just pulled that Sell.do's own integration hasn't ingested yet).
+
+Run manually (`python cls_parallel_diff.py`); not part of the scheduled A-D chain.
+
+**Deprecated: `cls_parallel_export.py`** — superseded by `cls_parallel_diff.py`. It compared `activity_log` against `current_stage` within a single database, a comparison that stopped making sense once Job B stopped writing to CLS1. Do not use it as a reference for future work.
+
+## Job result logging: `write_job_result()`
+
+Every job (`meta_leads_fetcher.py`, `selldo_to_cls.py`, `cls_capi_firer.py`, `cls_email_drip.py`) calls `cls_db.write_job_result(job_name, success, summary)` at each of its return points, appending one plain-English line (`[timestamp] Job Name: SUCCESS/FAILED — summary`) to `C:\CLS\job_results.txt`. This is the quick human-glance status check across all jobs at once — separate from, and much shorter than, each job's own detailed `*_log.txt` file.
+
+## Historical migration tooling: `cls_db_fork.py`
+
+One-time script used to perform the CLS1/CLS2 split on 2026-07-26: WAL-checkpoints the original `cls.db`, copies it to `CLS1.db` and `CLS2.db`, then renames the original to `cls.db.pre_split_backup`. Refuses to run if `CLS1.db`/`CLS2.db` already exist. Kept for historical/audit reference only — it is **not** part of ongoing operations and should not be run again.
 
 ## Future direction: Native Android APK (not PWA/TWA)
 
@@ -137,8 +195,8 @@ lookup of session_row_id needs to shift from session cookie to token.
 ## Conventions worth knowing before editing
 
 - **"Never discard" / "never fail silently"**: recurring design rules referenced throughout the job scripts' docstrings (e.g. Sell.do's export window is a fixed historical anchor, not a rolling window, specifically so old leads can't silently age out of sync; `cls_snapshot.py` swallows all its own errors so a KV outage can never block Job C). Preserve this posture when modifying pipeline code — prefer loud logging + safe skip over exceptions that could kill a scheduled job.
-- **Flag-gated hand-offs, not direct calls**: jobs communicate readiness via `cls_db.set_flag`/`get_flag`/`is_flag_fresh`, checked with a deliberate time-slack buffer, not by importing and calling each other.
-- **Config-not-code for roles/permissions**: new role behavior should extend `cls_db.CRM_ROLES`/`OVERSIGHT_ROLES`/`can_view_all_leads()` rather than adding scattered `role == "..."` checks in `app.py`. The same principle applies everywhere else in this codebase — lists, thresholds, and rules belong in constants/dicts (e.g. `STAGE_TRANSITIONS`, drip schedules, lead-score rules), not hardcoded conditionals.
+- **Flag-gated hand-offs, not direct calls**: jobs communicate readiness via `cls_db.set_flag`/`get_flag`/`is_flag_fresh`, checked with a deliberate time-slack buffer, not by importing and calling each other. This is unaffected by the CLS1/CLS2 split — the flag file is shared regardless of which DB a process targets.
+- **Config-not-code for roles/permissions/DB targets**: new role behavior should extend `cls_db.CRM_ROLES`/`OVERSIGHT_ROLES`/`can_view_all_leads()` rather than adding scattered `role == "..."` checks in `app.py`. The same principle applies everywhere else in this codebase — lists, thresholds, and rules belong in constants/dicts (e.g. `STAGE_TRANSITIONS`, drip schedules, lead-score rules), not hardcoded conditionals. The CLS_DB_PATH mechanism follows the same principle: which database a process uses is an environment setting, not an `if`/`else` branch in code.
 - **Every script's module docstring is authoritative**: each file in this repo carries a detailed changelog and "why" section at the top (deployment steps, known edge cases, prior incidents that motivated a fix). Read it before changing that file — the reasoning for non-obvious decisions lives there, not in commit history (there is none).
 
 ## How Srikanth wants this codebase worked on
@@ -146,11 +204,12 @@ lookup of session_row_id needs to shift from session cookie to token.
 These rules apply to every change, not just the ones below where they're most obviously relevant. When in doubt, ask rather than assume.
 
 - **Never touch Job B.** `selldo_to_cls.py` is off-limits regardless of context, framing, or how small or reasonable a change sounds. It's the most fragile component in the pipeline (Playwright scraper against Sell.do's UI) and the one thing that must not break during parallel-run. If a task seems to require changing it, stop and flag that instead of proceeding.
+  - **Historical note**: a one-time, explicitly-authorized override of this rule was granted on **2026-07-26**, specifically and only for the CLS1/CLS2 split changes to this file — commenting out (not deleting) the `meta_fetch` flag gate, and nothing else. That override is **closed**, not a standing exception. Any future change to Job B needs the same stop-and-confirm treatment this one got, evaluated fresh.
 - **Architecture before code.** For anything structural — new tables, new roles, new routes, changed write-paths — lock the design and get explicit confirmation before writing any code. Present options with a comparison/risk table and a clear recommendation when more than one approach is reasonable.
 - **Complete files, not diffs.** Deliver whole, runnable files with a version header and changelog comment at the top — never "change line X" instructions.
 - **Verify before editing.** Read the live version of a file from disk immediately before editing it — never regenerate from a stale copy or from memory of an earlier session.
 - **`cls_db.py` changes need an explicit before/after diff**, with an "additions only, nothing existing removed or modified" confirmation, before being considered done.
-- **All SQLite access stays centralized in `cls_db.py`.** No other script opens the database directly.
+- **All SQLite access stays centralized in `cls_db.py`.** No other script opens the database directly. (The sole documented exception is `cls_db.get_leads_snapshot(db_path)`, added for `cls_parallel_diff.py`'s cross-database comparison — still centralized in `cls_db.py`, just parameterized on which file to open.)
 - **Schema changes are self-healing migrations only** — `ALTER TABLE ... IF NOT EXISTS` / try-except patterns, safe to redeploy against the live DB. Never destructive.
 - **Test against a throwaway SQLite DB before calling anything done** — for the CRM app, this means a Flask test-client integration test; for `cls_db.py` functions, a standalone script against a temp copy of the schema.
 - **Guard every `print()` / stdout call.** `pythonw.exe` sets stdout to `None`, so unguarded prints crash silent background jobs. Use a logging helper that checks for `None` first.
@@ -158,6 +217,6 @@ These rules apply to every change, not just the ones below where they're most ob
 - **Paused code is commented as `# PAUSED — <reason>`, never deleted.**
 - **Flag security implications proactively** whenever a change touches auth, passwords, roles, tokens, or `.env` — don't implement silently and mention it after the fact.
 - **Flag DPDP Act obligations** — especially call-recording consent — before any recording feature goes live. This applies directly once v1.0 Telephony work starts.
-- **Parallel-run is sacred.** Sell.do is never cut over or cancelled until the team has lived in the CRM in parallel for at least 3–4 weeks with clean, validated sync. Don't write code that assumes or hastens cutover.
+- **Parallel-run is sacred.** Sell.do is never cut over or cancelled until the team has lived in the CRM in parallel for at least 3–4 weeks with clean, validated sync. Don't write code that assumes or hastens cutover. Use `cls_parallel_diff.py` output, not ad-hoc spot checks, to judge parallel-run health.
 - **Scope discipline.** If a request is ahead of the currently agreed version (v0.1 Viewer → v0.5 Writer → v1.0 Telephony+cutover → v1.5+ Strategic), say clearly which version it belongs to before building it. Don't silently expand scope, and don't hard-block the idea either — just name it and confirm before proceeding.
-- **Simple over complex.** Prefer the solution touching the fewest files and using data already in `cls.db` over a more elaborate architecture.
+- **Simple over complex.** Prefer the solution touching the fewest files and using data already in CLS1.db/CLS2.db over a more elaborate architecture.

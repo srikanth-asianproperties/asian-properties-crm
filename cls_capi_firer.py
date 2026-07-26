@@ -2,11 +2,23 @@
 =============================================================
 cls_capi_firer.py  —  CLS Job C  |  CLS -> Meta CAPI Firer
 =============================================================
-Version : 1.6
+Version : 1.7
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.7  (July 2026) — CLS1/CLS2 database split support. ADDITIONS ONLY.
+  Added cls_db.write_job_result() calls at every existing return point
+  in run() (gate-blocked, missing credentials, nothing-to-fire, and the
+  final success path) — one line to C:\\CLS\\job_results.txt per run,
+  reusing the marked/leadgen_count counters this job already computes.
+  No new counting logic. Per Srikanth's explicit call, Job C continues
+  reading from CLS2.db (the Sell.do-trusted mirror) during parallel-run,
+  since CAPI fires against real ad spend — this is a Task Scheduler
+  CLS_DB_PATH env var setting, not a code change (see cls_db.py v2.23).
+  The existing 'selldo_sync' flag gate is unchanged — still correct,
+  since Job C now reads the same DB (CLS2) that Job B just wrote to.
+
 v1.6  (July 2026) — lead_owner passthrough to events_log:
   ADDED — record_event() call now passes lead_owner=lead.get("lead_owner").
     lead["lead_owner"] was already present on every row (get_unfired_leads()
@@ -468,6 +480,8 @@ def run(force=False, dry_run=False):
                 "WARNING")
             log("Job B has not completed recently. Skipping this cycle.")
             log("(Use --force to override for manual testing.)")
+            cls_db.write_job_result("Job C (CAPI Firer)", False,
+                                     f"Gate blocked — 'selldo_sync' flag missing or stale (last: {ts})")
             return False
     else:
         log("Gate SKIPPED — --force flag used.")
@@ -482,6 +496,8 @@ def run(force=False, dry_run=False):
     if not primary_dataset or not primary_token:
         log("META_PRIMARY_DATASET or META_CAPI_TOKEN missing in .env — aborting.",
             "ERROR")
+        cls_db.write_job_result("Job C (CAPI Firer)", False,
+                                 "META_PRIMARY_DATASET or META_CAPI_TOKEN missing in .env")
         return False
 
     # ── Find leads whose stage changed since last fired (Risk 4) ──
@@ -497,6 +513,8 @@ def run(force=False, dry_run=False):
         log("=" * 55)
         log("CLS JOB C — CAPI Firer — DONE (nothing to fire)")
         log("=" * 55)
+        cls_db.write_job_result("Job C (CAPI Firer)", True,
+                                 "No stage changes to fire this run")
         return True
 
     log(f"Leads to fire: {len(unfired)}")
@@ -590,6 +608,12 @@ def run(force=False, dry_run=False):
     log("=" * 55)
     log("CLS JOB C — CAPI Firer — DONE")
     log("=" * 55)
+    if dry_run:
+        cls_db.write_job_result("Job C (CAPI Firer)", True,
+                                 f"DRY-RUN — {marked} events would have fired to Meta")
+    else:
+        cls_db.write_job_result("Job C (CAPI Firer)", True,
+                                 f"{marked} events fired to Meta")
     return True
 
 
