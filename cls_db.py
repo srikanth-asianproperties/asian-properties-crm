@@ -2,11 +2,21 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.26
+Version : 2.27
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.27 (2026-07) — Meta ad/campaign metadata capture:
+  Added meta_campaign_id, meta_campaign_name, meta_adset_id,
+  meta_adset_name, meta_ad_id, meta_ad_name columns (self-healing
+  migration, NULL on pre-existing rows). upsert_meta_lead() now
+  accepts and stores all 6 from meta_leads_fetcher.py v1.4+.
+  Deliberately kept separate from the campaign column and Campaign
+  Routing (campaign_routing_rules, resolve_owner_for_new_lead()) —
+  those are unchanged by this version. No change to Job B, no
+  destructive ALTER TABLE.
+
 v2.26 (July 2026) — Lead Scoring config GUI (Settings > Lead Scoring,
   Task 4 of the settings-GUI batch, final task). ADDITIONS ONLY —
   nothing existing removed or modified, except compute_lead_scores(),
@@ -1867,6 +1877,16 @@ def init_db():
         # branch (see _apply_reengagement_marker()); never cleared once
         # set. Existing rows all start NULL at deploy.
         ("reengaged_at",            "TEXT"),
+        # v2.27 — Meta's real Graph-API ad/campaign metadata, populated
+        # by meta_leads_fetcher.py v1.4+. Deliberately separate from
+        # the campaign column (owned by Campaign Routing, untouched by
+        # this change). NULL on all leads created before this version.
+        ("meta_campaign_id",   "TEXT"),
+        ("meta_campaign_name", "TEXT"),
+        ("meta_adset_id",      "TEXT"),
+        ("meta_adset_name",    "TEXT"),
+        ("meta_ad_id",         "TEXT"),
+        ("meta_ad_name",       "TEXT"),
     ]
     for col_name, col_type in drip_migrations:
         if col_name not in lead_cols:
@@ -5155,7 +5175,10 @@ def set_fallback_owner(name):
 
 
 def upsert_meta_lead(leadgen_id, form_id, project, full_name,
-                     phone_raw, email_raw, meta_created_time, campaign=None):
+                     phone_raw, email_raw, meta_created_time, campaign=None,
+                     meta_campaign_id=None, meta_campaign_name=None,
+                     meta_adset_id=None, meta_adset_name=None,
+                     meta_ad_id=None, meta_ad_name=None):
     """
     Called by meta_leads_fetcher.py (Job A) for each Facebook lead.
 
@@ -5178,6 +5201,15 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
     which resolve_owner_for_new_lead() treats as "use the fallback
     owner", identical to pre-v2.25 behavior.
 
+    meta_campaign_id / meta_campaign_name / meta_adset_id /
+    meta_adset_name / meta_ad_id / meta_ad_name (v2.27, all optional):
+    Meta's own real Graph-API ad/campaign metadata, stored as direct
+    overwrites on every branch (idempotent — a re-pull of the same
+    lead always carries the same values). Deliberately separate from
+    the campaign column/Campaign Routing above — meta_ prefix avoids
+    any confusion between Meta's own campaign_name and LEAD_FORMS's
+    unrelated "campaign_name" routing config key.
+
     Returns the cls_id of the affected row.
     """
     phone_norm = norm_phone(phone_raw)
@@ -5198,11 +5230,19 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                 UPDATE leads SET
                     form_id=?, project=?, full_name=?,
                     phone_raw=?, phone_norm=?, email_raw=?, email_norm=?,
-                    meta_created_time=?, cls_updated_at=?
+                    meta_created_time=?,
+                    meta_campaign_id=?, meta_campaign_name=?,
+                    meta_adset_id=?, meta_adset_name=?,
+                    meta_ad_id=?, meta_ad_name=?,
+                    cls_updated_at=?
                 WHERE cls_id=?
             """, (form_id, project, full_name,
                   phone_raw, phone_norm, email_raw, email_norm,
-                  meta_created_time, now, cls_id))
+                  meta_created_time,
+                  meta_campaign_id, meta_campaign_name,
+                  meta_adset_id, meta_adset_name,
+                  meta_ad_id, meta_ad_name,
+                  now, cls_id))
             conn.commit()
             return cls_id
 
@@ -5226,10 +5266,18 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                 UPDATE leads SET
                     leadgen_id=?, form_id=?, project=COALESCE(project,?),
                     full_name=COALESCE(NULLIF(full_name,''),?),
-                    meta_created_time=?, cls_updated_at=?
+                    meta_created_time=?,
+                    meta_campaign_id=?, meta_campaign_name=?,
+                    meta_adset_id=?, meta_adset_name=?,
+                    meta_ad_id=?, meta_ad_name=?,
+                    cls_updated_at=?
                 WHERE cls_id=?
             """, (leadgen_id, form_id, project, full_name,
-                  meta_created_time, now, cls_id))
+                  meta_created_time,
+                  meta_campaign_id, meta_campaign_name,
+                  meta_adset_id, meta_adset_name,
+                  meta_ad_id, meta_ad_name,
+                  now, cls_id))
             conn.commit()
             return cls_id
 
@@ -5243,12 +5291,19 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                 phone_raw, phone_norm, email_raw, email_norm,
                 meta_created_time, source, crm_lead_no,
                 current_stage, stage_updated_at, lead_owner, campaign,
+                meta_campaign_id, meta_campaign_name,
+                meta_adset_id, meta_adset_name,
+                meta_ad_id, meta_ad_name,
                 cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (cls_id, leadgen_id, form_id, project, full_name,
               phone_raw, phone_norm, email_raw, email_norm,
               meta_created_time, "meta", crm_lead_no,
-              "Incoming", now, default_owner, campaign, now, now))
+              "Incoming", now, default_owner, campaign,
+              meta_campaign_id, meta_campaign_name,
+              meta_adset_id, meta_adset_name,
+              meta_ad_id, meta_ad_name,
+              now, now))
         conn.commit()
         return cls_id
     finally:

@@ -2,11 +2,21 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.3
+Version : 1.4
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.4 (2026-07)    : Now requests + stores Meta's real ad-platform
+                    campaign_id/campaign_name/adset_id/adset_name/
+                    ad_id/ad_name via 6 new meta_-prefixed fields.
+                    Deliberately named to avoid any collision with
+                    this file's existing "campaign_name" LEAD_FORMS
+                    config key (a Campaign Routing label, unrelated
+                    to Meta's own campaign_name) or cls_db.py's
+                    campaign column. That existing campaign/routing
+                    call is completely untouched. Feeds 6 new
+                    dedicated columns in cls_db.py v2.27.
 v1.3 (July 2026)  : Campaign Routing support (Task 3 of the settings-GUI
                     batch; requires cls_db.py v2.25). ADDITIONS ONLY.
                     Each LEAD_FORMS dict may now carry an optional
@@ -308,7 +318,8 @@ def fetch_leads_for_form(form, page_token, app_secret, since_unix=None):
     tag       = "PARTNER" if form["partner_shared"] else "OWNED"
 
     params = {
-        "fields": "id,created_time,field_data",
+        "fields": "id,created_time,campaign_id,campaign_name,"
+                   "adset_id,adset_name,ad_id,ad_name,field_data",
         "limit" : PAGE_SIZE,
     }
     if since_unix is not None:
@@ -364,14 +375,25 @@ def extract_lead_fields(raw_lead):
     Field names vary by how the form was built, so we match on a set
     of known aliases for each of name / phone / email.
 
-    Returns dict: leadgen_id, created_time, full_name, phone, email.
+    Returns dict: leadgen_id, created_time, full_name, phone, email,
+    plus the 6 meta_-prefixed ad/campaign fields (v1.4) — read straight
+    from raw_lead, not field_data, same as leadgen_id/created_time.
+    Prefixed with meta_ specifically so they're never confused with
+    LEAD_FORMS's own "campaign_name" config key (a Campaign Routing
+    label, unrelated to Meta's own campaign_name field).
     """
     out = {
-        "leadgen_id"  : raw_lead.get("id", ""),
-        "created_time": raw_lead.get("created_time", ""),
-        "full_name"   : "",
-        "phone"       : "",
-        "email"       : "",
+        "leadgen_id"        : raw_lead.get("id", ""),
+        "created_time"      : raw_lead.get("created_time", ""),
+        "meta_campaign_id"  : raw_lead.get("campaign_id", ""),
+        "meta_campaign_name": raw_lead.get("campaign_name", ""),
+        "meta_adset_id"     : raw_lead.get("adset_id", ""),
+        "meta_adset_name"   : raw_lead.get("adset_name", ""),
+        "meta_ad_id"        : raw_lead.get("ad_id", ""),
+        "meta_ad_name"      : raw_lead.get("ad_name", ""),
+        "full_name"         : "",
+        "phone"             : "",
+        "email"             : "",
     }
 
     # NOTE: 'first_name' is deliberately NOT in name_keys. If it were,
@@ -521,6 +543,12 @@ def run():
                     email_raw         = fields["email"],
                     meta_created_time = fields["created_time"],
                     campaign          = form.get("campaign_name", form["form_name"]),
+                    meta_campaign_id   = fields["meta_campaign_id"],
+                    meta_campaign_name = fields["meta_campaign_name"],
+                    meta_adset_id      = fields["meta_adset_id"],
+                    meta_adset_name    = fields["meta_adset_name"],
+                    meta_ad_id         = fields["meta_ad_id"],
+                    meta_ad_name       = fields["meta_ad_name"],
                 )
                 upserted += 1
             except Exception as e:
