@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.12.1
+Version : 0.16
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,59 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.16 (July 2026) — Settings > Lead Scoring (Task 4 of the settings-GUI
+  batch, final task). Requires cls_db.py v2.26. NEW combined GET/POST
+  route settings_lead_scoring() + settings_lead_scoring.html. Only
+  changes WHERE the scoring rules come from (DB via cls_db.
+  get_lead_score_config()/set_lead_score_config() instead of a
+  hardcoded dict) — compute_lead_scores() itself, and its existing call
+  sites in leads_list()/lead_detail(), are untouched. settings.html
+  gained a "Lead Scoring" tile.
+
+v0.15 (July 2026) — Settings > Campaign Routing (Task 3 of the
+  settings-GUI batch). Requires cls_db.py v2.25. NEW routes:
+  settings_campaign_routing() (GET), settings_campaign_routing_fallback()
+  (POST — fallback owner), settings_campaign_routing_save() (POST —
+  add/edit a rule), settings_campaign_routing_toggle() (POST — active
+  flip), settings_campaign_routing_delete() (POST). NEW
+  settings_campaign_routing.html. settings.html gained a "Campaign
+  Routing" tile. meta_leads_fetcher.py bumped to v1.3 separately
+  (campaign_name passthrough at its cls_db.upsert_meta_lead() call site).
+
+v0.14 (July 2026) — Settings > Projects (Task 2 of the settings-GUI
+  batch). Requires cls_db.py v2.24. NEW /settings/projects route +
+  settings_projects.html (admin-only): list every bucket with its
+  aliases, add a new alias to an existing bucket OR create a brand-new
+  bucket, delete (x) an alias. settings.html gained a "Projects" tile.
+
+  MODIFIED (data-source only, output unchanged): the 5 call sites that
+  built projects=sorted(set(cls_db.PROJECT_BUCKETS.values())) — 1 more
+  than this task's originally-scoped 4, found by reading the live file
+  rather than assuming the count — now call cls_db.get_all_bucket_names()
+  instead. Same output shape at every site (leads_filter, lead_detail,
+  lead_new, both WhatsApp template admin screens); no template changes
+  needed.
+
+v0.13 (July 2026) — Settings > Team > Add User. NEW combined GET/POST
+  route settings_user_new() at /settings/users/new (admin-only, same
+  gate pattern as settings_users()), NEW settings_user_new.html. Zero
+  cls_db.py changes — this is a GUI wrapper around the already-existing
+  cls_db.create_user(), which already hashes passwords and already
+  raises ValueError on invalid/duplicate email. settings_users.html
+  gained a "+ Add User" link. Mirrors create_admin.py v1.3's
+  owner_match_name gating exactly (required for salesperson/manager,
+  omitted for admin).
+
+  SECURITY NOTE (flagged, not changed): this route lets an admin create
+  another admin account through the browser for the first time —
+  previously only possible via terminal access to the office PC running
+  create_admin.py. No new privilege is introduced (an existing admin
+  could already do this from a terminal), but the exposure surface
+  widens: any admin session reachable via the Cloudflare Tunnel can now
+  mint a new admin login without physical/terminal access to the
+  laptop. No code change requested for this — flagging per Srikanth's
+  standing rule to surface auth/role exposure changes explicitly.
+
 v0.12.1 (July 2026) — User Activity Log, 2 fixes from first real-world
   testing behind the Cloudflare Tunnel. app.py-only, no schema change.
 
@@ -1551,7 +1604,7 @@ def leads_filter_screen():
         "leads_filter.html",
         filters=f,
         stages=cls_db.ALL_STAGES,
-        projects=sorted(set(cls_db.PROJECT_BUCKETS.values())),
+        projects=cls_db.get_all_bucket_names(),
         sort_labels=sort_labels,
         # v0.9.6 — DEDUPED union (Srikanth's decision 3): the Lost picker
         # now shows UNQUALIFIED_REASONS (see lead_detail() below), but
@@ -1730,7 +1783,7 @@ def lead_detail(cls_id):
         # but no reassign/edit options. For pre-v0.9.5 users can_write ==
         # (not restricted), so this is unchanged for them.
         owner_options=cls_db.get_distinct_owners() if can_write else [],
-        project_buckets=sorted(set(cls_db.PROJECT_BUCKETS.values())) if can_write else [],
+        project_buckets=cls_db.get_all_bucket_names() if can_write else [],
     )
 
 
@@ -1988,7 +2041,7 @@ def new_lead():
     return render_template(
         "lead_new.html",
         manual_entry_stages=cls_db.MANUAL_ENTRY_STAGES,
-        projects=sorted(set(cls_db.PROJECT_BUCKETS.values())),
+        projects=cls_db.get_all_bucket_names(),
         source_options=cls_db.MANUAL_SOURCE_OPTIONS,
         budget_options=cls_db.BUDGET_BRACKETS,
         configuration_options=cls_db.CONFIGURATIONS,
@@ -2203,6 +2256,171 @@ def settings_home():
     return render_template("settings.html")
 
 
+@app.route("/settings/projects", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_projects():
+    """
+    v0.14 — admin Settings > Projects. GUI CRUD for the project_aliases
+    table (cls_db.py v2.24), which replaced the hardcoded PROJECT_BUCKETS
+    dict. One form handles both "add an alias to an existing bucket" and
+    "create a brand-new bucket" — a brand-new bucket is just an alias
+    whose project_bucket equals itself (see cls_db.add_project_alias()
+    docstring), so no separate route/branch is needed for that case.
+    """
+    if request.method == "POST":
+        alias = request.form.get("alias", "").strip()
+        project_bucket = request.form.get("project_bucket", "").strip()
+        try:
+            cls_db.add_project_alias(alias, project_bucket)
+            flash(f"'{alias}' -> '{project_bucket}' saved.", "success")
+        except ValueError as e:
+            flash(str(e), "error")
+        return redirect(url_for("settings_projects"))
+
+    buckets = cls_db.list_project_buckets()
+    return render_template("settings_projects.html", buckets=buckets)
+
+
+@app.route("/settings/projects/<path:alias>/delete", methods=["POST"])
+@login_required
+@admin_required
+def settings_project_alias_delete(alias):
+    """v0.14 — deletes one alias row. No blocking logic — see
+    cls_db.delete_project_alias() docstring for why that's safe."""
+    cls_db.delete_project_alias(alias)
+    flash(f"'{alias}' removed.", "success")
+    return redirect(url_for("settings_projects"))
+
+
+@app.route("/settings/campaign-routing")
+@login_required
+@admin_required
+def settings_campaign_routing():
+    """
+    v0.15 — admin Settings > Campaign Routing. Lists all rules plus the
+    global fallback owner. ?edit=<campaign_name> prefills the add/edit
+    form with that rule's current values (campaign_name itself is not
+    editable once created — it's the table's unique key; "editing" means
+    changing rule_type/owners/active for that same campaign).
+
+    Owner dropdown is sourced from cls_db.get_all_users_detailed(),
+    filtered to active salespeople/managers WITH an owner_match_name set
+    — the value actually written as leads.lead_owner must be that exact
+    string, not a full_name/email that would silently fail to match.
+    """
+    edit_campaign = request.args.get("edit", "").strip()
+    edit_rule = None
+    if edit_campaign:
+        edit_rule = next(
+            (r for r in cls_db.list_campaign_routing_rules()
+             if r["campaign_name"].lower() == edit_campaign.lower()),
+            None
+        )
+
+    owner_choices = [
+        u for u in cls_db.get_all_users_detailed()
+        if u["active"] and u["role"] in ("manager", "salesperson") and u["owner_match_name"]
+    ]
+
+    return render_template(
+        "settings_campaign_routing.html",
+        rules=cls_db.list_campaign_routing_rules(),
+        fallback_owner=cls_db.get_fallback_owner(),
+        owner_choices=owner_choices,
+        edit_rule=edit_rule,
+    )
+
+
+@app.route("/settings/campaign-routing/fallback", methods=["POST"])
+@login_required
+@admin_required
+def settings_campaign_routing_fallback():
+    try:
+        cls_db.set_fallback_owner(request.form.get("fallback_owner", ""))
+        flash("Fallback owner updated.", "success")
+    except ValueError as e:
+        flash(str(e), "error")
+    return redirect(url_for("settings_campaign_routing"))
+
+
+@app.route("/settings/campaign-routing/save", methods=["POST"])
+@login_required
+@admin_required
+def settings_campaign_routing_save():
+    campaign_name = request.form.get("campaign_name", "").strip()
+    rule_type = request.form.get("rule_type", "").strip()
+    owners_list = [o.strip() for o in request.form.getlist("owners") if o.strip()]
+    try:
+        cls_db.upsert_campaign_routing_rule(campaign_name, rule_type, owners_list)
+        flash(f"Routing rule for '{campaign_name}' saved.", "success")
+    except ValueError as e:
+        flash(str(e), "error")
+    return redirect(url_for("settings_campaign_routing"))
+
+
+@app.route("/settings/campaign-routing/<path:campaign_name>/toggle", methods=["POST"])
+@login_required
+@admin_required
+def settings_campaign_routing_toggle(campaign_name):
+    active = request.form.get("active") == "1"
+    cls_db.set_campaign_routing_rule_active(campaign_name, active)
+    flash(f"'{campaign_name}' {'activated' if active else 'deactivated'}.", "success")
+    return redirect(url_for("settings_campaign_routing"))
+
+
+@app.route("/settings/campaign-routing/<path:campaign_name>/delete", methods=["POST"])
+@login_required
+@admin_required
+def settings_campaign_routing_delete(campaign_name):
+    cls_db.delete_campaign_routing_rule(campaign_name)
+    flash(f"'{campaign_name}' deleted.", "success")
+    return redirect(url_for("settings_campaign_routing"))
+
+
+@app.route("/settings/lead-scoring", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_lead_scoring():
+    """
+    v0.16 — admin Settings > Lead Scoring. Only changes WHERE
+    compute_lead_scores()'s rules come from (DB, via cls_db.py's new
+    get_lead_score_config()/set_lead_score_config()) — the scoring
+    mechanism and its display (score-badge on leads_list/lead_detail)
+    are untouched. A saved change takes effect immediately, no restart.
+    """
+    if request.method == "POST":
+        try:
+            config = {
+                "stage_points": {
+                    stage: float(request.form.get(f"stage_{stage}", "").strip())
+                    for stage in cls_db.ALL_STAGES
+                },
+                "temperature_points": {
+                    "Warm": float(request.form.get("temp_warm", "").strip()),
+                    "Hot": float(request.form.get("temp_hot", "").strip()),
+                },
+                "site_visit_conducted": float(request.form.get("site_visit_conducted", "").strip()),
+                "site_visit_no_show": float(request.form.get("site_visit_no_show", "").strip()),
+                "follow_up_completed": float(request.form.get("follow_up_completed", "").strip()),
+                "note_points_per_day": float(request.form.get("note_points_per_day", "").strip()),
+                "call_tap_points_per_day": float(request.form.get("call_tap_points_per_day", "").strip()),
+                "decay_after_days": float(request.form.get("decay_after_days", "").strip()),
+                "decay_points_per_period": float(request.form.get("decay_points_per_period", "").strip()),
+                "decay_exempt_stages": request.form.getlist("decay_exempt_stages"),
+                "hot_threshold": float(request.form.get("hot_threshold", "").strip()),
+                "warm_threshold": float(request.form.get("warm_threshold", "").strip()),
+            }
+            cls_db.set_lead_score_config(config)
+            flash("Lead scoring config saved.", "success")
+        except ValueError as e:
+            flash(f"Could not save: {e}", "error")
+        return redirect(url_for("settings_lead_scoring"))
+
+    config = cls_db.get_lead_score_config()
+    return render_template("settings_lead_scoring.html", config=config, all_stages=cls_db.ALL_STAGES)
+
+
 @app.route("/settings/users")
 @login_required
 @admin_required
@@ -2214,6 +2432,50 @@ def settings_users():
     for a flag that already worked, not a new permission concept."""
     users = cls_db.get_all_users_detailed()
     return render_template("settings_users.html", users=users)
+
+
+@app.route("/settings/users/new", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_user_new():
+    """
+    v0.13 — admin Settings > Team > Add User. GUI wrapper around
+    cls_db.create_user() (unchanged) — the first in-app way to create a
+    CRM login; previously only possible via terminal access to the
+    office PC running create_admin.py. Mirrors create_admin.py v1.3's
+    owner_match_name gating exactly: admins get nothing extra, managers
+    and salespeople both require it (a manager is a "player-coach" who
+    carries their own leads too, same reasoning as the terminal script).
+    """
+    form = {"full_name": "", "email": "", "role": "salesperson", "owner_match_name": ""}
+
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        email = request.form.get("email", "").strip()
+        password = request.form.get("password", "")
+        role = request.form.get("role", "").strip()
+        owner_match_name = request.form.get("owner_match_name", "").strip()
+
+        form = {"full_name": full_name, "email": email, "role": role, "owner_match_name": owner_match_name}
+
+        if role not in cls_db.CRM_ROLES:
+            flash("Please choose a valid role.", "error")
+        elif role in ("salesperson", "manager") and not owner_match_name:
+            flash("Owner name (Sell.do 'Attended By' text) is required for salesperson and manager logins.", "error")
+        elif not password or len(password) < 8:
+            flash("Password must be at least 8 characters.", "error")
+        else:
+            try:
+                cls_db.create_user(
+                    full_name, email, password, role,
+                    owner_match_name if role != "admin" else None,
+                )
+                flash(f"Created login for {full_name or email}.", "success")
+                return redirect(url_for("settings_users"))
+            except ValueError as e:
+                flash(str(e), "error")
+
+    return render_template("settings_user_new.html", roles=cls_db.CRM_ROLES, form=form)
 
 
 @app.route("/settings/user-activity")
@@ -2327,7 +2589,7 @@ def whatsapp_templates_admin():
     return render_template(
         "settings_whatsapp.html",
         templates=templates,
-        projects=sorted(set(cls_db.PROJECT_BUCKETS.values())),
+        projects=cls_db.get_all_bucket_names(),
     )
 
 
@@ -2364,7 +2626,7 @@ def whatsapp_reminder_templates_admin():
     return render_template(
         "settings_whatsapp_reminders.html",
         templates=templates,
-        projects=sorted(set(cls_db.PROJECT_BUCKETS.values())),
+        projects=cls_db.get_all_bucket_names(),
     )
 
 

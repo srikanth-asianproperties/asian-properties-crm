@@ -2,11 +2,113 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.23
+Version : 2.26
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.26 (July 2026) — Lead Scoring config GUI (Settings > Lead Scoring,
+  Task 4 of the settings-GUI batch, final task). ADDITIONS ONLY —
+  nothing existing removed or modified, except compute_lead_scores(),
+  whose OUTPUT/SCORING LOGIC is unchanged line-for-line; only its data
+  source moved from the module-level LEAD_SCORE_RULES/LEAD_SCORE_BANDS
+  constants to get_lead_score_config() (reads app_settings fresh on
+  every call — no caching, no restart needed for a config change to
+  take effect).
+
+  LEAD_SCORE_RULES / LEAD_SCORE_BANDS are now PAUSED (commented out,
+  not deleted) — historical reference only, nothing reads them anymore.
+
+  Reuses the app_settings table (Task 3, v2.25) rather than a second
+  key/value table. Seeded ONCE (self-healing INSERT OR IGNORE, never
+  clobbers a config Srikanth already tuned via the GUI) from
+  _LEAD_SCORE_CONFIG_SEED — byte-for-byte the old LEAD_SCORE_RULES dict
+  plus hot_threshold=70/warm_threshold=30, collapsed from LEAD_SCORE_
+  BANDS' 3-tuple list. Band labels (Cold/Warm/Hot) stay fixed, not
+  stored/editable — Srikanth's simplification call for this first
+  version; flagged so full label editing can be requested later if
+  wanted.
+
+  NEW get_lead_score_config() / set_lead_score_config(config_dict) —
+  the latter validates every required key (stage_points for all 8
+  ALL_STAGES, temperature_points, the 5 fixed-point fields, decay
+  settings, decay_exempt_stages, hot_threshold, warm_threshold),
+  rejects with a clear ValueError message on anything missing or
+  non-numeric where a number is expected, and only writes AFTER
+  validation passes — an invalid submission never touches the stored
+  config.
+
+v2.25 (July 2026) — Campaign Routing (Settings > Campaign Routing GUI,
+  Task 3 of the settings-GUI batch). ADDITIONS ONLY — nothing existing
+  removed or modified, except upsert_meta_lead()'s signature (gained one
+  new OPTIONAL trailing parameter, campaign=None — every existing call
+  site keeps working unchanged) and its branch 3 insert (now also sets
+  campaign and derives lead_owner via resolve_owner_for_new_lead()
+  instead of the old DEFAULT_OWNER_BY_PROJECT.get() line — branches 2/3
+  untouched, exactly mirroring how lead_owner has always been handled).
+
+  NEW campaign_routing_rules + app_settings tables (self-healing CREATE
+  TABLE IF NOT EXISTS in init_db()). app_settings is a small generic
+  key/value store, seeded once with default_fallback_owner='Mounika
+  Peddi' (self-healing INSERT OR IGNORE — never clobbers a value
+  Srikanth already changed via the GUI); reused again by Task 4 (Lead
+  Scoring config) rather than adding a second settings table.
+
+  DEFAULT_OWNER_BY_PROJECT / FALLBACK_DEFAULT_OWNER are now PAUSED
+  (commented out, not deleted) — historical reference only, nothing
+  reads them anymore. NOTE: the project-keyed defaults do not carry
+  over automatically to campaign-keyed routing rules; equivalent
+  routing rules must be configured fresh if wanted.
+
+  NEW resolve_owner_for_new_lead(conn, campaign_name) — takes the SAME
+  OPEN CONNECTION the lead insert is happening on, so a round-robin
+  next_index increment and the insert commit as one transaction, not
+  two racing connections. NEW admin CRUD: list_campaign_routing_rules(),
+  upsert_campaign_routing_rule() (rejects invalid rule_type/owner counts,
+  resets next_index only when the owners list actually changed — a
+  re-save that only flips `active` never resets a live rotation),
+  delete_campaign_routing_rule(), get_fallback_owner()/set_fallback_owner(),
+  and set_campaign_routing_rule_active() (narrower than a full upsert —
+  needed for the GUI's active toggle, which must not force-reset
+  next_index/owners the way a full re-save does).
+
+  get_all_users_detailed() ADDITIVE change: now also selects
+  owner_match_name (previously not selected) — needed to source the
+  campaign-routing owner dropdown with the exact string that ends up
+  written as leads.lead_owner. Existing consumers unaffected.
+
+  leads.campaign column already existed (added under the v2.13
+  drip_migrations self-healing block) — no new ALTER TABLE needed here.
+
+v2.24 (July 2026) — Project Master List (Settings > Projects GUI, Task 2
+  of the settings-GUI batch). ADDITIONS ONLY — nothing existing removed
+  or modified except get_project_bucket(), whose OUTPUT BEHAVIOR is
+  unchanged (same exact-match-first-then-fallback-to-raw-name logic),
+  only its data source moved from the module-level PROJECT_BUCKETS dict
+  to the new project_aliases table via a lazy cache.
+
+  NEW project_aliases table (self-healing CREATE TABLE IF NOT EXISTS in
+  init_db()), seeded ONE TIME ONLY from _PROJECT_ALIASES_SEED (the exact
+  same pairs the old PROJECT_BUCKETS dict held) — seeding is gated on
+  the table not existing BEFORE this init_db() call, not on it being
+  empty, so a later admin action that empties the table (deleting every
+  alias) can never trigger an accidental reseed on next restart.
+
+  PROJECT_BUCKETS is now PAUSED (commented out, not deleted) — historical
+  reference only, nothing reads it anymore.
+
+  NEW _PROJECT_BUCKET_CACHE (module-level, lazy) + _load_project_bucket_
+  cache() / reload_project_bucket_cache() — same lazy-cache-with-explicit-
+  invalidation pattern used elsewhere in this file, not a new idiom.
+
+  NEW list_project_buckets(), get_all_bucket_names(), add_project_alias(),
+  delete_project_alias() — admin CRUD for the new /settings/projects
+  screen. get_all_bucket_names() replaces the
+  sorted(set(cls_db.PROJECT_BUCKETS.values())) pattern previously
+  inlined at 5 call sites in app.py (leads_filter, lead_detail, lead_new,
+  and both WhatsApp template admin screens — one more call site than
+  originally scoped; verified against the live file rather than assumed).
+
 v2.23 (July 2026) — CLS1/CLS2 database split support. ADDITIONS ONLY —
   nothing existing removed or modified, except DB_FILE's assignment
   (see below; every function that reads/writes data still goes through
@@ -1139,18 +1241,19 @@ RESET_STAGES_ON_REENGAGEMENT = ("Unqualified", "Lost", "Booked")
 # starts wherever it genuinely is in the funnel already.
 MANUAL_ENTRY_STAGES = ["Prospect", "Opportunity", "Site Visited"]
 
-# v2.22 (July 2026) — placeholder owner assigned at Job A insert time
-# (upsert_meta_lead() branch 3 only), so a brand-new lead is never left
-# with lead_owner=NULL/"" if Job B fails to sync that session.
-# Config-not-code: to change a project's default owner, edit only this
-# dict. Job B's own upsert (upsert_selldo_lead()) always overwrites
-# this placeholder with the real Sell.do "Attended By" the moment it
-# syncs successfully.
-DEFAULT_OWNER_BY_PROJECT = {
-    "Naishka":       "Elohar Peddi",
-    "Grace Classic": "Devender Goud",
-}
-FALLBACK_DEFAULT_OWNER = "Mounika Peddi"
+# PAUSED (v2.25) — superseded by Campaign Routing (campaign_routing_rules
+# + app_settings['default_fallback_owner'], see resolve_owner_for_new_
+# lead() below). Kept here as historical reference only; nothing reads
+# these anymore. The project-keyed defaults below became campaign-keyed
+# routing rules; the "Naishka"/"Grace Classic" project keys do NOT carry
+# over automatically — routing rules must be configured fresh via
+# /settings/campaign-routing if the same defaults are wanted per campaign.
+#
+# DEFAULT_OWNER_BY_PROJECT = {
+#     "Naishka":       "Elohar Peddi",
+#     "Grace Classic": "Devender Goud",
+# }
+# FALLBACK_DEFAULT_OWNER = "Mounika Peddi"
 
 # v2.0 — source options for manually-entered leads only. Auto-captured
 # leads keep their system-level source ('meta'/'selldo_only') as
@@ -1264,19 +1367,47 @@ DRIP_PAUSE_STAGES = ["Re Assigned"]
 DRIP_TERMINAL_STAGES = ["Booked", "Lost", "Unqualified"]
 
 # ── Lead scoring (v2.2) ──
-# Config-not-code, same pattern as STAGE_TRANSITIONS/DRIP_SCHEDULE above.
-# To retune scoring, edit ONLY this dict and LEAD_SCORE_BANDS below —
-# compute_lead_scores() reads them at call time, no code changes needed.
-# Deliberately excludes a "reengaged" bonus — see the v2.2 changelog
-# note for why (the only reengagement signal today is an approximate
-# time-elapsed heuristic, not the precise "this person re-submitted"
-# signal Srikanth's design notes require before it drives anything).
-LEAD_SCORE_RULES = {
-    # Points for the lead's CURRENT stage. Unqualified/Lost/Re Assigned
-    # deliberately score 0 here — they aren't "worth nothing," they're
-    # excluded from the stage component entirely; a Lost lead's score
-    # is whatever residual activity points it accumulated, not a
-    # negative judgement encoded into the stage table itself.
+# PAUSED (v2.26) — superseded by the app_settings['lead_score_config']
+# row (see _LEAD_SCORE_CONFIG_SEED + get_lead_score_config()/
+# set_lead_score_config() below), editable via /settings/lead-scoring
+# instead of a code change. Kept here as historical/audit reference
+# only — compute_lead_scores() no longer reads either of these.
+#
+# LEAD_SCORE_RULES = {
+#     "stage_points": {
+#         "Incoming"     : 5,
+#         "Prospect"     : 15,
+#         "Opportunity"  : 30,
+#         "Site Visited" : 50,
+#         "Booked"       : 100,
+#         "Unqualified"  : 0,
+#         "Lost"         : 0,
+#         "Re Assigned"  : 0,
+#     },
+#     "temperature_points": {"Warm": 15, "Hot": 30},
+#     "site_visit_conducted": 25,
+#     "site_visit_no_show"  : -15,
+#     "follow_up_completed" : 10,
+#     "note_points_per_day"     : 2,
+#     "call_tap_points_per_day" : 5,
+#     "decay_after_days"      : 14,
+#     "decay_points_per_period": -10,
+#     "decay_exempt_stages"    : ["Site Visited", "Opportunity", "Booked"],
+# }
+#
+# LEAD_SCORE_BANDS = [
+#     (70, "Hot"),
+#     (30, "Warm"),
+#     (0,  "Cold"),
+# ]
+
+# (v2.26) Live seed data for the ONE-TIME app_settings['lead_score_config']
+# migration in init_db() — the exact same values as the PAUSED
+# LEAD_SCORE_RULES dict above, plus hot_threshold/warm_threshold
+# collapsed from LEAD_SCORE_BANDS' 3-tuple list (labels Cold/Warm/Hot
+# stay fixed, not stored/editable — Srikanth's simplification call for
+# this first version; full label editing can be added later if wanted).
+_LEAD_SCORE_CONFIG_SEED = {
     "stage_points": {
         "Incoming"     : 5,
         "Prospect"     : 15,
@@ -1287,47 +1418,67 @@ LEAD_SCORE_RULES = {
         "Lost"         : 0,
         "Re Assigned"  : 0,
     },
-    # Only applied when current_stage == 'Opportunity' (same rule Sell.do
-    # itself uses for opportunity_temperature's meaning).
     "temperature_points": {"Warm": 15, "Hot": 30},
     "site_visit_conducted": 25,
     "site_visit_no_show"  : -15,
     "follow_up_completed" : 10,
-    # Notes/calls are capped ONCE PER CALENDAR DAY regardless of how many
-    # are logged that day — stops someone gaming the score by spamming
-    # notes rather than genuinely progressing the lead.
     "note_points_per_day"     : 2,
     "call_tap_points_per_day" : 5,
-    # Staleness decay — mirrors get_stale_stage_count()'s spirit, but
-    # scoped to scoring rather than a health metric. Exempted stages are
-    # ones where sitting unchanged for a while is normal/expected, not
-    # a sign of neglect (e.g. Site Visited awaiting a loan approval).
     "decay_after_days"      : 14,
     "decay_points_per_period": -10,
     "decay_exempt_stages"    : ["Site Visited", "Opportunity", "Booked"],
+    "hot_threshold"  : 70,
+    "warm_threshold" : 30,
 }
 
-# Score bands for display next to the lead's name. Checked in order —
-# MUST stay sorted by threshold, descending — first match wins.
-LEAD_SCORE_BANDS = [
-    (70, "Hot"),
-    (30, "Warm"),
-    (0,  "Cold"),
+# (v2.26) Required numeric top-level keys for set_lead_score_config()'s
+# validation — everything except stage_points/temperature_points (nested
+# dicts, validated separately) and decay_exempt_stages (a list).
+_LEAD_SCORE_CONFIG_REQUIRED_NUMERIC = [
+    "site_visit_conducted", "site_visit_no_show", "follow_up_completed",
+    "note_points_per_day", "call_tap_points_per_day",
+    "decay_after_days", "decay_points_per_period",
+    "hot_threshold", "warm_threshold",
 ]
 
 # ── Project name → display bucket ──
-# Sell.do CSV exports store project names with variation (spacing, dashes,
-# old sub-project names) and sometimes comma-join MULTIPLE project names
-# into one field — executives add nearby projects to a lead's record as
-# the lead's interest expands after a site visit. The raw events_log.project
-# value is left untouched (it's real CRM history); this map is ONLY used
-# to decide which single bucket a lead/event displays/attributes under,
-# for dashboards, the phone snapshot, and cost-per-site-visit analysis.
+# PAUSED (v2.24) — superseded by the project_aliases TABLE, seeded from
+# this exact dict ONE TIME ONLY at migration (see _PROJECT_ALIASES_SEED
+# + init_db() below). Kept here as historical/audit reference only —
+# nothing in the codebase reads this dict anymore; do not resurrect a
+# call site against it, use get_project_bucket()/get_all_bucket_names().
 #
-# To add a new alias, add ONE line below — no other code changes needed.
-PROJECT_BUCKETS = {
-    # ── Naishka Homes umbrella (Bandlaguda Jagir cluster — adjacent
-    #    projects bucketed together per Srikanth's call, 2026-06-21) ──
+# PROJECT_BUCKETS = {
+#     # ── Naishka Homes umbrella (Bandlaguda Jagir cluster — adjacent
+#     #    projects bucketed together per Srikanth's call, 2026-06-21) ──
+#     "Naishka"                          : "Naishka Homes",
+#     "Naishka Prism"                    : "Naishka Homes",
+#     "Naishka Pavilion"                 : "Naishka Homes",
+#     "Naishka Prestige"                 : "Naishka Homes",
+#     "Naishka Pristine"                 : "Naishka Homes",
+#     "Pavan Classic"                    : "Naishka Homes",
+#     "Sri Marvel"                       : "Naishka Homes",
+#     "Madhavi Residency"                : "Naishka Homes",
+#     "Saanvi Elite Bandlaguda Jagir"    : "Naishka Homes",
+#
+#     # ── Grace Classic (spacing/dash export variants only) ──
+#     "Grace Classic"                    : "Grace Classic",
+#     "Grace Classic - Kokapet"          : "Grace Classic",
+#     "Grace Classic   Kokapet"          : "Grace Classic",   # double-space, no dash
+#
+#     # ── Prima Paradiso (already clean, listed for completeness) ──
+#     "Prima Paradiso"                   : "Prima Paradiso",
+#
+#     # ── Praga Enclave — separate old project, still active, NOT merged
+#     #    into Naishka Homes despite being nearby ──
+#     "Praga Enclave"                    : "Praga Enclave",
+# }
+
+# (v2.24) The literal seed data for the ONE-TIME project_aliases migration
+# in init_db() — byte-for-byte the same pairs as the PAUSED dict above.
+# Kept as a separate, live (uncommented) constant because the dict above
+# is intentionally inert; this is the actual source init_db() reads.
+_PROJECT_ALIASES_SEED = {
     "Naishka"                          : "Naishka Homes",
     "Naishka Prism"                    : "Naishka Homes",
     "Naishka Pavilion"                 : "Naishka Homes",
@@ -1337,25 +1488,53 @@ PROJECT_BUCKETS = {
     "Sri Marvel"                       : "Naishka Homes",
     "Madhavi Residency"                : "Naishka Homes",
     "Saanvi Elite Bandlaguda Jagir"    : "Naishka Homes",
-
-    # ── Grace Classic (spacing/dash export variants only) ──
     "Grace Classic"                    : "Grace Classic",
     "Grace Classic - Kokapet"          : "Grace Classic",
-    "Grace Classic   Kokapet"          : "Grace Classic",   # double-space, no dash
-
-    # ── Prima Paradiso (already clean, listed for completeness) ──
+    "Grace Classic   Kokapet"          : "Grace Classic",
     "Prima Paradiso"                   : "Prima Paradiso",
-
-    # ── Praga Enclave — separate old project, still active, NOT merged
-    #    into Naishka Homes despite being nearby ──
     "Praga Enclave"                    : "Praga Enclave",
 }
+
+# (v2.24) Module-level cache for project_aliases, {alias: project_bucket}.
+# None means "not loaded yet" — get_project_bucket()/get_all_bucket_names()
+# lazily populate it via _load_project_bucket_cache(). Invalidated by
+# reload_project_bucket_cache(), called after every add/delete.
+_PROJECT_BUCKET_CACHE = None
+
+
+def _load_project_bucket_cache():
+    """
+    (v2.24) Loads every project_aliases row into the module cache as a
+    plain {alias: project_bucket} dict, replacing whatever was cached
+    before. Called lazily by get_project_bucket()/get_all_bucket_names()
+    whenever the cache is None.
+    """
+    global _PROJECT_BUCKET_CACHE
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT alias, project_bucket FROM project_aliases").fetchall()
+    finally:
+        conn.close()
+    _PROJECT_BUCKET_CACHE = {r["alias"]: r["project_bucket"] for r in rows}
+    return _PROJECT_BUCKET_CACHE
+
+
+def reload_project_bucket_cache():
+    """
+    (v2.24) Invalidates the module-level project-bucket cache so the
+    next get_project_bucket()/get_all_bucket_names() call reloads fresh
+    from project_aliases. Call this after every
+    add_project_alias()/delete_project_alias() — both already do.
+    """
+    global _PROJECT_BUCKET_CACHE
+    _PROJECT_BUCKET_CACHE = None
 
 
 def get_project_bucket(raw_project):
     """
     Collapse a raw events_log/leads `project` value into its display
-    bucket using PROJECT_BUCKETS.
+    bucket using the project_aliases table (via the lazy module cache;
+    see PAUSED PROJECT_BUCKETS note above for what this replaced).
 
     Handles three real-world shapes seen in Sell.do exports:
       1. A clean single name              -> looked up directly
@@ -1367,15 +1546,102 @@ def get_project_bucket(raw_project):
 
     Unknown names fall through unchanged (so a brand-new project
     just works without needing a code change — it shows under its
-    own raw name until someone adds it to PROJECT_BUCKETS).
+    own raw name until someone adds it via /settings/projects).
 
     Returns "(unknown)" for None/blank input.
     """
     if not raw_project:
         return "(unknown)"
 
+    if _PROJECT_BUCKET_CACHE is None:
+        _load_project_bucket_cache()
+
     first = raw_project.split(",")[0].strip()
-    return PROJECT_BUCKETS.get(first, first)
+    return _PROJECT_BUCKET_CACHE.get(first, first)
+
+
+def get_all_bucket_names():
+    """
+    (v2.24) Sorted distinct bucket names — drop-in replacement for the
+    old sorted(set(PROJECT_BUCKETS.values())) call sites in app.py
+    (leads_filter, lead_detail, lead_new, both WhatsApp template admin
+    screens). Same output shape: a plain sorted list of strings.
+    """
+    if _PROJECT_BUCKET_CACHE is None:
+        _load_project_bucket_cache()
+    return sorted(set(_PROJECT_BUCKET_CACHE.values()))
+
+
+def list_project_buckets():
+    """
+    (v2.24) All project aliases grouped by bucket, sorted by bucket name
+    then alias, for the /settings/projects admin screen. Returns:
+      [{"bucket": "Naishka Homes", "aliases": ["Naishka", "Naishka Prism", ...]}, ...]
+    Reads straight from the DB (not the cache) so the admin screen always
+    shows the true current state even mid-edit.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT alias, project_bucket FROM project_aliases "
+            "ORDER BY project_bucket COLLATE NOCASE, alias COLLATE NOCASE"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    grouped = {}
+    order = []
+    for r in rows:
+        bucket = r["project_bucket"]
+        if bucket not in grouped:
+            grouped[bucket] = []
+            order.append(bucket)
+        grouped[bucket].append(r["alias"])
+
+    return [{"bucket": b, "aliases": grouped[b]} for b in order]
+
+
+def add_project_alias(alias, project_bucket):
+    """
+    (v2.24) Add or repoint one alias -> bucket mapping. A brand-new
+    project (no aliases yet) is just alias == project_bucket, e.g.
+    add_project_alias("Prima Casa", "Prima Casa"). INSERT OR REPLACE
+    keyed on alias (COLLATE NOCASE on the column), so re-adding the
+    same alias (any case) with a different bucket simply repoints it.
+
+    Raises ValueError if either argument is blank.
+    """
+    alias = (alias or "").strip()
+    project_bucket = (project_bucket or "").strip()
+    if not alias or not project_bucket:
+        raise ValueError("Both an alias and a project bucket name are required.")
+
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO project_aliases (alias, project_bucket, created_at) VALUES (?, ?, ?)",
+            (alias, project_bucket, _now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    reload_project_bucket_cache()
+
+
+def delete_project_alias(alias):
+    """
+    (v2.24) Delete one alias row. No blocking logic needed — if every
+    alias for a bucket ends up deleted, get_project_bucket() already
+    falls through gracefully to the raw name unchanged, same as an
+    unknown project today.
+    """
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM project_aliases WHERE alias=?", (alias,))
+        conn.commit()
+    finally:
+        conn.close()
+    reload_project_bucket_cache()
 
 
 def _campaign_bucket(raw_campaign):
@@ -1826,6 +2092,80 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_useraction_session ON user_action_log(session_id);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_useraction_created ON user_action_log(created_at);")
+
+    # ── v2.24 — Project Master List (project_aliases table) ──
+    # Superseded the PROJECT_BUCKETS module dict (now PAUSED above).
+    # table_existed_before is checked BEFORE CREATE TABLE, not via an
+    # emptiness check AFTER it — deliberately: an admin deleting every
+    # alias later via delete_project_alias() (a legitimate, supported
+    # action) must never get silently reseeded from the old hardcoded
+    # dict on the next app/job restart. "Just created" means literally
+    # created by this call, not "happens to be empty right now."
+    table_existed_before = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='project_aliases'"
+    ).fetchone() is not None
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS project_aliases (
+            alias           TEXT PRIMARY KEY COLLATE NOCASE,
+            project_bucket  TEXT NOT NULL,
+            created_at      TEXT NOT NULL
+        );
+    """)
+
+    if not table_existed_before:
+        seed_ts = _now()
+        conn.executemany(
+            "INSERT OR IGNORE INTO project_aliases (alias, project_bucket, created_at) VALUES (?, ?, ?)",
+            [(alias, bucket, seed_ts) for alias, bucket in _PROJECT_ALIASES_SEED.items()]
+        )
+
+    # ── v2.25 — Campaign Routing (Single + Round Robin) + app_settings ──
+    # Superseded DEFAULT_OWNER_BY_PROJECT/FALLBACK_DEFAULT_OWNER (now
+    # PAUSED above). app_settings is a small generic key/value store —
+    # reused again by Task 4 (Lead Scoring config) below, not duplicated.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS campaign_routing_rules (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_name   TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            rule_type       TEXT NOT NULL CHECK (rule_type IN ('single','round_robin')),
+            owners          TEXT NOT NULL,
+            next_index      INTEGER NOT NULL DEFAULT 0,
+            active          INTEGER NOT NULL DEFAULT 1,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            setting_key     TEXT PRIMARY KEY,
+            setting_value   TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+    """)
+
+    # Self-healing seed: only inserts if the row doesn't already exist,
+    # so re-running init_db() never clobbers a value Srikanth already
+    # changed via /settings/campaign-routing.
+    conn.execute(
+        "INSERT OR IGNORE INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+        ("default_fallback_owner", "Mounika Peddi", _now())
+    )
+
+    # leads.campaign self-healing column already existed (added under
+    # the drip_migrations block above, v2.13) — no new ALTER TABLE
+    # needed here for Campaign Routing to write to it.
+
+    # ── v2.26 — Lead Scoring config (Settings > Lead Scoring GUI) ──
+    # Reuses the app_settings table created just above (Task 3) rather
+    # than a second key/value table. Self-healing seed, same INSERT OR
+    # IGNORE pattern as default_fallback_owner — never clobbers a config
+    # Srikanth already tuned via the GUI.
+    conn.execute(
+        "INSERT OR IGNORE INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+        ("lead_score_config", json.dumps(_LEAD_SCORE_CONFIG_SEED), _now())
+    )
 
     conn.commit()
     conn.close()
@@ -4252,11 +4592,19 @@ def get_all_users_detailed():
     so the list reads alphabetically, admins and salespeople mixed together
     (role is shown as a badge, not used to sort/group — a small team
     doesn't need two separate lists).
+
+    v2.25 — ADDITIVE: also returns owner_match_name (previously not
+    selected). Needed by /settings/campaign-routing to source its owner
+    dropdown with the exact string that ends up written as leads.
+    lead_owner — full_name/email would silently mismatch it. Existing
+    consumers (Settings > Team) are unaffected; they access dict keys
+    by name and simply ignore the new one.
     """
     conn = _connect()
     try:
         rows = conn.execute("""
-            SELECT user_id, full_name, email, role, active, created_at, last_login_at
+            SELECT user_id, full_name, email, role, active, created_at,
+                   last_login_at, owner_match_name
             FROM users ORDER BY full_name COLLATE NOCASE
         """).fetchall()
         return [dict(r) for r in rows]
@@ -4301,6 +4649,83 @@ def set_user_active(user_id, active, actor_user_id):
         conn.close()
 
 
+def get_lead_score_config():
+    """
+    (v2.26) Reads app_settings['lead_score_config'], JSON-decodes, and
+    returns the dict compute_lead_scores() scores against — superseded
+    the module-level LEAD_SCORE_RULES/LEAD_SCORE_BANDS constants (now
+    PAUSED above). No caching: this is called at most a few times per
+    page load and SQLite WAL reads are cheap, so a cache here would be
+    over-engineering (contrast with the project-bucket cache above,
+    which is looked up per-lead in tighter loops).
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT setting_value FROM app_settings WHERE setting_key='lead_score_config'"
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise RuntimeError("lead_score_config is missing from app_settings — run init_db() to seed it.")
+    return json.loads(row["setting_value"])
+
+
+def set_lead_score_config(config_dict):
+    """
+    (v2.26) Validates then overwrites app_settings['lead_score_config'].
+    Required keys: stage_points (all 8 ALL_STAGES), temperature_points,
+    site_visit_conducted, site_visit_no_show, follow_up_completed,
+    note_points_per_day, call_tap_points_per_day, decay_after_days,
+    decay_points_per_period, decay_exempt_stages, hot_threshold,
+    warm_threshold.
+
+    Raises ValueError with a clear message (and leaves the OLD config
+    untouched in the DB — the write only happens after validation
+    passes) if anything is missing or a should-be-numeric field isn't
+    a number.
+    """
+    if not isinstance(config_dict, dict):
+        raise ValueError("Lead score config must be a dict.")
+
+    missing = []
+
+    stage_points = config_dict.get("stage_points")
+    if not isinstance(stage_points, dict):
+        missing.append("stage_points")
+    else:
+        for stage in ALL_STAGES:
+            if stage not in stage_points:
+                missing.append(f"stage_points.{stage}")
+            elif not isinstance(stage_points[stage], (int, float)) or isinstance(stage_points[stage], bool):
+                raise ValueError(f"stage_points.{stage} must be a number.")
+
+    if not isinstance(config_dict.get("temperature_points"), dict):
+        missing.append("temperature_points")
+
+    if not isinstance(config_dict.get("decay_exempt_stages"), list):
+        missing.append("decay_exempt_stages")
+
+    for key in _LEAD_SCORE_CONFIG_REQUIRED_NUMERIC:
+        if key not in config_dict:
+            missing.append(key)
+        elif not isinstance(config_dict[key], (int, float)) or isinstance(config_dict[key], bool):
+            raise ValueError(f"'{key}' must be a number.")
+
+    if missing:
+        raise ValueError(f"Lead score config is missing required key(s): {', '.join(missing)}")
+
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+            ("lead_score_config", json.dumps(config_dict), _now())
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def compute_lead_scores(cls_ids):
     """
     Batch lead scoring (v2.2) — one connection, one pass, for however
@@ -4313,8 +4738,11 @@ def compute_lead_scores(cls_ids):
     opportunity_temperature, leads.cls_updated_at (for staleness
     decay), and activity_log (for conducted visits, completed
     follow-ups, notes, and call taps). All point values come from
-    LEAD_SCORE_RULES/LEAD_SCORE_BANDS above — edit those, not this
-    function, to retune.
+    get_lead_score_config() (v2.26 — was the module-level
+    LEAD_SCORE_RULES/LEAD_SCORE_BANDS constants; edit via
+    /settings/lead-scoring or set_lead_score_config(), not this
+    function, to retune) — read fresh on every call, so a config
+    change takes effect immediately with no restart needed.
     """
     if not cls_ids:
         return {}
@@ -4337,7 +4765,7 @@ def compute_lead_scores(cls_ids):
         for a in activity_rows:
             activity_by_lead.setdefault(a["cls_id"], []).append(a)
 
-        rules = LEAD_SCORE_RULES
+        rules = get_lead_score_config()
         results = {}
 
         for l in leads:
@@ -4378,11 +4806,12 @@ def compute_lead_scores(cls_ids):
                     pass  # malformed/legacy timestamp — skip decay, don't crash scoring
 
             score = max(0, score)
-            band = "Cold"
-            for threshold, label in LEAD_SCORE_BANDS:
-                if score >= threshold:
-                    band = label
-                    break
+            if score >= rules["hot_threshold"]:
+                band = "Hot"
+            elif score >= rules["warm_threshold"]:
+                band = "Warm"
+            else:
+                band = "Cold"
 
             results[cls_id] = {"score": score, "band": band}
 
@@ -4530,8 +4959,203 @@ def _apply_reengagement_marker(conn, cls_id, prev_stage, now):
         conn.execute("UPDATE leads SET reengaged_at=? WHERE cls_id=?", (now, cls_id))
 
 
+def resolve_owner_for_new_lead(conn, campaign_name):
+    """
+    (v2.25) Decide the placeholder owner for a genuinely-new Meta lead
+    (upsert_meta_lead() branch 3 only), superseding the old project-keyed
+    DEFAULT_OWNER_BY_PROJECT dict. Takes the SAME OPEN CONNECTION the
+    insert is happening on, so a round-robin cursor increment and the
+    lead insert commit together as one transaction — never two separate
+    connections that could interleave with a concurrent call.
+
+    Rules, checked in order:
+      1. Blank/None campaign_name -> app_settings['default_fallback_owner'].
+      2. No ACTIVE campaign_routing_rules row matches (case-insensitive)
+         -> same fallback.
+      3. rule_type='single' -> owners[0].
+      4. rule_type='round_robin' -> owners[next_index % len(owners)],
+         then next_index is incremented on that same row (same conn,
+         not yet committed here — the caller's own commit covers it).
+
+    Job B's own upsert (upsert_selldo_lead()) always overwrites this
+    placeholder with the real Sell.do "Attended By" the moment it syncs
+    successfully — same posture as the dict this replaces.
+    """
+    fallback_row = conn.execute(
+        "SELECT setting_value FROM app_settings WHERE setting_key='default_fallback_owner'"
+    ).fetchone()
+    fallback_owner = fallback_row["setting_value"] if fallback_row else "Mounika Peddi"
+
+    if not campaign_name or not campaign_name.strip():
+        return fallback_owner
+
+    rule = conn.execute(
+        "SELECT id, rule_type, owners, next_index FROM campaign_routing_rules "
+        "WHERE campaign_name=? AND active=1",
+        (campaign_name.strip(),)
+    ).fetchone()
+
+    if not rule:
+        return fallback_owner
+
+    owners = json.loads(rule["owners"])
+    if not owners:
+        return fallback_owner
+
+    if rule["rule_type"] == "single":
+        return owners[0]
+
+    # round_robin
+    picked = owners[rule["next_index"] % len(owners)]
+    conn.execute(
+        "UPDATE campaign_routing_rules SET next_index = next_index + 1 WHERE id=?",
+        (rule["id"],)
+    )
+    return picked
+
+
+def list_campaign_routing_rules():
+    """(v2.25) All campaign routing rules, owners JSON-decoded, for the
+    /settings/campaign-routing admin screen."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, campaign_name, rule_type, owners, next_index, active, "
+            "created_at, updated_at FROM campaign_routing_rules ORDER BY campaign_name COLLATE NOCASE"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["owners"] = json.loads(d["owners"])
+        result.append(d)
+    return result
+
+
+def upsert_campaign_routing_rule(campaign_name, rule_type, owners_list):
+    """
+    (v2.25) Create or update a campaign routing rule. Validates
+    rule_type and owner-count requirements; raises ValueError with a
+    clear message on rejection.
+
+    next_index is reset to 0 ONLY if the owners list actually changed
+    from what's currently stored — re-saving the same list (e.g. just
+    flipping active) must not reset a live round-robin rotation.
+    """
+    campaign_name = (campaign_name or "").strip()
+    if not campaign_name:
+        raise ValueError("Campaign name is required.")
+    if rule_type not in ("single", "round_robin"):
+        raise ValueError("Rule type must be 'single' or 'round_robin'.")
+    if not owners_list:
+        raise ValueError("At least one owner is required.")
+    if rule_type == "single" and len(owners_list) != 1:
+        raise ValueError("A Single rule takes exactly one owner.")
+    if rule_type == "round_robin" and len(owners_list) < 2:
+        raise ValueError("A Round Robin rule needs at least 2 owners.")
+
+    now = _now()
+    conn = _connect()
+    try:
+        existing = conn.execute(
+            "SELECT owners FROM campaign_routing_rules WHERE campaign_name=?",
+            (campaign_name,)
+        ).fetchone()
+
+        owners_changed = True
+        if existing:
+            try:
+                owners_changed = json.loads(existing["owners"]) != list(owners_list)
+            except (ValueError, TypeError):
+                owners_changed = True
+
+        next_index = 0 if owners_changed else None  # None = "keep existing" below
+
+        if existing:
+            if next_index is None:
+                conn.execute("""
+                    UPDATE campaign_routing_rules
+                    SET rule_type=?, owners=?, active=1, updated_at=?
+                    WHERE campaign_name=?
+                """, (rule_type, json.dumps(list(owners_list)), now, campaign_name))
+            else:
+                conn.execute("""
+                    UPDATE campaign_routing_rules
+                    SET rule_type=?, owners=?, next_index=0, active=1, updated_at=?
+                    WHERE campaign_name=?
+                """, (rule_type, json.dumps(list(owners_list)), now, campaign_name))
+        else:
+            conn.execute("""
+                INSERT INTO campaign_routing_rules
+                    (campaign_name, rule_type, owners, next_index, active, created_at, updated_at)
+                VALUES (?, ?, ?, 0, 1, ?, ?)
+            """, (campaign_name, rule_type, json.dumps(list(owners_list)), now, now))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_campaign_routing_rule_active(campaign_name, active):
+    """(v2.25) Toggle a rule's active flag only — leaves owners/rule_type/
+    next_index untouched. Narrower than upsert_campaign_routing_rule(),
+    which always sets active=1 on save; the active toggle on
+    /settings/campaign-routing needs to flip it independently of a
+    full re-save."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE campaign_routing_rules SET active=?, updated_at=? WHERE campaign_name=?",
+            (1 if active else 0, _now(), campaign_name)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_campaign_routing_rule(campaign_name):
+    """(v2.25) Delete one campaign routing rule. A campaign left without
+    a rule simply falls back to the default fallback owner — no
+    blocking logic needed."""
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM campaign_routing_rules WHERE campaign_name=?", (campaign_name,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_fallback_owner():
+    """(v2.25) Reads app_settings['default_fallback_owner']."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT setting_value FROM app_settings WHERE setting_key='default_fallback_owner'"
+        ).fetchone()
+    finally:
+        conn.close()
+    return row["setting_value"] if row else "Mounika Peddi"
+
+
+def set_fallback_owner(name):
+    """(v2.25) Writes app_settings['default_fallback_owner']."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("A fallback owner name is required.")
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+            ("default_fallback_owner", name, _now())
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def upsert_meta_lead(leadgen_id, form_id, project, full_name,
-                     phone_raw, email_raw, meta_created_time):
+                     phone_raw, email_raw, meta_created_time, campaign=None):
     """
     Called by meta_leads_fetcher.py (Job A) for each Facebook lead.
 
@@ -4543,6 +5167,16 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
          Sell.do-only row already exists for this person, we ENRICH
          it with the leadgen_id rather than creating a duplicate.
       4. Else insert a brand-new row, source='meta'.
+
+    campaign (v2.25, optional): only used at true first-insert time
+    (branch 3 / "genuinely new lead" below), exactly mirroring how
+    lead_owner is handled — passed to resolve_owner_for_new_lead() to
+    pick the placeholder owner via Campaign Routing, then stored as-is
+    on the new row. Branches 1/2 (leadgen_id refresh, contact-match
+    enrich) leave campaign untouched, same as before this parameter
+    existed — omitting it entirely (old call sites) defaults to None,
+    which resolve_owner_for_new_lead() treats as "use the fallback
+    owner", identical to pre-v2.25 behavior.
 
     Returns the cls_id of the affected row.
     """
@@ -4602,19 +5236,19 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
         # ── 3. Genuinely new lead — insert. ──
         cls_id = str(uuid.uuid4())
         crm_lead_no = _next_crm_lead_no(conn)
-        default_owner = DEFAULT_OWNER_BY_PROJECT.get(project, FALLBACK_DEFAULT_OWNER)
+        default_owner = resolve_owner_for_new_lead(conn, campaign)
         conn.execute("""
             INSERT INTO leads (
                 cls_id, leadgen_id, form_id, project, full_name,
                 phone_raw, phone_norm, email_raw, email_norm,
                 meta_created_time, source, crm_lead_no,
-                current_stage, stage_updated_at, lead_owner,
+                current_stage, stage_updated_at, lead_owner, campaign,
                 cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (cls_id, leadgen_id, form_id, project, full_name,
               phone_raw, phone_norm, email_raw, email_norm,
               meta_created_time, "meta", crm_lead_no,
-              "Incoming", now, default_owner, now, now))
+              "Incoming", now, default_owner, campaign, now, now))
         conn.commit()
         return cls_id
     finally:

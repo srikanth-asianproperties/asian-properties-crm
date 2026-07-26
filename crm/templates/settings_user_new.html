@@ -1,0 +1,70 @@
+{# settings_user_new.html (v1) — admin Settings > Team > Add User. Form
+   wrapper around cls_db.create_user(). owner_match_name is shown/required
+   only for salesperson/manager roles, mirroring create_admin.py v1.3's
+   terminal-prompt logic exactly: admins see/write everything and need
+   nothing extra; managers are "player-coach" roles that carry their own
+   leads too, so they need the Sell.do "Attended By" link just like a
+   salesperson does. #}
+{% extends "base.html" %}
+{% block title %}Add User{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_users') }}" style="font-size:14px;">← Back to Team</a>
+<h2 style="margin-top:10px;">Add User</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  Creates a new CRM login. The person can sign in immediately with the email and
+  password below.
+</p>
+
+<div class="card" style="margin-top:16px; max-width:480px;">
+  <form method="post" action="{{ url_for('settings_user_new') }}">
+    <div class="field-label">Full name</div>
+    <input type="text" name="full_name" value="{{ form.full_name }}" placeholder="e.g. Elohar Peddi" style="width:100%; margin-bottom:14px;">
+
+    <div class="field-label">Email (login id) *</div>
+    <input type="email" name="email" value="{{ form.email }}" required style="width:100%; margin-bottom:14px;">
+
+    <div class="field-label">Password *</div>
+    <input type="password" name="password" required minlength="8" style="width:100%; margin-bottom:4px;">
+    <div style="font-size:12px; color:var(--ink-soft); margin-bottom:14px;">At least 8 characters.</div>
+
+    <div class="field-label">Role *</div>
+    <select name="role" id="roleSelect" required style="width:100%; margin-bottom:14px;" onchange="toggleOwnerField()">
+      {% for r in roles %}
+      <option value="{{ r }}" {{ 'selected' if form.role == r }}>{{ r }}</option>
+      {% endfor %}
+    </select>
+
+    <div id="ownerFieldWrap" style="margin-bottom:14px;">
+      <div class="field-label">Owner name (Sell.do "Attended By" text) *</div>
+      <input type="text" name="owner_match_name" id="ownerField" value="{{ form.owner_match_name }}" placeholder="e.g. Elohar Peddi" style="width:100%;">
+      <div style="font-size:12px; color:var(--ink-soft); margin-top:4px;" id="ownerFieldHint">
+        Open Sell.do, find one of their leads, and copy the exact "Attended By" text.
+        Matching is case-insensitive, but spelling must be exact otherwise.
+      </div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Create login</button>
+  </form>
+</div>
+
+<script>
+function toggleOwnerField() {
+  var role = document.getElementById('roleSelect').value;
+  var wrap = document.getElementById('ownerFieldWrap');
+  var field = document.getElementById('ownerField');
+  var hint = document.getElementById('ownerFieldHint');
+  var needsOwner = (role === 'salesperson' || role === 'manager');
+  wrap.style.display = needsOwner ? 'block' : 'none';
+  field.required = needsOwner;
+  if (role === 'manager') {
+    hint.textContent = "This links the manager to their OWN leads (they still see everyone's). " +
+      "Open Sell.do, find one of their leads, and copy the exact \"Attended By\" text.";
+  } else {
+    hint.textContent = "This person only sees their own leads, matched by this exact text. " +
+      "Open Sell.do, find one of their leads, and copy the exact \"Attended By\" text.";
+  }
+}
+document.addEventListener('DOMContentLoaded', toggleOwnerField);
+</script>
+{% endblock %}

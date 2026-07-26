@@ -1,0 +1,166 @@
+{# settings_campaign_routing.html (v1) — admin Settings > Campaign
+   Routing. Fallback owner + CRUD for campaign_routing_rules
+   (cls_db.py v2.25). "Single" picks one fixed owner for every new lead
+   on a campaign; "Round Robin" cycles through 2+ owners in order. #}
+{% extends "base.html" %}
+{% block title %}Campaign Routing{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+<h2 style="margin-top:10px;">Campaign Routing</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  Decides who a brand-new Meta lead is assigned to at insert time, before Sell.do syncs
+  the real "Attended By". Only applies to genuinely new leads (Job A).
+</p>
+
+{# ── Fallback owner ── #}
+<div class="card" style="margin-top:16px; max-width:480px;">
+  <h3 style="margin-top:0; font-size:16px;">Fallback owner</h3>
+  <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">
+    If a lead's campaign has no rule configured, or the campaign is blank, assign it to:
+  </p>
+  <form method="post" action="{{ url_for('settings_campaign_routing_fallback') }}" style="display:flex; gap:10px; flex-wrap:wrap;">
+    <select name="fallback_owner" style="flex:1; min-width:180px;">
+      {% for u in owner_choices %}
+      <option value="{{ u.owner_match_name }}" {{ 'selected' if u.owner_match_name == fallback_owner }}>{{ u.full_name or u.owner_match_name }}</option>
+      {% endfor %}
+      {% if fallback_owner and fallback_owner not in owner_choices|map(attribute='owner_match_name')|list %}
+      <option value="{{ fallback_owner }}" selected>{{ fallback_owner }} (not an active user)</option>
+      {% endif %}
+    </select>
+    <button type="submit" class="btn btn-primary">Save</button>
+  </form>
+</div>
+
+{# ── Add / edit rule ── #}
+<div class="card" style="margin-top:16px; max-width:560px;">
+  <h3 style="margin-top:0; font-size:16px;">{{ 'Edit rule' if edit_rule else 'Add a routing rule' }}</h3>
+  <form method="post" action="{{ url_for('settings_campaign_routing_save') }}">
+    <div class="field-label">Campaign name *</div>
+    {% if edit_rule %}
+    <input type="text" name="campaign_name" required readonly
+           value="{{ edit_rule.campaign_name }}"
+           style="width:100%; margin-bottom:14px; background:var(--paper);">
+    {% else %}
+    <input type="text" name="campaign_name" required
+           placeholder="e.g. Camp5_Naishka_08-05-2026"
+           style="width:100%; margin-bottom:14px;">
+    {% endif %}
+
+    <div class="field-label">Rule type *</div>
+    <div style="display:flex; gap:16px; margin-bottom:14px;">
+      <label style="font-size:14px; display:flex; align-items:center; gap:6px;">
+        <input type="radio" name="rule_type" value="single" id="ruleTypeSingle"
+               {{ 'checked' if not edit_rule or edit_rule.rule_type == 'single' }} onchange="toggleRuleType()"> Single
+      </label>
+      <label style="font-size:14px; display:flex; align-items:center; gap:6px;">
+        <input type="radio" name="rule_type" value="round_robin" id="ruleTypeRR"
+               {{ 'checked' if edit_rule and edit_rule.rule_type == 'round_robin' }} onchange="toggleRuleType()"> Round Robin
+      </label>
+    </div>
+
+    <div class="field-label">Owner(s) *</div>
+    <div id="ownerRows" style="display:flex; flex-direction:column; gap:8px;">
+      {% if edit_rule and edit_rule.owners %}
+        {% for o in edit_rule.owners %}
+        <div style="display:flex; gap:8px; align-items:center;">
+          <select name="owners" style="flex:1;">
+            {% for u in owner_choices %}
+            <option value="{{ u.owner_match_name }}" {{ 'selected' if u.owner_match_name == o }}>{{ u.full_name or u.owner_match_name }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" class="btn owner-row-remove" onclick="removeOwnerRow(this)" style="padding:5px 10px;">×</button>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div style="display:flex; gap:8px; align-items:center;">
+          <select name="owners" style="flex:1;">
+            {% for u in owner_choices %}
+            <option value="{{ u.owner_match_name }}">{{ u.full_name or u.owner_match_name }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" class="btn owner-row-remove" onclick="removeOwnerRow(this)" style="padding:5px 10px;">×</button>
+        </div>
+      {% endif %}
+    </div>
+    <button type="button" class="btn" id="addOwnerBtn" onclick="addOwnerRow()" style="margin-top:8px; padding:5px 12px; font-size:13px;">+ Add owner</button>
+
+    <div style="margin-top:16px;">
+      <button type="submit" class="btn btn-primary">{{ 'Save changes' if edit_rule else 'Add rule' }}</button>
+      {% if edit_rule %}
+      <a href="{{ url_for('settings_campaign_routing') }}" class="btn" style="margin-left:8px;">Cancel</a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+{# ── Existing rules ── #}
+<h3 style="margin-top:24px; font-size:16px;">Existing rules ({{ rules|length }})</h3>
+{% if rules %}
+<div style="display:flex; flex-direction:column; gap:12px;">
+  {% for r in rules %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+      <div>
+        <strong style="font-size:15px;">{{ r.campaign_name }}</strong>
+        <span class="badge" style="background:{{ 'var(--blue)' if r.rule_type == 'single' else '#7C5CBF' }}; margin-left:6px;">
+          {{ 'Single' if r.rule_type == 'single' else 'Round Robin' }}
+        </span>
+        {% if not r.active %}
+        <span class="badge" style="background:var(--red); margin-left:6px;">Inactive</span>
+        {% endif %}
+        <div style="font-size:13px; color:var(--ink-soft); margin-top:4px;">{{ r.owners|join(', ') }}</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <a href="{{ url_for('settings_campaign_routing', edit=r.campaign_name) }}" class="btn" style="padding:5px 14px; font-size:13px;">Edit</a>
+        <form method="post" action="{{ url_for('settings_campaign_routing_toggle', campaign_name=r.campaign_name) }}">
+          <input type="hidden" name="active" value="{{ '0' if r.active else '1' }}">
+          <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">{{ 'Deactivate' if r.active else 'Activate' }}</button>
+        </form>
+        <form method="post" action="{{ url_for('settings_campaign_routing_delete', campaign_name=r.campaign_name) }}"
+              onsubmit="return confirm('Delete the routing rule for {{ r.campaign_name }}?');">
+          <button type="submit" class="btn" style="color:var(--red); border-color:#F3C9C9; padding:5px 14px; font-size:13px;">Delete</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty-state">
+  <p>No routing rules yet. New leads use the fallback owner above.</p>
+</div>
+{% endif %}
+
+<script>
+var ownerOptionsHtml = document.querySelector('#ownerRows select') ? document.querySelector('#ownerRows select').innerHTML : '';
+
+function addOwnerRow() {
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex; gap:8px; align-items:center;';
+  wrap.innerHTML = '<select name="owners" style="flex:1;">' + ownerOptionsHtml + '</select>' +
+    '<button type="button" class="btn owner-row-remove" onclick="removeOwnerRow(this)" style="padding:5px 10px;">×</button>';
+  document.getElementById('ownerRows').appendChild(wrap);
+}
+
+function removeOwnerRow(btn) {
+  var rows = document.getElementById('ownerRows');
+  if (rows.children.length > 1) {
+    btn.parentElement.remove();
+  }
+}
+
+function toggleRuleType() {
+  var isSingle = document.getElementById('ruleTypeSingle').checked;
+  var rows = document.getElementById('ownerRows');
+  var addBtn = document.getElementById('addOwnerBtn');
+  if (isSingle) {
+    while (rows.children.length > 1) { rows.removeChild(rows.lastChild); }
+    addBtn.style.display = 'none';
+  } else {
+    addBtn.style.display = 'inline-block';
+  }
+}
+document.addEventListener('DOMContentLoaded', toggleRuleType);
+</script>
+{% endblock %}

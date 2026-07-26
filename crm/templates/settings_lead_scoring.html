@@ -1,0 +1,116 @@
+{# settings_lead_scoring.html (v1) — admin Settings > Lead Scoring.
+   Edits app_settings['lead_score_config'] (cls_db.py v2.26), which
+   compute_lead_scores() reads fresh on every call — a save here takes
+   effect immediately, no restart. Band labels (Cold/Warm/Hot) are
+   fixed, not editable in this version — only their point thresholds
+   (hot_threshold/warm_threshold) are. #}
+{% extends "base.html" %}
+{% block title %}Lead Scoring{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+<h2 style="margin-top:10px;">Lead Scoring</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  Points behind each lead's score badge. A lead scoring at or above the Hot threshold
+  shows Hot; at or above Warm (but below Hot) shows Warm; otherwise Cold.
+</p>
+
+<form method="post" action="{{ url_for('settings_lead_scoring') }}">
+
+  <div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0; font-size:16px;">Points per stage</h3>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px;">
+      {% for stage in all_stages %}
+      <div>
+        <div class="field-label">{{ stage }}</div>
+        <input type="number" step="any" name="stage_{{ stage }}" value="{{ config.stage_points[stage] }}" required style="width:100%;">
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0; font-size:16px;">Opportunity temperature bonus</h3>
+    <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Only applied when current stage is Opportunity.</p>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px;">
+      <div>
+        <div class="field-label">Warm</div>
+        <input type="number" step="any" name="temp_warm" value="{{ config.temperature_points.Warm }}" required style="width:100%;">
+      </div>
+      <div>
+        <div class="field-label">Hot</div>
+        <input type="number" step="any" name="temp_hot" value="{{ config.temperature_points.Hot }}" required style="width:100%;">
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0; font-size:16px;">Activity points</h3>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px;">
+      <div>
+        <div class="field-label">Site visit conducted</div>
+        <input type="number" step="any" name="site_visit_conducted" value="{{ config.site_visit_conducted }}" required style="width:100%;">
+      </div>
+      <div>
+        <div class="field-label">Site visit no-show</div>
+        <input type="number" step="any" name="site_visit_no_show" value="{{ config.site_visit_no_show }}" required style="width:100%;">
+      </div>
+      <div>
+        <div class="field-label">Follow-up completed</div>
+        <input type="number" step="any" name="follow_up_completed" value="{{ config.follow_up_completed }}" required style="width:100%;">
+      </div>
+      <div>
+        <div class="field-label">Note, per day</div>
+        <input type="number" step="any" name="note_points_per_day" value="{{ config.note_points_per_day }}" required style="width:100%;">
+      </div>
+      <div>
+        <div class="field-label">Call tap, per day</div>
+        <input type="number" step="any" name="call_tap_points_per_day" value="{{ config.call_tap_points_per_day }}" required style="width:100%;">
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0; font-size:16px;">Staleness decay</h3>
+    <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">
+      A lead loses points for sitting untouched, unless its current stage is exempt below.
+    </p>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px;">
+      <div>
+        <div class="field-label">Decay after (days)</div>
+        <input type="number" step="any" name="decay_after_days" value="{{ config.decay_after_days }}" required style="width:100%;">
+      </div>
+      <div>
+        <div class="field-label">Points per period</div>
+        <input type="number" step="any" name="decay_points_per_period" value="{{ config.decay_points_per_period }}" required style="width:100%;">
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      <div class="field-label">Exempt stages (ctrl/cmd-click to select multiple)</div>
+      <select name="decay_exempt_stages" multiple style="width:100%; min-height:140px;">
+        {% for stage in all_stages %}
+        <option value="{{ stage }}" {{ 'selected' if stage in config.decay_exempt_stages }}>{{ stage }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0; font-size:16px;">Band thresholds</h3>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px;">
+      <div>
+        <div class="field-label">Hot threshold (score ≥)</div>
+        <input type="number" step="any" name="hot_threshold" value="{{ config.hot_threshold }}" required style="width:100%;">
+      </div>
+      <div>
+        <div class="field-label">Warm threshold (score ≥)</div>
+        <input type="number" step="any" name="warm_threshold" value="{{ config.warm_threshold }}" required style="width:100%;">
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:16px;">
+    <button type="submit" class="btn btn-primary">Save</button>
+  </div>
+</form>
+{% endblock %}

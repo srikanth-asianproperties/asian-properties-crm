@@ -2,11 +2,23 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.2
+Version : 1.3
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.3 (July 2026)  : Campaign Routing support (Task 3 of the settings-GUI
+                    batch; requires cls_db.py v2.25). ADDITIONS ONLY.
+                    Each LEAD_FORMS dict may now carry an optional
+                    "campaign_name" key — a cleaner routing key than the
+                    raw form_name, for forms where Srikanth wants one.
+                    Where absent, falls back to that form's own
+                    form_name, so every existing entry keeps working
+                    with zero edits. At the cls_db.upsert_meta_lead(...)
+                    call site, campaign = form.get("campaign_name",
+                    form["form_name"]) is now passed through — used only
+                    at true first-insert time (cls_db.py's branch 3),
+                    same as lead_owner's existing handling.
 v1.2 (2026-07-24) : CLS1/CLS2 database split support. ADDITIONS ONLY.
                     Added cls_db.write_job_result() calls at every
                     existing return point in run() (both failure gates
@@ -106,6 +118,12 @@ GRAPH_BASE        = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 # Business Manager. Such forms are pulled exactly like the others, but
 # flagged in logs so that if their lead pull comes back empty, the
 # partner-share scope is the obvious first suspect.
+#
+# "campaign_name" (v1.3, OPTIONAL): the key Campaign Routing rules are
+# matched against (/settings/campaign-routing). Omit it and the form's
+# own "form_name" is used instead — every entry below currently omits
+# it, so nothing changes today; add it explicitly only when a cleaner
+# routing key than the raw form_name is wanted for a future campaign.
 #
 # ── PAUSED FORMS (campaigns stopped 2026-06-18) ──
 # Re-activate by uncommenting the relevant dict when campaign resumes.
@@ -502,6 +520,7 @@ def run():
                     phone_raw         = fields["phone"],
                     email_raw         = fields["email"],
                     meta_created_time = fields["created_time"],
+                    campaign          = form.get("campaign_name", form["form_name"]),
                 )
                 upserted += 1
             except Exception as e:

@@ -9,13 +9,20 @@
    v0.11 — NEW "View as" button, just to the left of Deactivate, for
    every row that is: not the current admin, not another admin, and
    active. Posts to impersonate_start() (app.py) — a secondary,
-   diagnostic action, so it's styled as a plain .btn, not .btn-primary. #}
+   diagnostic action, so it's styled as a plain .btn, not .btn-primary.
+
+   v0.12 — NEW "+ Add User" link at the top, pointing at
+   settings_user_new() (app.py) — the first in-app way to create a CRM
+   login. #}
 {% extends "base.html" %}
 {% block title %}Team{% endblock %}
 
 {% block content %}
 <a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
-<h2 style="margin-top:10px;">Team</h2>
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+  <h2 style="margin-top:10px;">Team</h2>
+  <a href="{{ url_for('settings_user_new') }}" class="btn btn-primary" style="margin-top:10px;">+ Add User</a>
+</div>
 <p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
   Activate or deactivate a login. Deactivating someone blocks their next login/request
   immediately — it does not delete their account, name, or history anywhere in the CRM.

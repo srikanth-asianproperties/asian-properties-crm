@@ -1,0 +1,66 @@
+{# settings_projects.html (v1) — admin Settings > Projects. CRUD for the
+   project_aliases table (cls_db.py v2.24). One form handles both "add
+   an alias to an existing bucket" and "create a brand-new bucket" —
+   a brand-new bucket is just an alias whose project_bucket equals
+   itself, per cls_db.add_project_alias()'s docstring. #}
+{% extends "base.html" %}
+{% block title %}Projects{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+<h2 style="margin-top:10px;">Projects</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  Sell.do exports store project names with spelling/spacing variation. Each alias below
+  maps one raw name onto the single "bucket" name it displays under across the CRM,
+  dashboard, and reports. To add a brand-new project, add it below with the alias and
+  bucket name set the same.
+</p>
+
+<div class="card" style="margin-top:16px;">
+  <h3 style="margin-top:0; font-size:16px;">Add alias / new project</h3>
+  <form method="post" action="{{ url_for('settings_projects') }}">
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      <div style="flex:1; min-width:200px;">
+        <div class="field-label">Alias (raw name as it appears in Sell.do) *</div>
+        <input type="text" name="alias" required placeholder="e.g. Naishka Prism" style="width:100%;">
+      </div>
+      <div style="flex:1; min-width:200px;">
+        <div class="field-label">Project bucket (display name) *</div>
+        <input list="bucketList" type="text" name="project_bucket" required placeholder="e.g. Naishka Homes" style="width:100%;">
+        <datalist id="bucketList">
+          {% for b in buckets %}<option value="{{ b.bucket }}">{% endfor %}
+        </datalist>
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</div>
+
+<h3 style="margin-top:24px; font-size:16px;">Existing buckets ({{ buckets|length }})</h3>
+{% if buckets %}
+<div style="display:flex; flex-direction:column; gap:12px;">
+  {% for b in buckets %}
+  <div class="card">
+    <strong style="font-size:15px;">{{ b.bucket }}</strong>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;">
+      {% for a in b.aliases %}
+      <span class="badge" style="background:var(--ink-soft); display:inline-flex; align-items:center; gap:6px; padding:4px 6px 4px 10px;">
+        {{ a }}
+        <form method="post" action="{{ url_for('settings_project_alias_delete', alias=a) }}"
+              onsubmit="return confirm('Remove alias {{ a }} from {{ b.bucket }}?');" style="display:inline;">
+          <button type="submit" aria-label="Delete alias" style="background:none; border:none; color:#fff; cursor:pointer; padding:0; font-size:13px; line-height:1;">×</button>
+        </form>
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty-state">
+  <p>No project aliases yet.</p>
+</div>
+{% endif %}
+{% endblock %}
