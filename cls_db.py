@@ -2,11 +2,129 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.27
+Version : 2.29
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.29 (2026-07) — Follow-up to v2.28's Task 2.1: create_manual_lead()'s
+  entry-into-CRM row now logs activity_type='lead_entered' (was
+  'lead_created_manual') — reverses that version's "leave it, flagged
+  not changed" call, per Srikanth's explicit follow-up: all three entry
+  paths (Meta/Sell.do/manual) now share the same label. actor and
+  description are unchanged (still the salesperson's email / "Manually
+  entered by {actor}"). activity_log is append-only — this only affects
+  rows written from now on; existing 'lead_created_manual' rows are
+  untouched (no migration, none needed).
+
+v2.28 (2026-07) — APX v0.7 batch: Complete Activity History (Task 2) +
+  Bulk Reassign (Task 3) + Bulk Export (Task 4) + Lead Age (Task 5).
+  ADDITIONS ONLY — nothing existing removed; two functions gained
+  additive optional parameters (noted below), every pre-existing call
+  site keeps working unchanged.
+
+  Task 2.1 — lead_entered activity logging:
+    - _log_activity() gained an optional created_at=None param (falls
+      back to _now() exactly as before when omitted) — lets a caller
+      backdate an activity row to when the lead actually arrived
+      rather than when the write happened.
+    - NEW _format_meta_created_time(raw) — parses Meta's
+      created_time ('2026-05-21T10:30:00+0530') into CLS's own
+      "%Y-%m-%d %H:%M:%S" format (same two-format try/except as
+      meta_leads_fetcher.py's newest_meta_time_for_form); falls back to
+      _now() if unparseable (display-only value, never used for
+      matching).
+    - upsert_meta_lead() gained optional extra_answers=None (list of
+      {question, answer} dicts, from meta_leads_fetcher.py v1.5's
+      extended extract_lead_fields()). Branch 3 (genuinely new lead)
+      now writes ONE activity_log row (activity_type='lead_entered',
+      actor='system', created_at=the lead's real Meta created_time, not
+      Job A's poll time) describing which campaign/adset/ad it came via
+      plus name/phone/email (blank pieces omitted), with any custom
+      instant-form answers appended as "Also answered — ...". Branches
+      1/2 untouched.
+    - upsert_selldo_lead()'s INSERT branch (brand-new selldo_only row,
+      Job B's own ongoing sync — NOT the historical CSV import, which
+      already logs imported_from_selldo) now also writes ONE
+      lead_entered row, actor='system'. This is a cls_db.py-only
+      change — selldo_to_cls.py (Job B) itself is untouched, since all
+      its DB writes already run through this one centralized function.
+    - create_manual_lead() already logged an entry-into-CRM row
+      (activity_type='lead_created_manual', actor=the salesperson's
+      email, description="Manually entered by {actor}") — left as-is
+      per Srikanth's "if it already happens, leave it" instruction.
+      FLAGGED (not changed): the activity_type string differs from the
+      'lead_entered' type the other two paths use — same semantic
+      event, different label. Not touched here; surfaced for Srikanth's
+      call on whether to unify it later.
+
+  Task 2.2 — WhatsApp send logging:
+    - NEW log_whatsapp_sent(cls_id, actor, description) — same
+      activity_log-wrapper pattern as the existing log_reminder_sent(),
+      distinct activity_type ('whatsapp_sent') so it stays
+      distinguishable from that function's 'whatsapp_reminder_sent' in
+      a lead's Activity History. Called by app.py's new
+      /leads/<cls_id>/whatsapp/send route.
+
+  Task 3 — Bulk Reassign support:
+    - NEW _build_lead_filter_where(**filters) — the WHERE-clause
+      builder extracted verbatim out of get_leads_page() (same filter
+      semantics, byte-for-byte), so it can be shared instead of
+      duplicated. get_leads_page() now calls it; behavior unchanged.
+    - get_leads_page() and the new _build_lead_filter_where() both
+      gained an optional campaigns=None param (list) — OR-LIKE
+      multi-select across campaign, same pattern as the existing
+      configuration/property_type/facing checkbox filters. The existing
+      single-string `campaign` substring filter is untouched; both can
+      be used independently.
+    - NEW get_distinct_campaigns() — distinct non-blank leads.campaign
+      values, for the new checkbox filters (Bulk Reassign + Bulk
+      Export).
+    - NEW get_leads_matching(**filters) — unpaginated sibling of
+      get_leads_page(), same filters (via the shared WHERE-builder) and
+      the same Python-side project-bucket filter, but returns every
+      matching row instead of one page. Used by Bulk Reassign and Bulk
+      Export, which need the full matched set, not a page of it.
+    - NEW bulk_jobs table (self-healing CREATE TABLE IF NOT EXISTS):
+      job_id, job_type, actor, filters_summary (short human-readable
+      string built by the caller, e.g. "Project: Naishka, Stage:
+      Prospect → reassigned to Devender Goud" — NOT a JSON dump, so the
+      history page needs no second renderer), to_owner, lead_count,
+      created_at. job_type is validated against NEW BULK_JOB_TYPES
+      whitelist (config-not-code, mirrors SORT_OPTIONS/SOURCE_OPTIONS)
+      — currently just ("bulk_reassign",), room for future bulk actions
+      to reuse this same table.
+    - NEW create_bulk_job(job_type, actor, filters_summary, to_owner,
+      lead_count) / get_bulk_jobs() — write/read the history table.
+    - reassign_lead_owner() gained an optional conn=None param. When
+      given an OPEN connection it reuses it and skips its own commit
+      (caller owns the transaction); every existing caller (which omits
+      it) behaves byte-for-byte as before — own connection, own commit.
+      This is what lets Bulk Reassign's route loop over every matched
+      lead inside ONE atomic transaction instead of N separate commits.
+
+  Task 4 — Bulk Export support:
+    - NEW get_site_visits_conducted(date_from, date_to, owner) —
+      site_visits joined to leads, status='conducted' only, date range
+      on conducted_at. Feeds the "Export Site Visits Conducted" sheet.
+    - NEW get_activity_log_export(date_from, date_to, cls_id) —
+      activity_log joined to leads (cross-lead + date-ranged, unlike
+      the existing single-lead get_activity_log_for_lead()). Feeds the
+      "Export Activity History" sheet.
+    - No new export mechanism — app.py's export routes shape these
+      (and get_leads_matching()'s) rows into the same {columns, rows}
+      dict cls_reports.build_report() already produces, then hand it to
+      cls_reports.export_to_excel() unchanged.
+
+  Task 5 — Lead age display:
+    - get_leads_page() rows gain age_days: whole days since
+      cls_created_at, computed only for the current page's rows (cheap,
+      same "only the rendered rows" scoping as lead scoring). None for
+      any lead whose current_stage is in DRIP_TERMINAL_STAGES (Booked /
+      Lost / Unqualified) — reuses that existing constant rather than a
+      second hardcoded copy of the same three strings, per Srikanth's
+      instruction.
+
 v2.27 (2026-07) — Meta ad/campaign metadata capture:
   Added meta_campaign_id, meta_campaign_name, meta_adset_id,
   meta_adset_name, meta_ad_id, meta_ad_name columns (self-healing
@@ -1356,6 +1474,13 @@ SORT_OPTIONS = {
 # the v2.5 changelog for why both filters exist separately.
 SOURCE_OPTIONS = ["meta", "selldo_only", "manual_crm"]
 
+# v2.28 — bulk_jobs.job_type whitelist (config-not-code, same pattern as
+# SORT_OPTIONS/SOURCE_OPTIONS above). Only one bulk action ships in this
+# batch; the table/constant are written generically so a future bulk
+# action (e.g. a bulk export history log) can add its own type here
+# rather than needing a second history table.
+BULK_JOB_TYPES = ("bulk_reassign",)
+
 # ── Drip email schedule (Job D) ──
 # Each CRM stage that gets automated emails, and on which days.
 # Day numbers are relative to MAX(drip_enrolled_at, stage_updated_at).
@@ -2187,6 +2312,26 @@ def init_db():
         ("lead_score_config", json.dumps(_LEAD_SCORE_CONFIG_SEED), _now())
     )
 
+    # ── v2.28 — bulk_jobs: audit history for admin bulk actions ──
+    # Written generically (job_type column, validated against
+    # BULK_JOB_TYPES) so a future bulk action can reuse this same table
+    # instead of getting its own. filters_summary is a short human-
+    # readable string built by the CALLER (app.py) — deliberately not a
+    # JSON blob, so the history page can just print it, no second
+    # renderer needed.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bulk_jobs (
+            job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_type        TEXT,
+            actor           TEXT,
+            filters_summary TEXT,
+            to_owner        TEXT,
+            lead_count      INTEGER,
+            created_at      TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bulk_jobs_created ON bulk_jobs(created_at);")
+
     conn.commit()
     conn.close()
 
@@ -2424,10 +2569,126 @@ def get_user_by_id(user_id):
 CRM_PAGE_SIZE = 50  # config-not-code: change this one number to re-page everywhere
 
 
+def _build_lead_filter_where(stage=None, search=None, owner=None,
+                             date_from=None, date_to=None, stage_reason=None,
+                             campaign=None, campaigns=None, source=None,
+                             sub_source=None, budget=None, configuration=None,
+                             property_type=None, facing=None,
+                             search_all_owners=False):
+    """
+    (v2.28) The WHERE-clause builder shared by get_leads_page() and
+    get_leads_matching() — extracted out of get_leads_page() verbatim
+    (same filter semantics, same params) so bulk actions (Bulk Reassign,
+    Bulk Export) can match the SAME leads a filter screen would show,
+    without a second copy of this logic drifting out of sync.
+
+    Deliberately does NOT take `project` — that filter is applied in
+    Python after fetching (the bucket name is DERIVED via
+    get_project_bucket(), not a stored column), identically in both
+    callers. See get_leads_page()'s own note on this.
+
+    campaigns (v2.28, list, optional): NEW OR-LIKE multi-select across
+    leads.campaign, same pattern as configuration/property_type/facing
+    below. Independent of the existing single-string `campaign`
+    substring filter — both can be supplied at once (AND'd together,
+    same as any other two filters here).
+
+    Returns (where_sql: str, params: list) — a caller runs
+    f"SELECT ... WHERE {where_sql}" with params.
+    """
+    where = ["1=1"]
+    params = []
+
+    if stage:
+        where.append("current_stage = ?")
+        params.append(stage)
+
+    # v2.7 — an active search with search_all_owners drops the owner
+    # scope for THIS query, so a salesperson can find (but only
+    # view, restricted) a lead that isn't theirs. A blank search
+    # keeps the owner scope even with the flag on.
+    has_active_search = bool(search and search.strip())
+    apply_owner_scope = owner and not (search_all_owners and has_active_search)
+
+    if apply_owner_scope:
+        where.append("LOWER(lead_owner) = LOWER(?)")
+        params.append(owner)
+
+    if has_active_search:
+        search_term = search.strip().lower()
+        # v2.19 — "#" or "apx-" prefix now means LEAD-ID-ONLY search:
+        # match crm_lead_no exclusively, not name/phone/email at all.
+        # A bare numeric term (e.g. "250") no longer implicitly matches
+        # lead ID — it used to be OR'd in with name/phone/email, so a
+        # plain "250" could accidentally match a phone number AND a
+        # lead ID AND an email at once. The explicit prefix is now the
+        # only way to search by lead ID.
+        lead_id_only = False
+        if search_term.startswith("#"):
+            search_term = search_term[1:].strip()
+            lead_id_only = True
+        elif search_term.startswith("apx-"):
+            search_term = search_term[4:].strip()
+            lead_id_only = True
+        like = f"%{search_term}%"
+        if lead_id_only:
+            where.append("CAST(crm_lead_no AS TEXT) LIKE ?")
+            params.append(like)
+        else:
+            where.append(
+                "(LOWER(full_name) LIKE ? OR phone_norm LIKE ? OR email_norm LIKE ?)"
+            )
+            params.extend([like, like, like])
+
+    if date_from:
+        where.append("cls_created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("cls_created_at <= ?")
+        params.append(f"{date_to} 23:59:59")
+
+    if stage_reason:
+        where.append("stage_reason = ?")
+        params.append(stage_reason)
+
+    if campaign:
+        where.append("campaign LIKE ?")
+        params.append(f"%{campaign.strip()}%")
+
+    if campaigns:
+        ors = " OR ".join("campaign = ?" for _ in campaigns)
+        where.append(f"({ors})")
+        params.extend(campaigns)
+
+    if source:
+        where.append("source = ?")
+        params.append(source)
+
+    if sub_source:
+        where.append("lead_source_detail = ?")
+        params.append(sub_source)
+
+    if budget:
+        where.append("budget = ?")
+        params.append(budget)
+
+    for col_name, selected in (
+        ("configuration", configuration),
+        ("property_type", property_type),
+        ("facing", facing),
+    ):
+        if selected:
+            ors = " OR ".join(f"{col_name} LIKE ?" for _ in selected)
+            where.append(f"({ors})")
+            params.extend(f"%{val}%" for val in selected)
+
+    return " AND ".join(where), params
+
+
 def get_leads_page(stage=None, project=None, search=None, owner=None,
                    page=1, per_page=CRM_PAGE_SIZE, date_from=None, date_to=None,
                    sort_by="recent", stage_reason=None, campaign=None,
-                   source=None, sub_source=None, budget=None,
+                   campaigns=None, source=None, sub_source=None, budget=None,
                    configuration=None, property_type=None, facing=None,
                    search_all_owners=False):
     """
@@ -2454,6 +2715,9 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
     stage_reason: exact match on leads.stage_reason (current Lost/
                   Unqualified reason code from v2.3).
     campaign    : substring match on leads.campaign.
+    campaigns   : v2.28 — list of exact leads.campaign values, OR'd
+                  together (checkbox multi-select). Independent of the
+                  single-string `campaign` filter above.
     source      : exact match on leads.source (meta/selldo_only/manual_crm).
     sub_source  : exact match on leads.lead_source_detail (the manual-
                   entry source detail, MANUAL_SOURCE_OPTIONS) — a
@@ -2476,7 +2740,9 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
                   every pre-v2.7 caller unchanged.
 
     Returns {"rows": [...], "total": int, "page": int, "per_page": int,
-             "total_pages": int}.
+             "total_pages": int}. Each row in "rows" also carries
+             age_days (v2.28) — see that changelog entry / docstring
+             note below the pagination slice.
 
     Note: project filtering happens in Python after fetching, because
     the bucket name is DERIVED (get_project_bucket), not a stored column.
@@ -2485,88 +2751,14 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
     """
     conn = _connect()
     try:
-        where = ["1=1"]
-        params = []
-
-        if stage:
-            where.append("current_stage = ?")
-            params.append(stage)
-
-        # v2.7 — an active search with search_all_owners drops the owner
-        # scope for THIS query, so a salesperson can find (but only
-        # view, restricted) a lead that isn't theirs. A blank search
-        # keeps the owner scope even with the flag on.
-        has_active_search = bool(search and search.strip())
-        apply_owner_scope = owner and not (search_all_owners and has_active_search)
-
-        if apply_owner_scope:
-            where.append("LOWER(lead_owner) = LOWER(?)")
-            params.append(owner)
-
-        if has_active_search:
-            search_term = search.strip().lower()
-            # v2.19 — "#" or "apx-" prefix now means LEAD-ID-ONLY search:
-            # match crm_lead_no exclusively, not name/phone/email at all.
-            # A bare numeric term (e.g. "250") no longer implicitly matches
-            # lead ID — it used to be OR'd in with name/phone/email, so a
-            # plain "250" could accidentally match a phone number AND a
-            # lead ID AND an email at once. The explicit prefix is now the
-            # only way to search by lead ID.
-            lead_id_only = False
-            if search_term.startswith("#"):
-                search_term = search_term[1:].strip()
-                lead_id_only = True
-            elif search_term.startswith("apx-"):
-                search_term = search_term[4:].strip()
-                lead_id_only = True
-            like = f"%{search_term}%"
-            if lead_id_only:
-                where.append("CAST(crm_lead_no AS TEXT) LIKE ?")
-                params.append(like)
-            else:
-                where.append(
-                    "(LOWER(full_name) LIKE ? OR phone_norm LIKE ? OR email_norm LIKE ?)"
-                )
-                params.extend([like, like, like])
-
-        if date_from:
-            where.append("cls_created_at >= ?")
-            params.append(date_from)
-        if date_to:
-            where.append("cls_created_at <= ?")
-            params.append(f"{date_to} 23:59:59")
-
-        if stage_reason:
-            where.append("stage_reason = ?")
-            params.append(stage_reason)
-
-        if campaign:
-            where.append("campaign LIKE ?")
-            params.append(f"%{campaign.strip()}%")
-
-        if source:
-            where.append("source = ?")
-            params.append(source)
-
-        if sub_source:
-            where.append("lead_source_detail = ?")
-            params.append(sub_source)
-
-        if budget:
-            where.append("budget = ?")
-            params.append(budget)
-
-        for col_name, selected in (
-            ("configuration", configuration),
-            ("property_type", property_type),
-            ("facing", facing),
-        ):
-            if selected:
-                ors = " OR ".join(f"{col_name} LIKE ?" for _ in selected)
-                where.append(f"({ors})")
-                params.extend(f"%{val}%" for val in selected)
-
-        where_sql = " AND ".join(where)
+        where_sql, params = _build_lead_filter_where(
+            stage=stage, search=search, owner=owner, date_from=date_from,
+            date_to=date_to, stage_reason=stage_reason, campaign=campaign,
+            campaigns=campaigns, source=source, sub_source=sub_source,
+            budget=budget, configuration=configuration,
+            property_type=property_type, facing=facing,
+            search_all_owners=search_all_owners,
+        )
         order_sql = SORT_OPTIONS.get(sort_by, SORT_OPTIONS["recent"])
 
         all_rows = conn.execute(f"""
@@ -2591,6 +2783,21 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
         start = (page - 1) * per_page
         page_rows = rows[start:start + per_page]
 
+        # v2.28 — Task 5: lead age in days, active leads only. Computed
+        # only for page_rows (the rows actually rendered), same "only
+        # what's on screen" scoping as compute_lead_scores(). None for
+        # any lead in DRIP_TERMINAL_STAGES (Booked/Lost/Unqualified) —
+        # those are closed/terminal, an age readout doesn't apply.
+        for r in page_rows:
+            if r["current_stage"] not in DRIP_TERMINAL_STAGES and r.get("cls_created_at"):
+                try:
+                    created = datetime.strptime(r["cls_created_at"], "%Y-%m-%d %H:%M:%S")
+                    r["age_days"] = (datetime.now() - created).days
+                except ValueError:
+                    r["age_days"] = None
+            else:
+                r["age_days"] = None
+
         return {
             "rows": page_rows,
             "total": total,
@@ -2598,6 +2805,151 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
             "per_page": per_page,
             "total_pages": total_pages,
         }
+    finally:
+        conn.close()
+
+
+def get_leads_matching(stage=None, project=None, search=None, owner=None,
+                       date_from=None, date_to=None, stage_reason=None,
+                       campaign=None, campaigns=None, source=None,
+                       sub_source=None, budget=None, configuration=None,
+                       property_type=None, facing=None):
+    """
+    (v2.28) Unpaginated sibling of get_leads_page() — returns EVERY
+    matching lead row (full dicts, including project_bucket), not one
+    page of them. For bulk actions (Bulk Reassign, Bulk Export) that
+    need the complete matched set. Same filters, same semantics, via
+    the shared _build_lead_filter_where() — a lead this returns is
+    exactly a lead get_leads_page() would show under the same filters.
+
+    No search_all_owners param — bulk actions are always scoped by
+    whatever `owner` the caller passes (or none, for oversight roles),
+    there's no "restricted view of someone else's lead" concept here.
+
+    Returns a plain list of row dicts, sorted by full_name — bulk
+    screens list/preview matched leads, they don't need get_leads_page()'s
+    "most recent" default ordering.
+    """
+    conn = _connect()
+    try:
+        where_sql, params = _build_lead_filter_where(
+            stage=stage, search=search, owner=owner, date_from=date_from,
+            date_to=date_to, stage_reason=stage_reason, campaign=campaign,
+            campaigns=campaigns, source=source, sub_source=sub_source,
+            budget=budget, configuration=configuration,
+            property_type=property_type, facing=facing,
+        )
+        all_rows = conn.execute(f"""
+            SELECT cls_id, full_name, phone_raw, phone_norm, email_raw,
+                   project, current_stage, lead_owner, source,
+                   stage_updated_at, cls_updated_at, cls_created_at, crm_lead_no
+            FROM leads
+            WHERE {where_sql}
+            ORDER BY full_name COLLATE NOCASE ASC
+        """, params).fetchall()
+
+        rows = [dict(r) for r in all_rows]
+        for r in rows:
+            r["project_bucket"] = get_project_bucket(r["project"])
+
+        if project:
+            rows = [r for r in rows if r["project_bucket"] == project]
+
+        return rows
+    finally:
+        conn.close()
+
+
+def get_distinct_campaigns():
+    """
+    (v2.28) Distinct non-blank leads.campaign values, alphabetical —
+    sources the NEW campaign checkbox multi-select on Bulk Reassign and
+    Bulk Export (see `campaigns` param on get_leads_page()/
+    get_leads_matching()). Separate from cls_reports._campaign_bucket()
+    grouping — this is the raw stored values, not the report-side
+    bucketing.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT DISTINCT campaign FROM leads
+            WHERE campaign IS NOT NULL AND TRIM(campaign) != ''
+            ORDER BY campaign COLLATE NOCASE
+        """).fetchall()
+        return [r["campaign"] for r in rows]
+    finally:
+        conn.close()
+
+
+def get_site_visits_conducted(date_from=None, date_to=None, owner=None):
+    """
+    (v2.28) Task 4 — Export Site Visits Conducted. site_visits rows
+    with status='conducted' (never 'no_show'/'cancelled'/'scheduled'),
+    joined to leads for display context. Date range filters on
+    conducted_at (when the visit actually happened), not scheduled_at.
+    owner filters on leads.lead_owner, exact match — same convention as
+    every other owner-scoped query in this file.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT v.visit_id, v.cls_id, l.crm_lead_no, l.full_name,
+                   l.phone_raw, l.phone_norm, l.project, l.lead_owner,
+                   v.scheduled_at, v.conducted_at, v.outcome_reason, v.notes
+            FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE v.status = 'conducted'
+        """
+        params = []
+        if date_from and date_to:
+            query += " AND substr(v.conducted_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        query += " ORDER BY v.conducted_at DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_activity_log_export(date_from=None, date_to=None, cls_id=None, owner=None):
+    """
+    (v2.28) Task 4 — Export Activity History. Cross-lead, date-ranged
+    activity_log rows joined to their lead for display context (name,
+    lead number) — get_activity_log_for_lead() only ever scopes to ONE
+    cls_id and doesn't join; this is the variant Export needs. INNER
+    JOIN is safe here: delete_lead() hard-deletes a lead's activity_log
+    rows in the same transaction, so there are never orphaned rows to
+    silently drop.
+
+    owner : exact match on leads.lead_owner — same convention as
+    get_site_visits_conducted()/get_leads_matching(), so app.py can
+    scope a salesperson's export to their own leads' activity in SQL
+    rather than filtering rows in Python after the fact.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT a.activity_id, a.cls_id, l.crm_lead_no, l.full_name,
+                   a.activity_type, a.actor, a.prev_value, a.new_value,
+                   a.description, a.created_at
+            FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
+            WHERE 1=1
+        """
+        params = []
+        if date_from and date_to:
+            query += " AND substr(a.created_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        if cls_id:
+            query += " AND a.cls_id = ?"
+            params.append(cls_id)
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        query += " ORDER BY a.created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -3062,12 +3414,19 @@ def get_latest_stage_and_owner_changes():
 # untouched (see the v1.8 changelog note on why that's intentional).
 
 def _log_activity(conn, cls_id, activity_type, actor, prev_value=None,
-                  new_value=None, description=None):
+                  new_value=None, description=None, created_at=None):
     """
     Internal helper — appends one row to activity_log. Takes an OPEN
     connection (not a fresh one) so callers can log the activity in
     the SAME transaction as the actual write, keeping them atomic:
     either both the write and its audit row land, or neither does.
+
+    v2.28: optional created_at param — defaults to _now() exactly as
+    before when omitted (every pre-existing caller). Lets a caller
+    backdate the row to when the event actually happened rather than
+    when this write ran — used by upsert_meta_lead()'s lead_entered
+    row, which should read as the lead's real Meta created_time, not
+    whenever Job A happened to poll it.
     """
     conn.execute("""
         INSERT INTO activity_log (
@@ -3075,7 +3434,7 @@ def _log_activity(conn, cls_id, activity_type, actor, prev_value=None,
             description, created_at
         ) VALUES (?,?,?,?,?,?,?)
     """, (cls_id, activity_type, actor, prev_value, new_value,
-          description, _now()))
+          description, created_at or _now()))
 
 
 # Stages that cancel any open schedule the moment a lead lands on them.
@@ -3242,7 +3601,7 @@ def add_note(cls_id, actor, text):
         conn.close()
 
 
-def reassign_lead_owner(cls_id, new_owner, actor):
+def reassign_lead_owner(cls_id, new_owner, actor, conn=None):
     """
     Change a lead's owner (leads.lead_owner) from the CRM. Same
     overwrite-on-next-Sell.do-sync dynamic as update_lead_stage above,
@@ -3255,13 +3614,22 @@ def reassign_lead_owner(cls_id, new_owner, actor):
     get_unread_assignment_count() / mark_lead_notification_read()
     below, which power the login badge.
 
+    v2.28: optional conn param. Omitted (every pre-existing caller,
+    e.g. the single-lead /leads/<cls_id>/assign route) — behaves
+    exactly as before: opens its own connection, commits, closes it.
+    Passed an OPEN connection — reuses it and does NOT commit or close;
+    the caller owns the transaction. See bulk_reassign_leads() below,
+    the only caller that uses this.
+
     Returns (ok: bool, message: str).
     """
     new_owner = (new_owner or "").strip()
     if not new_owner:
         return False, "Owner name can't be empty."
 
-    conn = _connect()
+    owns_conn = conn is None
+    if owns_conn:
+        conn = _connect()
     try:
         row = conn.execute("SELECT lead_owner FROM leads WHERE cls_id=?", (cls_id,)).fetchone()
         if not row:
@@ -3275,8 +3643,38 @@ def reassign_lead_owner(cls_id, new_owner, actor):
         )
         _log_activity(conn, cls_id, "assignment_change", actor,
                       prev_value=prev_owner, new_value=new_owner)
-        conn.commit()
+        if owns_conn:
+            conn.commit()
         return True, f"Reassigned: {prev_owner or '(unassigned)'} → {new_owner}."
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+def bulk_reassign_leads(cls_ids, new_owner, actor):
+    """
+    (v2.28) Task 3 — reassigns every lead in cls_ids to new_owner, ALL
+    in one transaction (either every lead reassigns and every
+    activity_log row lands, or none do — a mid-loop failure can't leave
+    a bulk-reassign half-applied). This is the whole reason
+    reassign_lead_owner() gained its conn= param above: this function
+    is the ONE caller that opens a connection and hands it in, keeping
+    "all SQLite access stays in cls_db.py" true even for bulk actions —
+    app.py's route never sees a raw connection.
+
+    Returns the number of leads actually reassigned. A cls_id that no
+    longer exists (deleted between the preview screen and confirming)
+    is silently skipped, not an error — the count reflects reality.
+    """
+    conn = _connect()
+    try:
+        count = 0
+        for cls_id in cls_ids:
+            ok, _ = reassign_lead_owner(cls_id, new_owner, actor, conn=conn)
+            if ok:
+                count += 1
+        conn.commit()
+        return count
     finally:
         conn.close()
 
@@ -3292,6 +3690,43 @@ def mark_lead_notification_read(cls_id):
     try:
         conn.execute("UPDATE leads SET owner_notified=1 WHERE cls_id=?", (cls_id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def create_bulk_job(job_type, actor, filters_summary, to_owner, lead_count):
+    """
+    (v2.28) Writes one row to bulk_jobs — called once per bulk-action
+    run, after the action itself has committed. job_type is validated
+    against BULK_JOB_TYPES (raises ValueError otherwise, same fail-loud
+    posture as create_manual_lead()'s validation) rather than accepting
+    an ad-hoc string. filters_summary is a short human-readable string
+    the CALLER builds (e.g. "Project: Naishka, Stage: Prospect →
+    reassigned to Devender Goud") — this function stores it as-is, no
+    JSON encoding/decoding.
+    """
+    if job_type not in BULK_JOB_TYPES:
+        raise ValueError(f"job_type must be one of: {', '.join(BULK_JOB_TYPES)}")
+
+    conn = _connect()
+    try:
+        conn.execute("""
+            INSERT INTO bulk_jobs (job_type, actor, filters_summary, to_owner, lead_count, created_at)
+            VALUES (?,?,?,?,?,?)
+        """, (job_type, actor, filters_summary, to_owner, lead_count, _now()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_bulk_jobs():
+    """(v2.28) Every bulk_jobs row, newest first — feeds the Settings > Bulk Jobs history page."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM bulk_jobs ORDER BY created_at DESC, job_id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -3696,7 +4131,7 @@ def create_manual_lead(full_name, phone_raw, initial_stage, actor,
               email_raw, email_norm, initial_stage, now,
               "manual", "manual_crm", lead_owner, crm_lead_no,
               source_detail or None, now, now))
-        _log_activity(conn, cls_id, "lead_created_manual", actor,
+        _log_activity(conn, cls_id, "lead_entered", actor,
                       new_value=initial_stage,
                       description=f"Manually entered by {actor}"
                                   + (f" (source: {source_detail})" if source_detail else ""))
@@ -4183,6 +4618,22 @@ def log_reminder_sent(visit_id, cls_id, actor):
     try:
         _log_activity(conn, cls_id, "whatsapp_reminder_sent", actor,
                       description=f"visit_id:{visit_id}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def log_whatsapp_sent(cls_id, actor, description):
+    """
+    (v2.28) Task 2.2 — records a WhatsApp Templates send (whatsapp_picker
+    screen) via the existing activity_log audit trail, same pattern as
+    log_reminder_sent() above. Distinct activity_type
+    ('whatsapp_sent') from that function's 'whatsapp_reminder_sent', so
+    the two flows stay distinguishable in a lead's Activity History.
+    """
+    conn = _connect()
+    try:
+        _log_activity(conn, cls_id, "whatsapp_sent", actor, description=description)
         conn.commit()
     finally:
         conn.close()
@@ -5174,11 +5625,31 @@ def set_fallback_owner(name):
         conn.close()
 
 
+def _format_meta_created_time(raw):
+    """
+    (v2.28) Meta's created_time ('2026-05-21T10:30:00+0530') converted
+    to CLS's own "%Y-%m-%d %H:%M:%S" format (_now()'s format) — used to
+    backdate a lead_entered activity_log row to when the lead actually
+    arrived, not when Job A happened to poll it. Same two-format
+    try/except as meta_leads_fetcher.py's newest_meta_time_for_form().
+    Falls back to _now() if raw is blank or unparseable — this is a
+    display-only value, never used for matching/business logic, so a
+    safe fallback beats raising.
+    """
+    if raw:
+        for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(raw, fmt).strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+    return _now()
+
+
 def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                      phone_raw, email_raw, meta_created_time, campaign=None,
                      meta_campaign_id=None, meta_campaign_name=None,
                      meta_adset_id=None, meta_adset_name=None,
-                     meta_ad_id=None, meta_ad_name=None):
+                     meta_ad_id=None, meta_ad_name=None, extra_answers=None):
     """
     Called by meta_leads_fetcher.py (Job A) for each Facebook lead.
 
@@ -5209,6 +5680,14 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
     the campaign column/Campaign Routing above — meta_ prefix avoids
     any confusion between Meta's own campaign_name and LEAD_FORMS's
     unrelated "campaign_name" routing config key.
+
+    extra_answers (v2.28, optional): ordered list of {"question",
+    "answer"} dicts — any instant-form field_data entries that didn't
+    match meta_leads_fetcher.py's name/phone/email alias sets (from
+    extract_lead_fields() v1.5+). Used ONLY at true first-insert time
+    (branch 3 below), appended to that lead's lead_entered activity_log
+    description. Free text, log-only — never written to a column, never
+    read back into any matching/scoring logic.
 
     Returns the cls_id of the affected row.
     """
@@ -5304,6 +5783,46 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
               meta_adset_id, meta_adset_name,
               meta_ad_id, meta_ad_name,
               now, now))
+
+        # v2.28 — Task 2.1: one lead_entered row at the exact moment
+        # this lead first exists in CLS, backdated to Meta's own
+        # created_time (not "now", which is just whenever Job A polled
+        # it). Blank pieces (campaign name unset, no email, etc.) are
+        # omitted rather than printed as "None".
+        via_parts = []
+        if meta_campaign_name:
+            via_parts.append(f"campaign '{meta_campaign_name}'")
+        if meta_adset_name:
+            via_parts.append(f"adset '{meta_adset_name}'")
+        if meta_ad_name:
+            via_parts.append(f"ad '{meta_ad_name}'")
+
+        detail_parts = []
+        if full_name:
+            detail_parts.append(f"Name: {full_name}")
+        if phone_raw:
+            detail_parts.append(f"Phone: {phone_raw}")
+        if email_raw:
+            detail_parts.append(f"Email: {email_raw}")
+
+        description = "Lead entered"
+        if via_parts:
+            description += " via " + " / ".join(via_parts)
+        if detail_parts:
+            description += " — " + ", ".join(detail_parts)
+
+        if extra_answers:
+            qa = "; ".join(
+                f"{a.get('question')}: {a.get('answer')}"
+                for a in extra_answers if a.get("answer")
+            )
+            if qa:
+                description += f". Also answered — {qa}"
+
+        _log_activity(conn, cls_id, "lead_entered", "system",
+                      description=description,
+                      created_at=_format_meta_created_time(meta_created_time))
+
         conn.commit()
         return cls_id
     finally:
@@ -5447,6 +5966,16 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
               "unmatched", "selldo_only", lead_owner, selldo_url,
               opportunity_temperature or None, crm_lead_no,
               now, now))
+
+        # v2.28 — Task 2.1: matches upsert_meta_lead() branch 3's new
+        # lead_entered row, for Job B's own ONGOING sync (not the
+        # separate historical CSV import, which already logs
+        # imported_from_selldo). cls_db.py-only change — selldo_to_cls.py
+        # itself is untouched, every one of its writes already routes
+        # through this one centralized function.
+        _log_activity(conn, cls_id, "lead_entered", "system",
+                      description="Lead entered via Sell.do sync.")
+
         conn.commit()
         return cls_id, True   # brand-new row counts as a change
     finally:

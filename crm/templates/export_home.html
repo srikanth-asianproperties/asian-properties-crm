@@ -1,0 +1,51 @@
+{# export_home.html (v1.0) — Bulk Export hub (Task 4 of the APX v0.7
+   batch). Visible to every logged-in user — same role-agnostic-in-
+   template pattern as reports.html; each export type scopes itself
+   internally (cls_db.can_view_all_leads()), same as Reports does. #}
+{% extends "base.html" %}
+{% block title %}Export{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:0;">Export</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:-6px;">
+  {% if is_oversight %}
+  Export leads, conducted site visits, or activity history to Excel, PDF, or your own inbox.
+  {% else %}
+  Export your own leads, conducted site visits, or activity history to Excel, PDF, or your own inbox.
+  {% endif %}
+</p>
+
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-top:16px;">
+
+  <a href="{{ url_for('export_leads_view') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span style="font-weight:700; font-size:16px;">Export Leads</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Filter by date range, campaign, project, stage, or source.
+    </p>
+  </a>
+
+  <a href="{{ url_for('export_site_visits_view') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/><path d="M9 16l2 2 4-4"/></svg>
+      <span style="font-weight:700; font-size:16px;">Export Site Visits Conducted</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Every conducted site visit, filtered by date range and owner.
+    </p>
+  </a>
+
+  <a href="{{ url_for('export_activity_view') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--amber)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <span style="font-weight:700; font-size:16px;">Export Activity History</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      The full activity log, filtered by date range or a single lead.
+    </p>
+  </a>
+
+</div>
+{% endblock %}

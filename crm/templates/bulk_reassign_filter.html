@@ -1,0 +1,184 @@
+{# bulk_reassign_filter.html (v1.0) — Settings > Bulk Reassign, step 1 of 3
+   (filter form -> preview -> commit; see app.py's settings_bulk_reassign*
+   routes, Task 3 of the APX v0.7 batch). Admin-only.
+
+   Same accordion pattern/CSS classes as leads_filter.html (filter-
+   accordion-item / opt-row / toggleFA), trimmed to just the 6 fields
+   this feature offers: date range, campaign (checkbox multi-select),
+   project, stage, source, current owner — plus the target owner picker,
+   which is NOT a filter (it doesn't narrow the matched set) so it sits
+   in its own section below the accordion, not inside it.
+
+   Submits via GET straight to the preview screen — nothing is written
+   by this form or the preview that follows; only "Confirm & Reassign"
+   on the preview screen (a POST) actually changes anything. #}
+{% extends "base.html" %}
+{% block title %}Bulk Reassign{% endblock %}
+
+{% block content %}
+<style>
+.filter-accordion-item {
+  border:1px solid var(--line);
+  border-radius:10px;
+  margin-top:10px;
+  overflow:hidden;
+  background:var(--card);
+}
+.filter-accordion-header {
+  width:100%; display:flex; justify-content:space-between; align-items:center;
+  background:transparent; border:none; padding:14px 16px;
+  font-size:15px; font-weight:700; text-align:left; cursor:pointer;
+  color:var(--ink); font-family:inherit;
+}
+.filter-accordion-header .fa-current { color:var(--blue); font-weight:400; font-size:13px; margin-left:6px; }
+.filter-accordion-chevron { color:var(--ink-soft); transition:transform .15s ease; font-size:13px; }
+.filter-accordion-item.open .filter-accordion-chevron { transform:rotate(180deg); }
+.filter-accordion-body { display:none; padding:0 16px 16px 16px; border-top:1px solid var(--line); }
+.filter-accordion-item.open .filter-accordion-body { display:block; padding-top:12px; }
+.opt-row { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:14px; cursor:pointer; }
+.opt-row input { cursor:pointer; }
+</style>
+
+<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Settings</a>
+<div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; margin-top:10px;">
+  <h2 style="margin:0;">Bulk Reassign</h2>
+  <a href="{{ url_for('settings_bulk_jobs') }}" class="btn" style="font-size:13px;">Past Bulk Jobs</a>
+</div>
+<p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:4px;">
+  Filter down to a set of leads, then pick who they should move to. Nothing is changed here —
+  the next screen shows exactly how many leads matched before anything is written.
+</p>
+
+<form method="get" action="{{ url_for('settings_bulk_reassign_preview') }}" id="bulkFilterForm">
+
+  <div id="filterAccordion">
+
+    <div class="filter-accordion-item{% if filters.date_preset %} open{% endif %}" data-fa="date">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('date')">
+        <span>Date Range{% if filters.date_preset %}<span class="fa-current"> · {{ date_preset_labels.get(filters.date_preset, 'Custom') }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <div class="field-label">Quick select</div>
+        <select name="date_preset" id="datePresetSelect" style="width:100%; margin-bottom:10px;" onchange="onDatePresetChange(this)">
+          <option value="" {% if not filters.date_preset %}selected{% endif %}>— Select —</option>
+          {% for key in date_preset_order %}
+          <option value="{{ key }}" {% if filters.date_preset == key %}selected{% endif %}>{{ date_preset_labels[key] }}</option>
+          {% endfor %}
+        </select>
+        <div id="customDateFields" style="{% if filters.date_preset != 'custom' %}display:none;{% endif %}">
+          <div class="field-label">From</div>
+          <input type="date" name="date_from" value="{{ filters.date_from }}" style="width:100%; margin-bottom:10px;">
+          <div class="field-label">To</div>
+          <input type="date" name="date_to" value="{{ filters.date_to }}" style="width:100%;">
+        </div>
+      </div>
+    </div>
+
+    <div class="filter-accordion-item{% if filters.campaigns %} open{% endif %}" data-fa="campaign">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('campaign')">
+        <span>Campaign{% if filters.campaigns %}<span class="fa-current"> · {{ filters.campaigns|join(', ') }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        {% for c in campaign_options %}
+        <label class="opt-row"><input type="checkbox" name="campaigns" value="{{ c }}" {% if c in filters.campaigns %}checked{% endif %}> {{ c }}</label>
+        {% endfor %}
+        {% if not campaign_options %}<p style="font-size:13px; color:var(--ink-soft);">No campaign values recorded yet.</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="filter-accordion-item{% if filters.project %} open{% endif %}" data-fa="project">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('project')">
+        <span>Project{% if filters.project %}<span class="fa-current"> · {{ filters.project }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="project" value="" {% if not filters.project %}checked{% endif %}> All projects</label>
+        {% for p in projects %}
+        <label class="opt-row"><input type="radio" name="project" value="{{ p }}" {% if filters.project == p %}checked{% endif %}> {{ p }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="filter-accordion-item{% if filters.stage %} open{% endif %}" data-fa="stage">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('stage')">
+        <span>Pipeline Stage{% if filters.stage %}<span class="fa-current"> · {{ filters.stage }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="stage" value="" {% if not filters.stage %}checked{% endif %}> All stages</label>
+        {% for s in stages %}
+        <label class="opt-row"><input type="radio" name="stage" value="{{ s }}" {% if filters.stage == s %}checked{% endif %}> {{ s }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="filter-accordion-item{% if filters.source %} open{% endif %}" data-fa="source">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('source')">
+        <span>Source{% if filters.source %}<span class="fa-current"> · {{ filters.source }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="source" value="" {% if not filters.source %}checked{% endif %}> All sources</label>
+        {% for s in source_options %}
+        <label class="opt-row"><input type="radio" name="source" value="{{ s }}" {% if filters.source == s %}checked{% endif %}> {{ s }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="filter-accordion-item{% if filters.owner %} open{% endif %}" data-fa="owner">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('owner')">
+        <span>Current Owner{% if filters.owner %}<span class="fa-current"> · {{ filters.owner }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="owner" value="" {% if not filters.owner %}checked{% endif %}> Everyone</label>
+        {% for o in owner_options %}
+        <label class="opt-row"><input type="radio" name="owner" value="{{ o }}" {% if filters.owner == o %}checked{% endif %}> {{ o }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <div class="field-label">Reassign matched leads to</div>
+    <select name="to_owner" required style="width:100%; padding:9px 10px; border:1.5px solid var(--line); border-radius:8px; font-family:inherit; font-size:14px;">
+      <option value="">Select a target owner…</option>
+      {% for u in target_owners %}
+      <option value="{{ u.owner_match_name }}">{{ u.full_name }} ({{ u.owner_match_name }})</option>
+      {% endfor %}
+    </select>
+    {% if not target_owners %}
+    <p style="font-size:13px; color:var(--ink-soft); margin-top:8px;">
+      No users with a linked owner_match_name yet — link one under <a href="{{ url_for('settings_users') }}">Settings → Team</a> first.
+    </p>
+    {% endif %}
+  </div>
+
+  <div class="write-form-row" style="margin-top:20px; margin-bottom:24px;">
+    <button type="submit" class="btn btn-primary">Preview Matched Leads →</button>
+  </div>
+</form>
+
+<script>
+function toggleFA(name){
+  document.querySelectorAll('.filter-accordion-item').forEach(function(item){
+    if (item.dataset.fa === name) {
+      item.classList.toggle('open');
+    } else {
+      item.classList.remove('open');
+    }
+  });
+}
+function onDatePresetChange(sel){
+  var customBox = document.getElementById('customDateFields');
+  if (sel.value === 'custom') {
+    customBox.style.display = 'block';
+    return;
+  }
+  customBox.style.display = 'none';
+}
+</script>
+{% endblock %}

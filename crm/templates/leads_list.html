@@ -1,8 +1,22 @@
-{# leads_list.html (v0.8) — top filter bar removed per Srikanth's spec.
+{# leads_list.html (v0.9) — top filter bar removed per Srikanth's spec.
    Header is now just "Leads (N)" + Add lead. Filter/Search/Fields
    moved to the bottom icon bar (_leads_list_actionbar.html) — Filter
    and Search open dedicated full-screen panels; Fields stays an
    in-place popover, just relocated.
+
+   v0.9 (July 2026, Task 5 of the APX v0.7 batch) — the "Upd" field
+   (stage_updated_at, see v0.8's note below — that trade-off is why
+   this is being retired rather than chased further) is REPLACED with
+   lead age in days (cls_db.py v2.28's get_leads_page() age_days,
+   computed from cls_created_at). Shown only for active leads — None
+   for Booked/Lost/Unqualified (DRIP_TERMINAL_STAGES), which render
+   nothing at all rather than a dash or a stale number, per Srikanth's
+   "active leads only" instruction. Still gated behind the SAME
+   'updated' key in the Fields popover/ALL_LIST_FIELDS (no schema/
+   field-list change requested) — the popover checkbox itself still
+   reads "Updated" (it capitalizes the raw key), which no longer quite
+   matches what the column shows now; flagged as a minor follow-up,
+   not fixed here since it wasn't asked for.
 
    v0.8 (July 2026) — item 3 (Option A) of Srikanth's bug-fix batch: the
    "Upd" field now shows stage_updated_at instead of cls_updated_at.
@@ -14,10 +28,7 @@
    change, so it's immune to that bug. TRADE-OFF: stage_updated_at won't
    reflect non-stage edits (notes, contact/property edits) made in the
    CRM itself — a lead edited today but with no stage change will still
-   show an older "Upd" date. Ship this (Option A) now for the immediate
-   fix; cls_db.py v2.19 Option B fixes cls_updated_at at the source, so a
-   future version can switch this back to cls_updated_at once Option B
-   has been live long enough to trust. #}
+   show an older "Upd" date. #}
 {% extends "base.html" %}
 {% block title %}Leads{% endblock %}
 
@@ -85,8 +96,8 @@
       {% if 'source' in active_fields %}
       <span class="lc-field"><span class="lc-label">Source</span> {{ lead.source or '—' }}</span>
       {% endif %}
-      {% if 'updated' in active_fields %}
-      <span class="lc-field"><span class="lc-label">Upd</span> {{ lead.stage_updated_at.split(' ')[0] if lead.stage_updated_at else '—' }}</span>
+      {% if 'updated' in active_fields and lead.age_days is not none %}
+      <span class="lc-field"><span class="lc-label">Age</span> {{ lead.age_days }}d</span>
       {% endif %}
     </div>
   </div>

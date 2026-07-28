@@ -1,0 +1,71 @@
+{# bulk_reassign_preview.html (v1.0) — Settings > Bulk Reassign, step 2
+   of 3. Nothing has been written yet — this just shows what WOULD
+   happen (matched count + target owner) with one "Confirm & Reassign"
+   button (POST -> settings_bulk_reassign_commit, the only step that
+   actually writes, inside cls_db.bulk_reassign_leads()'s one
+   transaction). The confirm form resubmits every filter param as a
+   hidden field so the commit route re-derives the EXACT same matched
+   set server-side rather than trusting a client-supplied list of ids. #}
+{% extends "base.html" %}
+{% block title %}Confirm Bulk Reassign{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_bulk_reassign', **filters) }}" style="font-size:14px;">← Back to filters</a>
+<h2 style="margin-top:10px; margin-bottom:14px;">Confirm Bulk Reassign</h2>
+
+<div class="card" style="background:#FBF6E9; border-color:#EAD9A0;">
+  <p style="margin:0; font-size:15px;">
+    <strong>{{ matched|length }} lead{{ '' if matched|length == 1 else 's' }}</strong> match{{ 's' if matched|length == 1 else '' }} these filters and will be reassigned to
+    <strong>{{ to_owner }}</strong>.
+  </p>
+  <p style="font-size:13px; color:var(--ink-soft); margin:8px 0 0;">
+    This changes lead_owner on every matched lead in one step and cannot be undone from here —
+    review the list below before confirming.
+  </p>
+</div>
+
+{% if matched %}
+<div class="report-table-wrap" style="margin-top:14px; overflow-x:auto;">
+  <table class="report-table" style="width:100%; border-collapse:collapse;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">#</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Name</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Stage</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Current Owner</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for lead in matched %}
+      <tr>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">#{{ lead.crm_lead_no or '—' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ lead.full_name or '(no name)' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ lead.current_stage or '—' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ lead.lead_owner or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty-state" style="margin-top:14px;">
+  <p>No leads match these filters — nothing to reassign.</p>
+</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('settings_bulk_reassign_commit') }}" style="margin-top:20px; margin-bottom:24px;">
+  <input type="hidden" name="date_from" value="{{ filters.date_from }}">
+  <input type="hidden" name="date_to" value="{{ filters.date_to }}">
+  <input type="hidden" name="date_preset" value="{{ filters.date_preset }}">
+  {% for c in filters.campaigns %}<input type="hidden" name="campaigns" value="{{ c }}">{% endfor %}
+  <input type="hidden" name="project" value="{{ filters.project }}">
+  <input type="hidden" name="stage" value="{{ filters.stage }}">
+  <input type="hidden" name="source" value="{{ filters.source }}">
+  <input type="hidden" name="owner" value="{{ filters.owner }}">
+  <input type="hidden" name="to_owner" value="{{ to_owner }}">
+  <div class="write-form-row">
+    <button type="submit" class="btn btn-primary" {% if not matched %}disabled{% endif %}>Confirm &amp; Reassign</button>
+    <a href="{{ url_for('settings_bulk_reassign', **filters) }}" class="btn">Cancel</a>
+  </div>
+</form>
+{% endblock %}

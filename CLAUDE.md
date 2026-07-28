@@ -1,4 +1,16 @@
 # CLAUDE.md
+<!--
+Version: 1.1
+Changelog:
+  v1.0 (baseline, pre-existing) — original CLAUDE.md content, no version tracking.
+  v1.1 (2026-07-28) — added mandatory "Session Closeout" section (Srikanth-requested):
+                       every response that creates/edits a file must end with a
+                       files-to-reupload list, plain-English verification steps,
+                       a flags block (security/DPDP/scope/Job B/scheduler), and a
+                       Resume-from-here checkpoint. Added version/changelog header
+                       to this file itself, matching the convention already used
+                       across every other script in this repo.
+-->
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -220,3 +232,41 @@ These rules apply to every change, not just the ones below where they're most ob
 - **Parallel-run is sacred.** Sell.do is never cut over or cancelled until the team has lived in the CRM in parallel for at least 3–4 weeks with clean, validated sync. Don't write code that assumes or hastens cutover. Use `cls_parallel_diff.py` output, not ad-hoc spot checks, to judge parallel-run health.
 - **Scope discipline.** If a request is ahead of the currently agreed version (v0.1 Viewer → v0.5 Writer → v1.0 Telephony+cutover → v1.5+ Strategic), say clearly which version it belongs to before building it. Don't silently expand scope, and don't hard-block the idea either — just name it and confirm before proceeding.
 - **Simple over complex.** Prefer the solution touching the fewest files and using data already in CLS1.db/CLS2.db over a more elaborate architecture.
+
+## Session Closeout (mandatory — end every response that creates or edits a file with this)
+
+This applies to every Claude Code response in this repo that creates, edits, or deletes a file — not just "big" sessions. No exceptions, no judgment call about whether it's "worth it" for a small change. If literally nothing was created or edited, state that plainly instead of the block below.
+
+End the response with exactly this structure:
+
+```
+### Files to re-upload to Project Knowledge
+- <full path> (v<X.Y> — one-line changelog of what changed)
+- ...
+(List ONLY files actually touched this turn. If none: "No files changed — nothing to re-upload.")
+
+### How to check this worked
+1. <plain English, numbered, no jargon — something Srikanth can literally do at
+   his desk, e.g. "Open leads_list.html in the browser and confirm the new
+   filter dropdown shows 5 options" — never "verify DOM state" or similar>
+2. ...
+
+### Flags
+- Security/auth/roles/tokens/.env touched: none / <describe>
+- DPDP Act relevance (esp. call-recording consent): none / <describe>
+- Scope: within current version / belongs to v<X> — flagged, not built without confirmation
+- Job B (`selldo_to_cls.py`) touched: no / STOP — flag before proceeding, do not just proceed
+- New script, or a changed schedule/frequency: no / yes — needs a `.bat` wrapper +
+  Task Scheduler entry (or an update to an existing one) — <specify>
+
+### Resume-from-here
+1. Completed this session: <...>
+2. Current file/version state: <...>
+3. Next task: <...>
+4. Open decisions awaiting Srikanth: <...>
+```
+
+Notes on filling this in:
+- The changelog fragment next to each file should be short enough to scan in a few seconds, but specific enough that Srikanth can tell what changed without reopening the file.
+- "How to check this worked" is deliberately in the same plain-English, jargon-free spirit as the diagnostic/safety-net tooling rule already in this file — one command or one click → one plain-English outcome, not a technical description of internals.
+- A reminder to run `git` "Commit Changes" belongs in step 1 of Resume-from-here when files changed this session — don't skip it just because it feels like a formality.

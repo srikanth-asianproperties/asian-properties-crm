@@ -1,4 +1,4 @@
-{# settings.html (v0.14) — admin Settings hub. A grid of tiles; each
+{# settings.html (v0.17) — admin Settings hub. A grid of tiles; each
    future admin tool drops in here as another tile, inheriting the
    /settings admin gate rather than adding its own hamburger link.
 
@@ -10,7 +10,11 @@
    v0.14 — NEW "Campaign Routing" tile (settings_campaign_routing.html /
    campaign_routing_rules + app_settings tables, cls_db.py v2.25).
    v0.15 — NEW "Lead Scoring" tile (settings_lead_scoring.html /
-   app_settings['lead_score_config'], cls_db.py v2.26). #}
+   app_settings['lead_score_config'], cls_db.py v2.26).
+   v0.17 — NEW "Bulk Reassign" tile (bulk_reassign_filter.html, cls_db.py
+   v2.28's bulk_jobs table). Admin-only, stricter than normal write
+   access (not available via WRITE_ANYWHERE_ROLES/managers) since this
+   is a destructive-at-scale action. #}
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 
@@ -89,6 +93,16 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
       Tune the points behind each lead's Hot/Warm/Cold score badge.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_bulk_reassign') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--red)" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+      <span style="font-weight:700; font-size:16px;">Bulk Reassign</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Move a filtered set of leads to a new owner in one confirmed action.
     </p>
   </a>
 

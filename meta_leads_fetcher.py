@@ -2,11 +2,28 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.4
+Version : 1.5
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.5 (2026-07)    : APX v0.7 batch, Task 2.1 — Complete Activity History.
+                    extract_lead_fields() now ALSO collects any field_data
+                    entries that don't match the name/phone/email alias
+                    sets, as an ordered extra_answers list of
+                    {"question","answer"} dicts (requires cls_db.py
+                    v2.28's new upsert_meta_lead(extra_answers=...) param).
+                    These are custom instant-form questions (budget range,
+                    preferred configuration, etc.) — free text, appended to
+                    that lead's lead_entered activity_log description by
+                    cls_db.py, never read back into any matching/routing
+                    logic here. ADDITIONS ONLY: the existing name/phone/
+                    email extraction branches are untouched; only the
+                    trailing else (previously a silent drop) now records
+                    the field instead of discarding it. run()'s
+                    upsert_meta_lead() call gained one new passthrough
+                    kwarg (extra_answers=fields.get("extra_answers")).
+                    selftest() gained one new case covering extraction.
 v1.4 (2026-07)    : Now requests + stores Meta's real ad-platform
                     campaign_id/campaign_name/adset_id/adset_name/
                     ad_id/ad_name via 6 new meta_-prefixed fields.
@@ -381,6 +398,11 @@ def extract_lead_fields(raw_lead):
     Prefixed with meta_ specifically so they're never confused with
     LEAD_FORMS's own "campaign_name" config key (a Campaign Routing
     label, unrelated to Meta's own campaign_name field).
+
+    Also returns extra_answers (v1.5): an ordered list of
+    {"question": <field name>, "answer": <value>} for every field_data
+    entry that ISN'T name/first_name/last_name/phone/email — i.e. a
+    custom instant-form question. Empty list if the form had none.
     """
     out = {
         "leadgen_id"        : raw_lead.get("id", ""),
@@ -394,6 +416,7 @@ def extract_lead_fields(raw_lead):
         "full_name"         : "",
         "phone"             : "",
         "email"             : "",
+        "extra_answers"     : [],
     }
 
     # NOTE: 'first_name' is deliberately NOT in name_keys. If it were,
@@ -422,6 +445,14 @@ def extract_lead_fields(raw_lead):
             out["phone"] = value
         elif key in email_keys and not out["email"]:
             out["email"] = value
+        elif field.get("name"):
+            # v1.5 — anything else is a custom instant-form question
+            # (budget range, preferred configuration, etc.) — logged,
+            # never matched/parsed by anything in this file.
+            out["extra_answers"].append({
+                "question": field.get("name"),
+                "answer": value,
+            })
 
     # If the form used separate first/last fields, stitch them.
     if not out["full_name"]:
@@ -549,6 +580,7 @@ def run():
                     meta_adset_name    = fields["meta_adset_name"],
                     meta_ad_id         = fields["meta_ad_id"],
                     meta_ad_name       = fields["meta_ad_name"],
+                    extra_answers      = fields.get("extra_answers") or None,
                 )
                 upserted += 1
             except Exception as e:
@@ -638,6 +670,22 @@ def selftest():
     ok = (f3["leadgen_id"] == "LG3" and f3["full_name"] == ""
           and f3["phone"] == "" and f3["email"] == "")
     print(f"  [{'OK' if ok else 'FAIL'}] extract: empty field_data handled safely")
+
+    # ── field extraction: custom instant-form questions -> extra_answers (v1.5) ──
+    lead4 = {
+        "id": "LG4", "created_time": "2026-05-21T12:00:00+0530",
+        "field_data": [
+            {"name": "full_name",         "values": ["Anita Rao"]},
+            {"name": "phone_number",      "values": ["9000000002"]},
+            {"name": "budget_range",      "values": ["50L-75L"]},
+            {"name": "preferred_project", "values": ["Naishka"]},
+        ],
+    }
+    f4 = extract_lead_fields(lead4)
+    ok = (len(f4["extra_answers"]) == 2
+          and f4["extra_answers"][0] == {"question": "budget_range", "answer": "50L-75L"}
+          and f4["extra_answers"][1] == {"question": "preferred_project", "answer": "Naishka"})
+    print(f"  [{'OK' if ok else 'FAIL'}] extract: custom Q&A fields collected as extra_answers")
 
     # ── normalization round-trip via cls_db (the integration point) ──
     ph = cls_db.norm_phone(f1["phone"])

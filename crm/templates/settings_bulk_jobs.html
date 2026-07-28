@@ -1,0 +1,46 @@
+{# settings_bulk_jobs.html (v1.0) — Settings > Bulk Reassign > Past Bulk
+   Jobs. Plain table, no charts — cls_db.get_bulk_jobs() (bulk_jobs
+   table, cls_db.py v2.28), newest first. filters_summary is already a
+   short human-readable string (built by app.py's
+   _bulk_filters_summary()), so this just prints it — no second
+   renderer for a filter-object shape. job_type is shown as a badge in
+   case a future bulk action besides bulk_reassign starts writing to
+   this same table (BULK_JOB_TYPES is written generically for that). #}
+{% extends "base.html" %}
+{% block title %}Bulk Jobs{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_bulk_reassign') }}" style="font-size:14px;">← Bulk Reassign</a>
+<h2 style="margin-top:10px; margin-bottom:14px;">Past Bulk Jobs</h2>
+
+{% if jobs %}
+<div class="report-table-wrap" style="overflow-x:auto;">
+  <table class="report-table" style="width:100%; border-collapse:collapse;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">When</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Type</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">By</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Filters</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Leads</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px; white-space:nowrap;">{{ job.created_at }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;"><span class="badge" style="background:var(--gray);">{{ job.job_type }}</span></td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ job.actor }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ job.filters_summary }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ job.lead_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty-state">
+  <p>No bulk jobs run yet.</p>
+</div>
+{% endif %}
+{% endblock %}

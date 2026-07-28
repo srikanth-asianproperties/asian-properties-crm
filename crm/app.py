@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.16
+Version : 0.17
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,68 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.17 (July 2026) — APX v0.7 batch: Newest-First Default (Task 1) +
+  Complete Activity History (Task 2) + Bulk Reassign (Task 3) + Bulk
+  Export (Task 4) + Lead Age (Task 5). Requires cls_db.py v2.28.
+  ADDITIONS ONLY except the one default-value change in Task 1.
+
+  Task 1 — _parse_lead_filters()'s sort_by fallback changed from
+  "recent" to "created_desc" (one line). leads_filter.html needed NO
+  change — its Sort By radios already key off filters.sort_by, so the
+  new default just flows through.
+
+  Task 2.2 — WhatsApp send logging. whatsapp_picker.html's Send button
+  was client-side-only (window.open, no server round-trip, nothing
+  logged) — now a real <form method="post"> to NEW
+  /leads/<cls_id>/whatsapp/send (whatsapp_send()), same ownership gate
+  and same wa_url-must-start-with-https://wa.me/ validation as the
+  existing reminder_mark_sent() pattern it mirrors. Logs via NEW
+  cls_db.log_whatsapp_sent(), then 302-redirects into WhatsApp exactly
+  as before.
+
+  Task 3 — Bulk Reassign (Settings > Bulk Reassign, admin_required
+  only — NOT WRITE_ANYWHERE_ROLES/managers, deliberately stricter than
+  normal lead-write access since this is destructive at scale). Three
+  steps: NEW settings_bulk_reassign() (GET filter form) ->
+  settings_bulk_reassign_preview() (GET, shows matched count + target
+  owner, writes nothing) -> settings_bulk_reassign_commit() (POST, the
+  only step that writes, via cls_db.bulk_reassign_leads()'s one
+  transaction). NEW settings_bulk_jobs() (history page). NEW
+  bulk_reassign_filter.html / bulk_reassign_preview.html /
+  settings_bulk_jobs.html. settings.html gained a "Bulk Reassign" tile.
+  NEW _parse_bulk_filters() / _bulk_filters_summary() helpers (shared
+  with Task 4 below) — a smaller, separate filter parser from
+  _parse_lead_filters(), since Bulk Reassign/Export only ever offer
+  date range, campaign (multi-select), project, stage, source, current
+  owner — not the full leads-list filter set.
+
+  Task 4 — Bulk Export (NEW top-level "Export" nav link in base.html,
+  visible to everyone — same role-agnostic-in-template pattern as
+  "Reports", scoped internally via cls_db.can_view_all_leads() exactly
+  like Reports: salesperson exports only their own leads/visits/
+  activity, admin/manager export everything). Three export types, each
+  view+excel+email route trio: export_leads_view/_excel/_email,
+  export_site_visits_view/_excel/_email, export_activity_view/_excel/
+  _email, plus NEW export_home() hub. Reuses cls_reports.
+  export_to_excel() unchanged (same {title,columns,rows,date_from,
+  date_to} shape Reports already builds) — no new export mechanism.
+  PDF is browser print-to-PDF, same <style media="print"> + "Print /
+  Save as PDF" pattern as report_view.html — no server-side PDF
+  library. Email is NEW _send_export_email() — same Brevo
+  (sib_api_v3_sdk) transactional client cls_email_drip.py/
+  cls_watchdog.py already use, same BREVO_API_KEY from .env; sender
+  reuses sales1@asianbuild.in (cls_watchdog.py's own precedent for
+  internal/system mail) under a new "Asian Properties CRM" display
+  name rather than a customer-facing project brand. Sends only to the
+  REQUESTING user's own login email. Date range reuses this file's
+  EXISTING DATE_PRESETS/DATE_PRESET_LABELS/DATE_PRESET_ORDER (same
+  dict leads_filter.html already uses) rather than cls_reports.py's
+  separate REPORT_DATE_PRESETS — Srikanth's approved call, avoids a
+  third near-identical date-preset dict.
+
+  Task 5 — no app.py change; get_leads_page() already returns age_days
+  per lead (cls_db.py v2.28), leads_list.html reads it directly.
+
 v0.16 (July 2026) — Settings > Lead Scoring (Task 4 of the settings-GUI
   batch, final task). Requires cls_db.py v2.26. NEW combined GET/POST
   route settings_lead_scoring() + settings_lead_scoring.html. Only
@@ -745,6 +807,7 @@ v0.1  (July 2026) — first working version:
 =============================================================
 """
 
+import base64
 import os
 import re
 import sys
@@ -1282,6 +1345,261 @@ def report_export_excel(report_id):
 
 
 # ─────────────────────────────────────────────────────────────
+# BULK EXPORT  (v0.17, Task 4) — visible to every logged-in user,
+# scoped internally exactly like Reports (cls_db.can_view_all_leads):
+# a salesperson exports only their own leads/visits, admin/manager
+# export everything. Three export types, each its own filter screen;
+# all three share one results-table+action-buttons layout (mirrors
+# report_view.html) and the SAME cls_reports.export_to_excel() Excel
+# path Reports already uses — no new export mechanism.
+# ─────────────────────────────────────────────────────────────
+
+LEADS_EXPORT_COLUMNS = [
+    ("crm_lead_no", "Lead #"), ("full_name", "Name"), ("phone_raw", "Phone"),
+    ("project_bucket", "Project"), ("current_stage", "Stage"),
+    ("lead_owner", "Owner"), ("source", "Source"), ("cls_created_at", "Created"),
+]
+SITE_VISITS_EXPORT_COLUMNS = [
+    ("crm_lead_no", "Lead #"), ("full_name", "Name"), ("phone_raw", "Phone"),
+    ("project", "Project"), ("lead_owner", "Owner"),
+    ("scheduled_at", "Scheduled"), ("conducted_at", "Conducted"),
+    ("outcome_reason", "Outcome"),
+]
+ACTIVITY_EXPORT_COLUMNS = [
+    ("crm_lead_no", "Lead #"), ("full_name", "Name"), ("activity_type", "Type"),
+    ("actor", "By"), ("description", "Description"), ("created_at", "When"),
+]
+
+
+def _send_export_email(user, report, filename):
+    """
+    v0.17 — emails a generated Excel export to the REQUESTING user's
+    own login email, via the SAME Brevo (sib_api_v3_sdk) transactional
+    API cls_email_drip.py/cls_watchdog.py already use, same
+    BREVO_API_KEY from .env — no new SMTP path. Sender address reuses
+    sales1@asianbuild.in (cls_watchdog.py's own precedent for internal/
+    system emails, cls_email_drip.py's DEFAULT_SENDER mailbox — the
+    only Brevo-verified sender already in use for non-customer-facing
+    mail) under its own display name rather than a customer-facing
+    project brand (Naishka Homes etc.), since this is an internal CRM
+    tool, not a lead-facing communication.
+
+    Returns (ok: bool, message: str).
+    """
+    brevo_key = _env.get("BREVO_API_KEY", "")
+    if not brevo_key:
+        return False, "BREVO_API_KEY is missing from C:\\CLS\\.env."
+
+    try:
+        buf = cls_reports.export_to_excel(report)
+    except RuntimeError as e:
+        return False, str(e)
+
+    import sib_api_v3_sdk
+    cfg = sib_api_v3_sdk.Configuration()
+    cfg.api_key["api-key"] = brevo_key
+    api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(cfg))
+    send_smtp = sib_api_v3_sdk.SendSmtpEmail(
+        to=[{"email": user["email"], "name": user["full_name"]}],
+        sender={"email": "sales1@asianbuild.in", "name": "Asian Properties CRM"},
+        subject=report["title"],
+        html_content=(
+            f"<p>Attached: <strong>{report['title']}</strong>, generated "
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M')}.</p>"
+        ),
+        attachment=[{
+            "content": base64.b64encode(buf.getvalue()).decode("ascii"),
+            "name": filename,
+        }],
+    )
+    try:
+        api_instance.send_transac_email(send_smtp)
+        return True, f"Emailed to {user['email']}."
+    except Exception as e:
+        return False, str(e)
+
+
+@app.route("/export")
+@login_required
+def export_home():
+    user = cls_db.get_user_by_id(session["user_id"])
+    return render_template("export_home.html", is_oversight=cls_db.can_view_all_leads(user["role"]))
+
+
+# ── Export Leads ──
+
+def _export_leads_rows(f, user):
+    owner = None
+    if cls_db.can_view_all_leads(user["role"]):
+        owner = f["owner"] or None
+    else:
+        owner = user.get("owner_match_name") or None
+    return cls_db.get_leads_matching(
+        stage=f["stage"] or None, project=f["project"] or None,
+        date_from=f["date_from"] or None, date_to=f["date_to"] or None,
+        campaigns=f["campaigns"] or None, source=f["source"] or None,
+        owner=owner,
+    )
+
+
+def _export_leads_report(f, user):
+    return {
+        "title": "Export Leads", "columns": LEADS_EXPORT_COLUMNS,
+        "rows": _export_leads_rows(f, user),
+        "date_from": f["date_from"], "date_to": f["date_to"],
+    }
+
+
+@app.route("/export/leads")
+@login_required
+def export_leads_view():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    is_oversight = cls_db.can_view_all_leads(user["role"])
+    return render_template(
+        "export_leads.html", filters=f, report=_export_leads_report(f, user),
+        stages=cls_db.ALL_STAGES, projects=cls_db.get_all_bucket_names(),
+        source_options=cls_db.SOURCE_OPTIONS, campaign_options=cls_db.get_distinct_campaigns(),
+        owner_options=cls_db.get_distinct_owners() if is_oversight else [],
+        is_oversight=is_oversight,
+        date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
+    )
+
+
+@app.route("/export/leads/excel")
+@login_required
+def export_leads_excel():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    try:
+        buf = cls_reports.export_to_excel(_export_leads_report(f, user))
+    except RuntimeError as e:
+        flash(str(e), "error")
+        return redirect(url_for("export_leads_view", **f))
+    return send_file(buf, as_attachment=True, download_name="export-leads.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/export/leads/email", methods=["POST"])
+@login_required
+def export_leads_email():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    ok, message = _send_export_email(user, _export_leads_report(f, user), "export-leads.xlsx")
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("export_leads_view", **f))
+
+
+# ── Export Site Visits Conducted ──
+
+def _export_site_visits_report(f, user):
+    owner = f["owner"] or None
+    if not cls_db.can_view_all_leads(user["role"]):
+        owner = user.get("owner_match_name") or None
+    rows = cls_db.get_site_visits_conducted(
+        date_from=f["date_from"] or None, date_to=f["date_to"] or None, owner=owner,
+    )
+    return {
+        "title": "Export Site Visits Conducted", "columns": SITE_VISITS_EXPORT_COLUMNS,
+        "rows": rows, "date_from": f["date_from"], "date_to": f["date_to"],
+    }
+
+
+@app.route("/export/site-visits")
+@login_required
+def export_site_visits_view():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    is_oversight = cls_db.can_view_all_leads(user["role"])
+    return render_template(
+        "export_site_visits.html", filters=f, report=_export_site_visits_report(f, user),
+        owner_options=cls_db.get_distinct_owners() if is_oversight else [],
+        is_oversight=is_oversight,
+        date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
+    )
+
+
+@app.route("/export/site-visits/excel")
+@login_required
+def export_site_visits_excel():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    try:
+        buf = cls_reports.export_to_excel(_export_site_visits_report(f, user))
+    except RuntimeError as e:
+        flash(str(e), "error")
+        return redirect(url_for("export_site_visits_view", **f))
+    return send_file(buf, as_attachment=True, download_name="export-site-visits.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/export/site-visits/email", methods=["POST"])
+@login_required
+def export_site_visits_email():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    ok, message = _send_export_email(user, _export_site_visits_report(f, user), "export-site-visits.xlsx")
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("export_site_visits_view", **f))
+
+
+# ── Export Activity History ──
+
+def _export_activity_report(f, user, lead_filter_cls_id):
+    owner = None
+    if not cls_db.can_view_all_leads(user["role"]):
+        owner = user.get("owner_match_name") or None
+    rows = cls_db.get_activity_log_export(
+        date_from=f["date_from"] or None, date_to=f["date_to"] or None,
+        cls_id=lead_filter_cls_id or None, owner=owner,
+    )
+    return {
+        "title": "Export Activity History", "columns": ACTIVITY_EXPORT_COLUMNS,
+        "rows": rows, "date_from": f["date_from"], "date_to": f["date_to"],
+    }
+
+
+@app.route("/export/activity")
+@login_required
+def export_activity_view():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    lead_filter_cls_id = (request.args.get("cls_id") or "").strip()
+    return render_template(
+        "export_activity.html", filters=f, cls_id=lead_filter_cls_id,
+        export_args=dict(f, cls_id=lead_filter_cls_id),
+        report=_export_activity_report(f, user, lead_filter_cls_id),
+        date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
+    )
+
+
+@app.route("/export/activity/excel")
+@login_required
+def export_activity_excel():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    lead_filter_cls_id = (request.args.get("cls_id") or "").strip()
+    try:
+        buf = cls_reports.export_to_excel(_export_activity_report(f, user, lead_filter_cls_id))
+    except RuntimeError as e:
+        flash(str(e), "error")
+        return redirect(url_for("export_activity_view", **f, cls_id=lead_filter_cls_id))
+    return send_file(buf, as_attachment=True, download_name="export-activity.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/export/activity/email", methods=["POST"])
+@login_required
+def export_activity_email():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    lead_filter_cls_id = (request.form.get("cls_id") or "").strip()
+    ok, message = _send_export_email(user, _export_activity_report(f, user, lead_filter_cls_id), "export-activity.xlsx")
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("export_activity_view", **f, cls_id=lead_filter_cls_id))
+
+
+# ─────────────────────────────────────────────────────────────
 # ROUTES — LEADS (read-only)
 # ─────────────────────────────────────────────────────────────
 
@@ -1468,7 +1786,7 @@ def _parse_lead_filters():
         "date_from":     date_from,
         "date_to":       date_to,
         "date_preset":   active_preset,
-        "sort_by":       request.args.get("sort_by") or "recent",
+        "sort_by":       request.args.get("sort_by") or "created_desc",
         "stage_reason":  request.args.get("stage_reason") or "",
         "campaign":      request.args.get("campaign") or "",
         "source":        request.args.get("source") or "",
@@ -1478,6 +1796,72 @@ def _parse_lead_filters():
         "property_type": request.args.getlist("property_type"),
         "facing":        request.args.getlist("facing"),
     }
+
+
+def _parse_bulk_filters():
+    """
+    v0.17 — Task 3 (Bulk Reassign) / Task 4 (Bulk Export) shared filter
+    parser. Deliberately a SEPARATE, smaller helper from
+    _parse_lead_filters() above — these two features only ever offer
+    date range, campaign (multi-select), project, stage, source, and
+    current owner, not the full leads-list filter set (no search,
+    sort, stage_reason, budget, configuration/property_type/facing).
+
+    Date-preset resolution is copied from _parse_lead_filters() rather
+    than shared as a sub-helper — same 4-branch logic, reusing the SAME
+    DATE_PRESETS dict leads_filter.html already uses (Srikanth's
+    approved call: reuse app.py's existing dict rather than pulling in
+    cls_reports.py's separate REPORT_DATE_PRESETS copy).
+    """
+    date_preset_param = request.values.get("date_preset") or ""
+    date_from = request.values.get("date_from") or ""
+    date_to = request.values.get("date_to") or ""
+
+    if date_preset_param and date_preset_param != "custom" and date_preset_param in DATE_PRESETS:
+        date_from, date_to = DATE_PRESETS[date_preset_param]()
+        active_preset = date_preset_param
+    elif date_preset_param == "custom":
+        active_preset = "custom"
+    elif date_from or date_to:
+        active_preset = _detect_active_date_preset(date_from, date_to)
+    else:
+        active_preset = ""
+
+    return {
+        "date_from":   date_from,
+        "date_to":     date_to,
+        "date_preset": active_preset,
+        "campaigns":   request.values.getlist("campaigns"),
+        "project":     request.values.get("project") or "",
+        "stage":       request.values.get("stage") or "",
+        "source":      request.values.get("source") or "",
+        "owner":       request.values.get("owner") or "",
+    }
+
+
+def _bulk_filters_summary(f):
+    """
+    v0.17 — builds the short human-readable string stored in
+    bulk_jobs.filters_summary (e.g. "Project: Naishka, Stage: Prospect,
+    Campaign: Camp5") — deliberately plain text, not JSON, so
+    settings_bulk_jobs.html can print it directly with no second
+    renderer. Only lists filters that were actually set; "All leads"
+    if none were.
+    """
+    parts = []
+    if f["project"]:
+        parts.append(f"Project: {f['project']}")
+    if f["stage"]:
+        parts.append(f"Stage: {f['stage']}")
+    if f["campaigns"]:
+        parts.append(f"Campaign: {', '.join(f['campaigns'])}")
+    if f["source"]:
+        parts.append(f"Source: {f['source']}")
+    if f["owner"]:
+        parts.append(f"Current Owner: {f['owner']}")
+    if f["date_preset"]:
+        parts.append(f"Date: {DATE_PRESET_LABELS.get(f['date_preset'], f['date_preset'])}")
+    return ", ".join(parts) if parts else "All leads"
 
 
 @app.route("/leads")
@@ -2188,6 +2572,39 @@ def whatsapp_picker(cls_id):
     )
 
 
+@app.route("/leads/<cls_id>/whatsapp/send", methods=["POST"])
+@login_required
+def whatsapp_send(cls_id):
+    """
+    v0.17 — Task 2.2. whatsapp_picker's Send button used to be a plain
+    client-side wa.me deep link (window.open, no server round-trip, so
+    nothing ever got logged). Now a real POST so the send gets an
+    activity_log row — mirrors reminder_mark_sent() below exactly: same
+    ownership gate, same "wa_url must start with https://wa.me/"
+    validation, same 302 redirect into WhatsApp (which still can't
+    auto-send — the user reviews and taps Send there).
+    """
+    lead = cls_db.get_lead_by_id(cls_id)
+    if not lead:
+        abort(404, description="No lead found with that id.")
+    user = cls_db.get_user_by_id(session["user_id"])
+    _check_lead_ownership(lead, user)
+
+    wa_url = request.form.get("wa_url", "")
+    if not wa_url.startswith("https://wa.me/"):
+        flash("Couldn't open WhatsApp — invalid link.", "error")
+        return redirect(url_for("whatsapp_picker", cls_id=cls_id))
+
+    project = (request.form.get("project") or "").strip() or "Unknown project"
+    message = (request.form.get("message") or "").strip()
+    description = f"{project} template"
+    if message:
+        description += f" — {message}"
+
+    cls_db.log_whatsapp_sent(cls_id, _actor(), description)
+    return redirect(wa_url)
+
+
 # ─────────────────────────────────────────────────────────────
 # ROUTES — SITE-VISIT REMINDERS  (v0.10)
 # ─────────────────────────────────────────────────────────────
@@ -2419,6 +2836,94 @@ def settings_lead_scoring():
 
     config = cls_db.get_lead_score_config()
     return render_template("settings_lead_scoring.html", config=config, all_stages=cls_db.ALL_STAGES)
+
+
+# ─────────────────────────────────────────────────────────────
+# SETTINGS > BULK REASSIGN  (v0.17, Task 3 — admin-only)
+# ─────────────────────────────────────────────────────────────
+# Three steps, deliberately (Srikanth's call — this is the one
+# irreversible bulk action in this batch): filter form (GET) -> preview
+# (GET, shows matched count + target owner, nothing written yet) ->
+# commit (POST, the only step that actually writes). admin_required
+# only, NOT cls_db.can_write_any_lead()/WRITE_ANYWHERE_ROLES — a
+# manager can write to any SINGLE lead (v0.11.1) but bulk reassignment
+# at scale is stricter than that, per Srikanth's explicit instruction.
+
+def _bulk_reassign_matched(f):
+    """Shared lookup — filter form + preview + commit all need the SAME matched set for the SAME filters."""
+    return cls_db.get_leads_matching(
+        stage=f["stage"] or None, project=f["project"] or None,
+        date_from=f["date_from"] or None, date_to=f["date_to"] or None,
+        campaigns=f["campaigns"] or None, source=f["source"] or None,
+        owner=f["owner"] or None,
+    )
+
+
+@app.route("/settings/bulk-reassign")
+@login_required
+@admin_required
+def settings_bulk_reassign():
+    f = _parse_bulk_filters()
+    target_owners = [u for u in cls_db.get_all_users_detailed()
+                     if u["active"] and (u["owner_match_name"] or "").strip()]
+    return render_template(
+        "bulk_reassign_filter.html",
+        filters=f,
+        stages=cls_db.ALL_STAGES,
+        projects=cls_db.get_all_bucket_names(),
+        source_options=cls_db.SOURCE_OPTIONS,
+        campaign_options=cls_db.get_distinct_campaigns(),
+        owner_options=cls_db.get_distinct_owners(),
+        target_owners=target_owners,
+        date_preset_order=DATE_PRESET_ORDER,
+        date_preset_labels=DATE_PRESET_LABELS,
+    )
+
+
+@app.route("/settings/bulk-reassign/preview")
+@login_required
+@admin_required
+def settings_bulk_reassign_preview():
+    f = _parse_bulk_filters()
+    to_owner = (request.args.get("to_owner") or "").strip()
+    if not to_owner:
+        flash("Select a target owner before previewing.", "error")
+        return redirect(url_for("settings_bulk_reassign", **request.args))
+
+    matched = _bulk_reassign_matched(f)
+    return render_template(
+        "bulk_reassign_preview.html",
+        filters=f, to_owner=to_owner, matched=matched,
+        date_preset_labels=DATE_PRESET_LABELS,
+    )
+
+
+@app.route("/settings/bulk-reassign/commit", methods=["POST"])
+@login_required
+@admin_required
+def settings_bulk_reassign_commit():
+    f = _parse_bulk_filters()
+    to_owner = (request.form.get("to_owner") or "").strip()
+    if not to_owner:
+        flash("Select a target owner before confirming.", "error")
+        return redirect(url_for("settings_bulk_reassign"))
+
+    matched = _bulk_reassign_matched(f)
+    matched_ids = [lead["cls_id"] for lead in matched]
+
+    actor = _actor()
+    reassigned_count = cls_db.bulk_reassign_leads(matched_ids, to_owner, actor)
+    cls_db.create_bulk_job("bulk_reassign", actor, _bulk_filters_summary(f), to_owner, reassigned_count)
+
+    flash(f"Reassigned {reassigned_count} lead(s) to {to_owner}.", "success")
+    return redirect(url_for("settings_bulk_jobs"))
+
+
+@app.route("/settings/bulk-jobs")
+@login_required
+@admin_required
+def settings_bulk_jobs():
+    return render_template("settings_bulk_jobs.html", jobs=cls_db.get_bulk_jobs())
 
 
 @app.route("/settings/users")

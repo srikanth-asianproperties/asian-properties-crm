@@ -1,4 +1,18 @@
-{# lead_detail.html v7 (July 2026) — Srikanth's decisions 3/4/5 (APX
+{# lead_detail.html v8 (July 2026) — stage pill picker replacing native
+   <select> (Srikanth's UI request; template + CSS + JS-in-template only,
+   no route/backend changes). The stage badge (line ~167) is now tappable
+   when can_write + allowed_next_stages (same gating the old dropdown
+   used) and toggles a new #stagePickerPanel of tappable pills, inserted
+   right below the badge row. The native <select id="stageSelect"> stays
+   in the DOM (just display:none) because <form id="stageForm"> still
+   submits new_stage from it — each pill's onclick sets stageSelect.value
+   and calls the EXISTING handleStageSelect() unchanged, so the Lost/
+   Unqualified reason-panel flow isn't duplicated. cancelStageChange()
+   gained one line to also hide the new picker panel. See
+   toggleStagePicker()/selectStagePill() near the bottom <script> block
+   and the "v8 — stage pill picker" comment in <style> above.
+
+   v7 (July 2026) — Srikanth's decisions 3/4/5 (APX
    v0.5 polish, requires cls_db.py v2.11 / app.py v0.9.6):
      • decision 3 — Lost picker: no template change needed here; it
        already renders whatever lost_reasons the route passes (see
@@ -128,6 +142,24 @@
   font-size:22px; line-height:1; cursor:pointer; color:var(--ink-soft, #8A8A8A);
   font-family:inherit;
 }
+
+/* v8 — stage pill picker replacing native <select>. Badge (tap target)
+   toggles this panel inline below the badge row; native <select> stays
+   in the DOM (display:none, set inline) since #stageForm still submits
+   from it. Card wrapper matches .accordion-item/.modal-box language
+   (white bg, bordered, 12px radius) rather than inventing a new style. */
+.stage-picker-panel {
+  display:flex; flex-direction:column; gap:10px; margin-top:10px;
+  padding:16px; background:var(--card-bg, #fff);
+  border:1px solid var(--border, #E2E2E2); border-radius:12px;
+  max-width:320px;
+}
+.stage-pill {
+  background:#F7F8FA; border:1px solid #E3E6EC; color:var(--ink, #1a1a1a);
+  border-radius:24px; padding:12px 16px; font-size:15px; text-align:center;
+  cursor:pointer; font-family:inherit; transition:background 0.1s, color 0.1s;
+}
+.stage-pill:active { background:#2F80ED; color:#fff; border-color:#2F80ED; }
 </style>
 
 {% set ACTIVITY_BUCKETS = {
@@ -164,13 +196,24 @@
   {{ lead.full_name or '(no name)' }}
   <span style="font-size:14px; color:var(--ink-soft); font-weight:400;">#{{ lead.crm_lead_no or '—' }}</span>
 </h2>
-<span class="badge stage-{{ (lead.current_stage or 'other')|replace(' ', '') }}">
+<span class="badge stage-{{ (lead.current_stage or 'other')|replace(' ', '') }}"{% if can_write and allowed_next_stages %} id="stageBadge" style="cursor:pointer;" onclick="toggleStagePicker()"{% endif %}>
   {{ lead.current_stage or 'Unknown' }}
 </span>
 {% if lead.current_stage == 'Opportunity' and lead.opportunity_temperature %}
 <span class="temp-badge temp-{{ lead.opportunity_temperature }}">{{ lead.opportunity_temperature }}</span>
 {% endif %}
 <span class="score-badge score-{{ lead.lead_score_band|lower }}" title="Lead score">{{ lead.lead_score }}</span>
+
+{% if can_write and allowed_next_stages %}
+{# v8 — pill picker: same allowed_next_stages as stageSelect below, just
+   rendered as tappable pills instead of <option>s. Closed by default on
+   every fresh page load, toggled open/closed by the badge's onclick. #}
+<div id="stagePickerPanel" class="stage-picker-panel" style="display:none;">
+  {% for s in allowed_next_stages %}
+  <div class="stage-pill" onclick="selectStagePill('{{ s }}')">{{ s }}</div>
+  {% endfor %}
+</div>
+{% endif %}
 
 {% if can_write %}
 <div style="display:flex; align-items:flex-start; gap:10px; margin-top:10px; flex-wrap:wrap;">
@@ -181,7 +224,10 @@
        pause here for a required reason (item 15/16) before anything is
        submitted. That's the one deliberate exception to "auto-submit on
        select," not an oversight. #}
-    <select name="new_stage" id="stageSelect" required onchange="handleStageSelect(this)">
+    {# v8 — kept in the DOM (just hidden) since #stageForm still submits
+       new_stage from this element; the pill picker above sets its value
+       and calls handleStageSelect() directly instead of a visible onchange. #}
+    <select name="new_stage" id="stageSelect" required onchange="handleStageSelect(this)" style="display:none;">
       <option value="" disabled selected>Change stage to…</option>
       {% for s in allowed_next_stages %}
       <option value="{{ s }}">{{ s }}</option>
@@ -921,6 +967,23 @@ function cancelStageChange() {
   document.getElementById('reasonPanel').style.display = 'none';
   document.getElementById('reasonOptions').innerHTML = '';
   document.getElementById('reasonNotes').required = false;
+  var picker = document.getElementById('stagePickerPanel');
+  if (picker) picker.style.display = 'none';
+}
+
+// v8 — pill picker: badge toggles the panel open/closed; each pill sets
+// the (hidden) native select's value and reuses handleStageSelect() as-is
+// rather than duplicating its Lost/Unqualified reason-panel logic.
+function toggleStagePicker() {
+  var panel = document.getElementById('stagePickerPanel');
+  if (!panel) return;
+  panel.style.display = (panel.style.display === 'none') ? 'block' : 'none';
+}
+
+function selectStagePill(stage) {
+  var sel = document.getElementById('stageSelect');
+  sel.value = stage;
+  handleStageSelect(sel);
 }
 </script>
 {% endblock %}

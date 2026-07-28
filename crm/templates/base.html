@@ -1,13 +1,17 @@
-<!-- base.html v0.12 — first version header this file has carried,
+<!-- base.html v0.13 — first version header this file has carried,
      established in v0.10.
-     v0.10: NEW "Reminders" drawer link (between Leads and Settings)
-       with a pending-count badge, fed by inject_current_user()'s new
-       pending_reminder_count.
-     v0.11: NEW impersonation banner (shown when inject_current_user()'s
-       `impersonator` is set), sticky above the appbar via :has().
+     v0.13: NEW "Export" drawer link (between Reports and Settings),
+       visible to every logged-in user (role-agnostic in this template,
+       same as "Reports" — each export type scopes itself internally
+       via cls_db.can_view_all_leads()). Task 4 of the APX v0.7 batch.
      v0.12: NEW .stat-card / .stat-card-grid classes for the Sell.do-
        style 2-column card theme on all 3 dashboard tabs. .card and
-       every other class untouched. -->
+       every other class untouched.
+     v0.11: NEW impersonation banner (shown when inject_current_user()'s
+       `impersonator` is set), sticky above the appbar via :has().
+     v0.10: NEW "Reminders" drawer link (between Leads and Settings)
+       with a pending-count badge, fed by inject_current_user()'s new
+       pending_reminder_count. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -471,6 +475,7 @@
     {% endif %}
   </a>
   <a href="{{ url_for('reports_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['reports_home', 'report_view'] }}">Reports</a>
+  <a href="{{ url_for('export_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['export_home', 'export_leads_view', 'export_site_visits_view', 'export_activity_view'] }}">Export</a>
   {% if current_user.role == 'admin' %}
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   {% endif %}
