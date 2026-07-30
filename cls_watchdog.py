@@ -2,11 +2,37 @@
 =============================================================
 cls_watchdog.py  —  CLS Health Monitor & Alert System
 =============================================================
-Version : 2.5
+Version : 2.6
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.6  (July 2026) — Stale-count bug fix + Job D completion flag:
+  FIXED   — extract_run_count() was scanning the whole 100-line log tail
+              for its count pattern with no awareness of run boundaries.
+              On a run with ZERO activity (no count line printed), the
+              reversed scan kept walking backwards and matched an OLDER
+              run's count line still sitting in the tail — reporting a
+              stale number as if it were this cycle's. Confirmed 29 Jul
+              2026: cls_capi_log.txt showed "No stage changes to fire
+              this run" (i.e. 0 fired) on three consecutive hourly runs
+              (15:25, 16:25, 17:25), but cls_watchdog_log.txt reported
+              "24 events fired this round" — and "5 min ago" — on all
+              three. Fixed by adding start_marker to extract_run_count():
+              each job's own "...— START" log line now scopes the scan to
+              ONLY that run's lines, so a zero-activity run correctly
+              falls through to zero_indicator instead of an older match.
+              Applied to all four jobs (A, B, C, D) as a defense-in-depth
+              measure, not just Job C where it was caught.
+  ADDED   — Job D (Email Drip) now has its own completion flag check
+              ("email_drip", set at cls_email_drip.py line 894) and its
+              own per-run count ("N emails sent this round"), so the
+              Completion Flags section reports all four jobs (A, B, C, D)
+              instead of three. Previously Job D only appeared in the
+              separate Log File Scan section, never in Completion Flags.
+              Uses the same FLAG_MAX_AGE_MIN (180 min) as A/B/C — revisit
+              if Job D's actual cadence turns out to differ meaningfully.
+
 v2.5  (July 2026) — CLS1/CLS2 database split support. ADDITIONS ONLY.
   check_database_accessible() now checks BOTH C:\\CLS\\CLS1.db and
   C:\\CLS\\CLS2.db exist and are non-empty (lightweight file-existence
@@ -95,7 +121,7 @@ healthy runs, instant alerts when anything is wrong. Runs every
 
 WHAT IT CHECKS
 --------------
-  1. Completion flags — did Jobs A, B, C set their flag within the
+  1. Completion flags — did Jobs A, B, C, D set their flag within the
      expected window? Stale flag = job failed silently.
   2. ERROR lines in today's log files — scans the last 100 lines
      of each job's log for [ERROR] entries written today.
@@ -212,6 +238,7 @@ JOB_FLAGS = {
     "Job A (Meta Fetcher)": "meta_fetch",
     "Job B (Sell.do Sync)": "selldo_sync",
     "Job C (CAPI Firer)"  : "capi_fire",   # flag set at line 568 of cls_capi_firer.py
+    "Job D (Email Drip)"  : "email_drip",  # flag set at line 894 of cls_email_drip.py
 }
 
 # How old (in minutes) a flag is allowed to be before we alert.
@@ -369,17 +396,36 @@ def send_brevo_alert(env, report_msg):
 # LOG COUNT HELPERS  (v2.3)
 # ─────────────────────────────────────────────────────────────
 
-def extract_run_count(log_path, pattern, zero_indicator=None):
+def extract_run_count(log_path, pattern, zero_indicator=None, start_marker=None):
     """
     Scan the last LOG_TAIL_LINES of a log file and return the integer
-    from the LAST line that matches `pattern` (capture group 1).
+    from the LAST line that matches `pattern` (capture group 1), scoped
+    to the MOST RECENT RUN ONLY (see start_marker below).
 
     This gives the count from the most recent job run — exactly what
     we want for the per-cycle Completion Flags line.
 
     zero_indicator : if the main pattern is not found but this string
-                     appears anywhere in the tail, return 0. Used for
-                     Job C's "No stage changes to fire this run" case.
+                     appears anywhere in the current run's lines, return 0.
+                     Used for Job C's "No stage changes to fire this run" case.
+
+    start_marker   : the job's own "...— START" log line (e.g.
+                     "CLS JOB C — CAPI Firer — START"). When given, the
+                     scan is restricted to lines AFTER the LAST occurrence
+                     of this marker in the tail — i.e. only the most recent
+                     run's own output.
+
+                     BUG THIS FIXES (found 29 Jul 2026): without this,
+                     a run that produced zero activity never prints the
+                     count pattern at all — so the reversed scan kept
+                     walking backwards past the current run's lines and
+                     matched an OLDER run's "Marked 24 leads as fired"
+                     line still sitting in the 100-line tail, silently
+                     reporting a stale count as if it were fresh. Job C's
+                     log showed "24 events fired" on three consecutive
+                     hourly runs that had each genuinely fired zero. Always
+                     pass start_marker for any log whose job can have a
+                     zero-activity run.
 
     Returns an int when found, or None if the job hasn't run yet /
     log doesn't exist / neither pattern matched.
@@ -390,7 +436,20 @@ def extract_run_count(log_path, pattern, zero_indicator=None):
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         tail = lines[-LOG_TAIL_LINES:]
-        # Scan reversed — want the most recent match
+
+        if start_marker:
+            last_start_idx = None
+            for i, line in enumerate(tail):
+                if start_marker in line:
+                    last_start_idx = i
+            if last_start_idx is not None:
+                tail = tail[last_start_idx:]
+            # If the marker isn't found in the tail at all, fall through
+            # and scan the full tail as before (better than returning
+            # nothing just because the run window was longer than
+            # LOG_TAIL_LINES).
+
+        # Scan reversed — want the most recent match within the run window
         for line in reversed(tail):
             m = re.search(pattern, line)
             if m:
@@ -607,6 +666,7 @@ def compose_cycle_report(flag_results, log_results, pending_count, has_problems,
         "Job A (Meta Fetcher)": "new leads fetched",
         "Job B (Sell.do Sync)": "stage changes",
         "Job C (CAPI Firer)"  : "events fired",
+        "Job D (Email Drip)"  : "emails sent",
     }
 
     # Flag results per job — with optional per-cycle count appended
@@ -770,21 +830,30 @@ def run(force_alert=False):
         "Job A (Meta Fetcher)": extract_run_count(
             JOB_LOG_FILES["Job A (Meta Fetcher)"],
             r"TOTAL: \d+ pulled, (\d+) upserted",
+            start_marker="CLS JOB A — Meta Leads Fetcher — START",
         ),
         "Job B (Sell.do Sync)": extract_run_count(
             JOB_LOG_FILES["Job B (Sell.do Sync)"],
             r"Stage changes detected this run: (\d+)",
+            start_marker="CLS JOB B — Sell.do -> CLS Sync — START",
         ),
         "Job C (CAPI Firer)": extract_run_count(
             JOB_LOG_FILES["Job C (CAPI Firer)"],
             r"Marked (\d+) leads as fired",
             zero_indicator="No stage changes to fire this run",
+            start_marker="CLS JOB C — CAPI Firer — START",
+        ),
+        "Job D (Email Drip)": extract_run_count(
+            JOB_LOG_FILES["Job D (Email Drip)"],
+            r"TOTAL: (\d+) sent, \d+ failed",
+            start_marker="CLS JOB D — Email Drip — START",
         ),
     }
     log(f"Counts this cycle — "
         f"A:{flag_counts['Job A (Meta Fetcher)']} "
         f"B:{flag_counts['Job B (Sell.do Sync)']} "
-        f"C:{flag_counts['Job C (CAPI Firer)']}")
+        f"C:{flag_counts['Job C (CAPI Firer)']} "
+        f"D:{flag_counts['Job D (Email Drip)']}")
 
     # ── Check 3: Log files — collect per-job results ──
     log("--- Check 3: Log files for errors ---")
