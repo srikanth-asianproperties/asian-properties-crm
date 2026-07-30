@@ -1,0 +1,284 @@
+{# dashboard_booking_summary.html (v1, 2026-07-29) — "Leads to Booking
+   Summary" top tab (see _dashboard_view_tabbar.html), reached via
+   app.py's dashboard_booking_summary() route. READ-ONLY report page —
+   no writes to leads/activity_log/site_visits/follow_ups anywhere here.
+
+   Layout mirrors the two Sell.do mobile screenshots Srikanth attached:
+   filter bar (Project / Source / Sales Person / Date range) -> 4 Quick
+   Summary cards -> 3 sub-tabs (Leads / Site Visits / Bookings), each
+   with several "label -> count" breakdown tables. Sub-tabs are a plain
+   client-side JS show/hide (all 3 panels render server-side on one
+   request; simplest option for a small-team app, no partial-fetch
+   plumbing needed) — "Leads" shown first by default, matching the
+   screenshots.
+
+   Data definitions (all period-bound: date_from/date_to + Project/
+   Source/Sales Person filters) live entirely in cls_db.py v2.31's new
+   BOOKING SUMMARY functions — see that section's docstrings for the
+   full reasoning behind each definition, especially:
+     - "Value (INR)" ships as "—" (Decision 1, deferred — no booking_
+       value column exists yet).
+     - "Bookings" is an EVENT count (Decision 3) — stage_change ->
+       Booked transitions in range, not a live current_stage='Booked'
+       snapshot.
+     - Site Visit status mapped to our 4-value enum (Decision 4) — no
+       "Pending"/"Dropped" rows.
+     - "Lead By Project"/"Lead By Source" (Decision 2 relabel — ours are
+       single-value columns, not Sell.do's multi-select). #}
+{% extends "base.html" %}
+{% block title %}Leads to Booking Summary{% endblock %}
+
+{% block content %}
+<style>
+  .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .report-table th, .report-table td {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+    font-size: 13px;
+  }
+  .report-table th { color: var(--ink-soft); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .report-table tbody tr:hover { background: var(--paper); }
+  .report-table-wrap { overflow-x: auto; }
+
+  .bks-filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .bks-filter-row select, .bks-filter-row input[type="date"] {
+    height: 36px; font-size: 13px; padding: 4px 8px; flex: 1; min-width: 130px;
+  }
+  .bks-locked-field {
+    height: 36px; display: flex; align-items: center; padding: 4px 10px;
+    font-size: 13px; color: var(--ink-soft); background: var(--paper);
+    border: 1px solid var(--line); border-radius: 6px; flex: 1; min-width: 130px;
+  }
+
+  .bks-subtabbar { display: flex; gap: 6px; margin-top: 20px; }
+  .bks-subtab {
+    flex: 1; text-align: center; padding: 9px 6px; font-size: 13px; font-weight: 600;
+    color: var(--ink-soft); background: var(--paper); border: 1px solid var(--line);
+    border-radius: 8px; cursor: pointer;
+  }
+  .bks-subtab.active { color: #fff; background: var(--blue); border-color: var(--blue); }
+  .bks-subpanel { display: none; }
+  .bks-subpanel.active { display: block; }
+
+  .bks-breakdown-card {
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    margin-top: 14px; background: var(--card);
+  }
+  .bks-breakdown-card h4 { margin: 0 0 4px; font-size: 14px; }
+  .bks-bar-wrap { display: flex; align-items: center; gap: 8px; }
+  .bks-bar-track {
+    flex: 1; max-width: 160px; height: 10px; border-radius: 4px; overflow: hidden;
+    background: var(--paper);
+  }
+  .bks-bar-fill { height: 100%; background: var(--blue); }
+</style>
+
+{% include "_dashboard_view_tabbar.html" %}
+
+{# ── FILTER BAR ── #}
+<form method="get" action="{{ url_for('dashboard_booking_summary') }}" id="bksFilterForm" style="margin-top:4px;">
+  <div class="bks-filter-row">
+    <select name="project" onchange="this.form.submit()">
+      <option value="">All Projects</option>
+      {% for p in project_options %}
+      <option value="{{ p }}" {% if filters.project == p %}selected{% endif %}>{{ p }}</option>
+      {% endfor %}
+    </select>
+
+    <select name="source" onchange="this.form.submit()">
+      <option value="">All Sources</option>
+      {% for s in source_options %}
+      <option value="{{ s }}" {% if filters.source == s %}selected{% endif %}>{{ source_labels.get(s, s) }}</option>
+      {% endfor %}
+    </select>
+
+    {% if company_wide %}
+    <select name="owner" onchange="this.form.submit()">
+      <option value="">All Sales People</option>
+      {% for o in owner_options %}
+      <option value="{{ o }}" {% if filters.owner == o %}selected{% endif %}>{{ o }}</option>
+      {% endfor %}
+    </select>
+    {% else %}
+    <div class="bks-locked-field">{{ filters.owner or 'Your leads' }}</div>
+    {% endif %}
+  </div>
+
+  <div class="bks-filter-row">
+    <select name="preset" id="bksDatePresetSelect" onchange="onBksDatePresetChange(this)">
+      {% for key in date_preset_order %}
+      <option value="{{ key }}" {% if filters.date_preset == key %}selected{% endif %}>{{ date_preset_labels[key] }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="bks-filter-row" id="bksCustomDateFields" style="{% if filters.date_preset != 'custom' %}display:none;{% endif %}">
+    <input type="date" name="from" value="{{ filters.date_from }}" aria-label="From date">
+    <input type="date" name="to" value="{{ filters.date_to }}" aria-label="To date">
+    <button type="submit" class="btn" style="flex:0 0 auto;">Apply</button>
+  </div>
+</form>
+
+<p style="font-size:12px; color:var(--ink-soft); margin-top:8px;">
+  {% if filters.date_from and filters.date_to %}
+  Created At: {{ filters.date_from }}, 12:00 AM to {{ filters.date_to }}, 11:59 PM
+  {% else %}
+  Created At: All time (no date filter)
+  {% endif %}
+</p>
+
+{# ── QUICK SUMMARY CARDS ── #}
+<h3 style="margin:18px 0 0;">Quick Summary</h3>
+<div class="stat-card-grid">
+  <div class="stat-card">
+    <div class="stat-card-header">Total Leads</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-ink">{{ totals.total_leads }}</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card-header">Site Visits</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-blue">{{ totals.site_visits }}</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card-header">Bookings</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-green">{{ totals.bookings }}</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card-header">Value (INR)</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-gray" title="Not tracked yet">&mdash;</div>
+      <div class="stat-card-caption">Not tracked yet</div>
+    </div>
+  </div>
+</div>
+
+{# ── SUB-TABS ── #}
+<div class="bks-subtabbar no-print">
+  <div class="bks-subtab active" data-bkspanel="leads" onclick="showBksPanel('leads')">Leads</div>
+  <div class="bks-subtab" data-bkspanel="site_visits" onclick="showBksPanel('site_visits')">Site Visits</div>
+  <div class="bks-subtab" data-bkspanel="bookings" onclick="showBksPanel('bookings')">Bookings</div>
+</div>
+
+{% macro breakdown_table(rows, col1='Category', col2='Count', label_map=None) %}
+  {% set counts = rows|map(attribute='count')|list %}
+  {% set max_c = counts|max if counts else 0 %}
+  <div class="report-table-wrap">
+  <table class="report-table">
+    <thead><tr><th>{{ col1 }}</th><th>{{ col2 }}</th></tr></thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td>{{ label_map.get(row.label, row.label) if label_map else row.label }}</td>
+        <td>
+          <div class="bks-bar-wrap">
+            <div class="bks-bar-track"><div class="bks-bar-fill" style="width:{{ ((row.count / max_c * 100) if max_c else 0)|round(0, 'floor')|int }}%;"></div></div>
+            <span style="font-weight:700;">{{ row.count }}</span>
+          </div>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="2" style="color:var(--ink-soft);">No data for this range.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% endmacro %}
+
+{# ── LEADS PANEL ── #}
+<div class="bks-subpanel active" data-bkspanel="leads">
+  <div class="bks-breakdown-card">
+    <h4>Lead By Sales</h4>
+    {{ breakdown_table(leads_by_owner, col1='Sales Person') }}
+  </div>
+  <div class="bks-breakdown-card">
+    <h4>Lead By Stage</h4>
+    {{ breakdown_table(stage_counts, col1='Lead Stage') }}
+  </div>
+  <div class="bks-breakdown-card">
+    <h4>Lead By Project</h4>
+    {{ breakdown_table(leads_by_project, col1='Project') }}
+  </div>
+  <div class="bks-breakdown-card">
+    <h4>Lead By Source</h4>
+    {{ breakdown_table(leads_by_source, col1='Source', label_map=source_labels) }}
+  </div>
+</div>
+
+{# ── SITE VISITS PANEL ── #}
+<div class="bks-subpanel" data-bkspanel="site_visits">
+  <div class="bks-breakdown-card">
+    <h4>Site Visits By Owner</h4>
+    {{ breakdown_table(visits_by_owner, col1='Sales Person') }}
+  </div>
+  <div class="bks-breakdown-card">
+    <h4>Site Visits By Status</h4>
+    {{ breakdown_table(visits_by_status, col1='Status') }}
+  </div>
+  <div class="bks-breakdown-card">
+    <h4>Site Visits By Project</h4>
+    {{ breakdown_table(visits_by_project, col1='Project') }}
+  </div>
+  <div class="bks-breakdown-card">
+    <h4>Site Visits By Source</h4>
+    {{ breakdown_table(visits_by_source, col1='Source', label_map=source_labels) }}
+  </div>
+</div>
+
+{# ── BOOKINGS PANEL ── #}
+<div class="bks-subpanel" data-bkspanel="bookings">
+  <div class="bks-breakdown-card">
+    <h4>Bookings By Owner</h4>
+    {{ breakdown_table(bookings_by_owner, col1='Sales Person') }}
+  </div>
+  <div class="bks-breakdown-card">
+    <h4>Bookings By Project</h4>
+    {{ breakdown_table(bookings_by_project, col1='Project') }}
+  </div>
+  <div class="bks-breakdown-card">
+    <h4>Booked Leads</h4>
+    <div class="report-table-wrap">
+    <table class="report-table">
+      <thead><tr><th>Lead #</th><th>Name</th><th>Owner</th><th>Project</th><th>Booked Date</th></tr></thead>
+      <tbody>
+        {% for lead in booked_leads %}
+        <tr>
+          <td>{{ lead.crm_lead_no or '—' }}</td>
+          <td>{{ lead.full_name or '—' }}</td>
+          <td>{{ lead.lead_owner or 'Unassigned' }}</td>
+          <td>{{ lead.project or 'Not Available' }}</td>
+          <td>{{ lead.booked_at }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" style="color:var(--ink-soft);">No bookings in this range.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function onBksDatePresetChange(sel){
+  var customBox = document.getElementById('bksCustomDateFields');
+  if (sel.value === 'custom') {
+    customBox.style.display = 'flex';
+    return;
+  }
+  customBox.style.display = 'none';
+  sel.form.submit();
+}
+function showBksPanel(name){
+  document.querySelectorAll('.bks-subpanel').forEach(function(p){
+    p.classList.toggle('active', p.dataset.bkspanel === name);
+  });
+  document.querySelectorAll('.bks-subtab').forEach(function(t){
+    t.classList.toggle('active', t.dataset.bkspanel === name);
+  });
+}
+</script>
+
+{% include "_dashboard_tabbar.html" %}
+{% endblock %}

@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.17
+Version : 0.20
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,170 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.20 (2026-07-29) — Dashboard owner-scoping fix + "Leads to Booking
+  Summary" tab. Requires cls_db.py v2.31.
+
+  Part A bug fix — dashboard()'s 4 stat cards (New Enquiries, Reengaged,
+  Missed Followups, Missed Site Visits) were showing company-wide
+  numbers to every login, salesperson included; only dashboard_today()
+  and dashboard_pipeline() were already correctly owner-scoped. Root
+  cause: cls_db.get_new_enquiries_count()/get_reengaged_count()/
+  get_due_by_kind() had no owner param at all (see cls_db.py v2.31).
+  Fixed by computing scope_owner the SAME way dashboard_today() already
+  does (company_wide = cls_db.can_view_all_leads(user["role"]);
+  scope_owner = None if company_wide else user["owner_match_name"]) and
+  passing owner=scope_owner into all 4 calls. Uses owner_match_name, NOT
+  email — lead_owner is matched against owner_match_name everywhere else
+  in this file (leads_list(), dashboard_today() is the one exception,
+  because activity_log.actor stores email, a different column).
+
+  Also fixed the 3 drill-down routes behind those cards — due_list(),
+  reengaged_list(), new_enquiries_list() — which showed ALL leads to
+  ALL logins regardless of the (now-fixed) card count above them. Same
+  scope_owner gate applied. This closes the same class of visibility
+  gap /leads and /leads/<id> were already closed against in v0.1.4;
+  these 3 routes were missed at the time.
+
+  pending_reminder_count verified unchanged — inject_current_user()
+  already scopes it correctly via get_pending_reminder_count(owner_
+  match_name) when role=='salesperson'.
+
+  Part B/C — NEW top tab bar on /dashboard ("Stats Overview" / "Leads to
+  Booking Summary"), replacing the old plain <h2>Stats</h2>. Existing
+  bottom tab bar (Stats/Today/Pipeline, _dashboard_tabbar.html)
+  UNCHANGED. NEW route dashboard_booking_summary() (GET /dashboard/
+  booking-summary) — read-only report page, filter bar (Project/Source/
+  Sales Person/Date range) + Quick Summary cards + Leads/Site Visits/
+  Bookings sub-tabs, built on the new cls_db.py v2.31 period-scoped
+  query functions. Sales Person filter is force-locked to the logged-in
+  salesperson's own owner_match_name (dropdown hidden), same enforcement
+  as /leads — cls_db is the only place that can be trusted to apply
+  this, so the route computes scope_owner the same way as Part A above
+  and a salesperson's ?owner= query param is ignored, never trusted.
+  Date range reuses cls_reports.REPORT_DATE_PRESETS/ORDER/LABELS (11-
+  option quick-select, same Mon-Sun convention as cls_reports.py),
+  resolved locally in _resolve_booking_summary_date_range() rather than
+  cls_reports.resolve_date_range() (that one is keyed to a report_id in
+  REPORTS_BY_ID — this page isn't one of the 12 reports). Default range:
+  this_month.
+
+  "Value (INR)" ships as "—" (Decision 1, deferred) — no schema change
+  this round; leads.booking_value does not exist yet. "Bookings" is
+  EVENT-based (Decision 3): activity_log rows where activity_type=
+  'stage_change' AND new_value='Booked', within the date range — not
+  current_stage='Booked' — consistent with every other card here being
+  period-bound by created/scheduled/event date, and avoiding double/
+  zero-counting a lead that unwinds and rebooks. Site-visit status
+  breakdown (Decision 4) maps our 4-value status enum (scheduled/
+  conducted/cancelled/no_show) to Conducted/Cancelled/Didn't Visit/
+  Scheduled/Missed — no "Pending"/"Dropped" rows (we have no equivalent
+  state). Project/Source breakdowns (Decision 2) are labeled "Lead By
+  Project"/"Lead By Source" (not "Interested Project(s)/Source(s)") —
+  ours are single-value columns, not Sell.do's multi-select.
+
+v0.19 (2026-07) — Bulk Reassign Filter UX Rework, same treatment as
+  v0.18's Export rework. NO cls_db.py change — confirmed the stages=/
+  owners= list params get_leads_matching() needs already existed from
+  the Export session; this is pure reuse.
+
+  Verified live state before editing, per standing rule: Campaign was
+  ALREADY a checkbox multi-select (approved in Task 3's original
+  design). Project was a radio (unchanged — not asked to convert).
+  Stage and the FILTER-by-owner field ("Current Owner", inside the
+  filter accordion) were both radios. The REASSIGN-TO-OWNER field
+  ("Reassign matched leads to", a plain <select name="to_owner"> in
+  its own card OUTSIDE the accordion) is unambiguously a different
+  field — confirmed, not touched, still single-select (you cannot bulk-
+  reassign to multiple destinations in one job).
+
+  Task 1 — search box added above Campaign, Project, and (now-checkbox)
+  Current Owner in bulk_reassign_filter.html. Reuses the EXACT
+  filterOptRows() Export already had rather than a second copy — pulled
+  up into base.html v0.15 (loaded on every page) and removed from
+  export_leads.html/export_site_visits.html's own <script> blocks.
+
+  Task 2 — Pipeline Stage and Current Owner (the FILTER) changed from
+  radio to checkbox: bulk_reassign_filter.html now submits stages=/
+  owners= (lists) instead of stage=/owner= (single). _bulk_reassign_
+  matched() updated to pass stages=/owners= to cls_db.get_leads_
+  matching(). _parse_bulk_filters() already returned both the old
+  single-value and new list-style keys (from the Export session) — no
+  change needed there, confirmed it still serves both Bulk Reassign and
+  Export correctly (Export continues submitting stages=/owners=, Bulk
+  Reassign now does too; neither ever submits the other's now-unused
+  single-value stage=/owner=, but both keys stay in the dict for any
+  future caller).
+
+  Task 3 — _bulk_filters_summary() reworked to join multi-select
+  categories with " | " (was ", ", which would run "Stage: A, B" and
+  "Campaign: C, D" together unreadably once both can hold multiple
+  values) and gained a to_owner param so it FIXES a real gap: the
+  destination owner was never actually appended to the stored string
+  before (despite this function's own original docstring describing
+  that format) — bulk_jobs.to_owner is a separate column that
+  settings_bulk_jobs.html never displays, so the destination was
+  silently invisible in the history table until now.
+
+  Task 4 — no route logic change needed: settings_bulk_reassign_preview()
+  and _commit() already call the same _bulk_reassign_matched(f), so
+  both automatically reflect Task 2's stages=/owners= once that
+  function was updated. bulk_reassign_preview.html's confirm form
+  updated to resubmit stages=/owners= as per-value hidden fields (same
+  loop pattern as campaigns=) instead of single stage=/owner= fields —
+  to_owner's single hidden field is untouched.
+
+v0.18 (2026-07) — Export rework. Requires cls_db.py v2.30. SCOPE
+  REVERSAL, confirmed explicitly by Srikanth: Bulk Export was built
+  (v0.17) role-agnostic/self-scoped like Reports — now admin-only,
+  nested under Settings. Salespeople lose access to Export entirely;
+  intentional, not a regression.
+
+  Task A — moved from /export/... + export_* function names to
+  /settings/export/... + settings_export_* (my call, for consistency
+  with every other admin-only Settings feature — settings_bulk_reassign,
+  settings_projects, settings_campaign_routing, settings_users, all
+  under the settings_ prefix; not explicitly specified, flagged). All
+  10 routes (hub + 3 types x view/excel/email) gained @admin_required
+  (same decorator as Bulk Reassign — narrower than can_view_all_leads()/
+  WRITE_ANYWHERE_ROLES, which are a different, broader gate). Dropped
+  the can_view_all_leads()-based "force to own leads" branching from
+  every report-builder helper — no non-admin caller left to scope for.
+  base.html's standalone "Export" drawer link REMOVED; settings.html
+  gained an "Export" tile instead.
+
+  Task B — Campaign, Project (Export Leads only — the only screen with
+  those fields) and Owner (Leads + Site Visits — Activity has no Owner
+  filter) checkbox/radio lists gained a plain-text search box above
+  them. Vanilla JS (filterOptRows()): filters visible .opt-row labels
+  by textContent match, live, per-section-scoped so multiple search
+  boxes on one page never cross-filter each other. Never touches
+  checked/selected state — search only changes visibility. No new JS
+  library.
+
+  Task C — Stage and Owner (Export Leads + Site Visits — Activity has
+  neither field, untouched) changed from radio (single-value) to
+  checkbox (multi-select), reading NEW filters.stages/filters.owners
+  (lists) instead of filters.stage/filters.owner. Backed by cls_db.py
+  v2.30's new stages=/owners= list params on _build_lead_filter_where()/
+  get_leads_matching()/get_site_visits_conducted() — purely additive,
+  Export-only; Bulk Reassign's own filter form is untouched (still
+  single-value stage/owner radios). _parse_bulk_filters() (shared by
+  both features) gained stages/owners keys alongside the existing
+  stage/owner keys.
+
+  Task D — each export type is now TWO GET routes sharing ONE template
+  via a new show_results flag: _view (filter form only, NO query run,
+  no row count) and _results (reached by submitting that form — the
+  report is computed, Excel/PDF/Email actions appear). Mirrors Bulk
+  Reassign's filter -> preview split: nothing renders until an explicit
+  Apply. Export mechanics (Excel/PDF/email) themselves are unchanged —
+  only when they become visible/reachable changed.
+
+  FLAGGED, not built: export_activity.html has no Campaign/Project/
+  Stage/Owner filter today (just date range + an optional single
+  cls_id) — Tasks B and C have nothing to touch there. Not adding those
+  fields since it wasn't asked for.
+
 v0.17 (July 2026) — APX v0.7 batch: Newest-First Default (Task 1) +
   Complete Activity History (Task 2) + Bulk Reassign (Task 3) + Bulk
   Export (Task 4) + Lead Age (Task 5). Requires cls_db.py v2.28.
@@ -1164,17 +1328,120 @@ def dashboard():
     # SAME route name/URL as before (v0.3) so every existing
     # url_for('dashboard') link elsewhere (due_list.html,
     # reengaged_list.html, "Back to Dashboard" buttons) needs no change.
-    new_enquiries_count = cls_db.get_new_enquiries_count()  # v1.9 — stage-based now
-    reengaged_count = cls_db.get_reengaged_count(days=7)
-    follow_up_due_count = len(cls_db.get_due_by_kind("follow_up"))
-    site_visit_due_count = len(cls_db.get_due_by_kind("site_visit"))
+    #
+    # v0.20 — owner-scoping bug fix: these 4 cards previously showed
+    # company-wide numbers to every login. Same pattern dashboard_today()
+    # already used correctly (see that route's docstring for why
+    # owner_match_name, not email, is the right scoping key here).
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.can_view_all_leads(user["role"])
+    scope_owner = None if company_wide else user.get("owner_match_name")
+    new_enquiries_count = cls_db.get_new_enquiries_count(owner=scope_owner)  # v1.9 — stage-based now
+    reengaged_count = cls_db.get_reengaged_count(days=7, owner=scope_owner)
+    follow_up_due_count = len(cls_db.get_due_by_kind("follow_up", owner=scope_owner))
+    site_visit_due_count = len(cls_db.get_due_by_kind("site_visit", owner=scope_owner))
     return render_template(
         "dashboard.html",
         active_tab="stats",
+        active_view="stats_overview",
         new_enquiries_count=new_enquiries_count,
         reengaged_count=reengaged_count,
         follow_up_due_count=follow_up_due_count,
         site_visit_due_count=site_visit_due_count,
+    )
+
+
+def _resolve_booking_summary_date_range(args):
+    """
+    (v0.20) Turns the Booking Summary page's ?preset=&from=&to= into a
+    (date_from, date_to, active_preset) triple. Mirrors cls_reports.
+    resolve_date_range()'s logic but decoupled from a report_id (this
+    page isn't one of the 12 REPORTS_BY_ID reports, so that function
+    can't be reused directly). Reuses cls_reports.REPORT_DATE_PRESETS
+    (the same 11-option quick-select set as leads_filter.html /
+    _report_date_picker.html) rather than duplicating the date-math.
+    Falls back to "this_month" when nothing usable is in the query
+    string, matching most reports' own date_default.
+    """
+    preset_arg = args.get("preset")
+    if preset_arg and preset_arg != "custom" and preset_arg in cls_reports.REPORT_DATE_PRESETS:
+        date_from, date_to = cls_reports.REPORT_DATE_PRESETS[preset_arg]()
+        return date_from, date_to, preset_arg
+    from_arg = args.get("from")
+    to_arg = args.get("to")
+    date_re = r"^\d{4}-\d{2}-\d{2}$"
+    if (from_arg and to_arg and re.match(date_re, from_arg)
+            and re.match(date_re, to_arg) and from_arg <= to_arg):
+        return from_arg, to_arg, "custom"
+    date_from, date_to = cls_reports.REPORT_DATE_PRESETS["this_month"]()
+    return date_from, date_to, "this_month"
+
+
+@app.route("/dashboard/booking-summary")
+@login_required
+def dashboard_booking_summary():
+    """
+    v0.20 — Part B/C: "Leads to Booking Summary" top tab on the Stats
+    dashboard (see _dashboard_view_tabbar.html). READ-ONLY report page —
+    nothing here writes to leads/activity_log/site_visits/follow_ups.
+
+    Filter bar: Project, Source, Sales Person, Date range. Sales Person
+    is force-locked to the logged-in salesperson's own owner_match_name
+    (dropdown hidden in the template) — same enforcement, same fails-
+    closed posture, as leads_list()'s owner gate: a salesperson's
+    ?owner= query param is parsed but never trusted for non-oversight
+    roles. Admin/manager get the full dropdown + "All" (owner=None).
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.can_view_all_leads(user["role"])
+
+    if company_wide:
+        owner = request.args.get("owner") or None
+        owner_options = cls_db.get_distinct_owners()
+    else:
+        owner = user.get("owner_match_name") or None
+        owner_options = []
+
+    project = request.args.get("project") or None
+    source = request.args.get("source") or None
+    date_from, date_to, active_preset = _resolve_booking_summary_date_range(request.args)
+
+    filters = {
+        "project": project or "", "source": source or "", "owner": owner or "",
+        "date_preset": active_preset, "date_from": date_from, "date_to": date_to,
+    }
+
+    return render_template(
+        "dashboard_booking_summary.html",
+        active_tab="stats",
+        active_view="booking_summary",
+        filters=filters,
+        project_options=cls_db.get_all_bucket_names(),
+        source_options=cls_db.SOURCE_OPTIONS,
+        source_labels=cls_db.SOURCE_DISPLAY_LABELS,
+        owner_options=owner_options,
+        company_wide=company_wide,
+        date_preset_order=cls_reports.REPORT_DATE_PRESET_ORDER,
+        date_preset_labels=cls_reports.REPORT_DATE_PRESET_LABELS,
+        totals=cls_db.get_booking_summary_totals(date_from, date_to, project, source, owner),
+        # v0.20 — stage_counts/visits_by_status come back from cls_db as
+        # dicts (useful for any future non-template caller, same shape
+        # as get_stage_snapshot_counts()); reshaped to label/count lists
+        # here so dashboard_booking_summary.html can render every
+        # breakdown table through one shared Jinja macro.
+        stage_counts=[{"label": s, "count": c} for s, c in
+                      cls_db.get_stage_counts_for_period(date_from, date_to, project, source, owner).items()],
+        leads_by_owner=cls_db.get_leads_by_owner_for_period(date_from, date_to, project, source, owner),
+        leads_by_project=cls_db.get_leads_by_project_for_period(date_from, date_to, project, source, owner),
+        leads_by_source=cls_db.get_leads_by_source_for_period(date_from, date_to, project, source, owner),
+        visits_by_owner=cls_db.get_site_visits_by_owner_for_period(date_from, date_to, project, source, owner),
+        visits_by_status=[{"label": s, "count": c} for s, c in
+                          cls_db.get_site_visits_by_status_for_period(date_from, date_to, project, source, owner).items()],
+        visits_by_project=cls_db.get_site_visits_by_project_for_period(date_from, date_to, project, source, owner),
+        visits_by_source=cls_db.get_site_visits_by_source_for_period(date_from, date_to, project, source, owner),
+        bookings_by_owner=cls_db.get_bookings_by_owner_for_period(date_from, date_to, project, source, owner),
+        bookings_by_project=cls_db.get_bookings_by_project_for_period(date_from, date_to, project, source, owner),
+        booked_leads=cls_db.get_booked_leads_for_period(date_from, date_to, project, source, owner),
     )
 
 
@@ -1231,10 +1498,17 @@ def due_list(kind):
     """
     v0.3 — filtered list behind the dashboard's two split due-today
     cards. kind must be 'site_visit' or 'follow_up'.
+
+    v0.20 — owner-scoping bug fix: previously showed ALL leads to every
+    login regardless of who was signed in, even after the dashboard
+    CARD count above it was scoped. Same scope_owner gate as dashboard().
     """
     if kind not in ("site_visit", "follow_up"):
         abort(404)
-    items = cls_db.get_due_by_kind(kind)
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.can_view_all_leads(user["role"])
+    scope_owner = None if company_wide else user.get("owner_match_name")
+    items = cls_db.get_due_by_kind(kind, owner=scope_owner)
     return render_template("due_list.html", items=items, kind=kind)
 
 
@@ -1245,8 +1519,13 @@ def reengaged_list():
     v0.3 — filtered list behind the dashboard's Reengaged card. Same
     approximate criteria as the count on the dashboard — labeled as
     such in the template, not hidden.
+
+    v0.20 — owner-scoping bug fix: same scope_owner gate as dashboard().
     """
-    leads = cls_db.get_reengaged_leads(days=7)
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.can_view_all_leads(user["role"])
+    scope_owner = None if company_wide else user.get("owner_match_name")
+    leads = cls_db.get_reengaged_leads(days=7, owner=scope_owner)
     return render_template("reengaged_list.html", leads=leads)
 
 
@@ -1258,8 +1537,13 @@ def new_enquiries_list():
     Enquiries card (cls_db.py v2.11 decision 1). Same criteria as
     get_new_enquiries_count(): current_stage='Incoming' AND zero
     activity_log rows — genuinely untouched since arrival.
+
+    v0.20 — owner-scoping bug fix: same scope_owner gate as dashboard().
     """
-    leads = cls_db.get_new_enquiries_leads()
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.can_view_all_leads(user["role"])
+    scope_owner = None if company_wide else user.get("owner_match_name")
+    leads = cls_db.get_new_enquiries_leads(owner=scope_owner)
     return render_template("new_enquiries_list.html", leads=leads)
 
 
@@ -1345,13 +1629,33 @@ def report_export_excel(report_id):
 
 
 # ─────────────────────────────────────────────────────────────
-# BULK EXPORT  (v0.17, Task 4) — visible to every logged-in user,
-# scoped internally exactly like Reports (cls_db.can_view_all_leads):
-# a salesperson exports only their own leads/visits, admin/manager
-# export everything. Three export types, each its own filter screen;
-# all three share one results-table+action-buttons layout (mirrors
-# report_view.html) and the SAME cls_reports.export_to_excel() Excel
-# path Reports already uses — no new export mechanism.
+# SETTINGS > EXPORT  (v0.18, Task 4 reworked) — admin-only, nested
+# under Settings. Was role-agnostic (visible to everyone, self-scoped
+# like Reports) — REVERSED per Srikanth's explicit instruction:
+# salespeople lose access entirely, this is intentional, not a
+# regression. Gated @admin_required, same decorator as Bulk Reassign —
+# deliberately narrower than can_view_all_leads()/WRITE_ANYWHERE_ROLES
+# (a different, broader gate for lead-level read/write access).
+#
+# URL path + function names moved from /export/... + export_* to
+# /settings/export/... + settings_export_* — my call, for consistency
+# with every other admin-only Settings feature (settings_bulk_reassign,
+# settings_projects, settings_campaign_routing, settings_users, ...),
+# all under the settings_ prefix. Not explicitly specified — flagged.
+#
+# Filter -> results split (Task D): each export type is now TWO GET
+# routes sharing ONE template (view vs results, via show_results) —
+# _view renders the filter form only, no query run, no row count;
+# _results (reached by submitting that form) computes and shows the
+# report. Mirrors Bulk Reassign's filter -> preview split: nothing
+# renders until an explicit Apply. Excel/PDF/Email actions live only in
+# the results state, same mechanics as before this rework.
+#
+# Task C (stage/owner checkbox multi-select) is Export-only — the
+# report-builder helpers below now read f["stages"]/f["owners"] (lists)
+# instead of f["stage"]/f["owner"] (single). _parse_bulk_filters() still
+# returns both; Bulk Reassign's own filter form (unchanged) keeps using
+# the single-value keys.
 # ─────────────────────────────────────────────────────────────
 
 LEADS_EXPORT_COLUMNS = [
@@ -1419,85 +1723,87 @@ def _send_export_email(user, report, filename):
         return False, str(e)
 
 
-@app.route("/export")
+@app.route("/settings/export")
 @login_required
-def export_home():
-    user = cls_db.get_user_by_id(session["user_id"])
-    return render_template("export_home.html", is_oversight=cls_db.can_view_all_leads(user["role"]))
+@admin_required
+def settings_export_home():
+    return render_template("export_home.html")
 
 
 # ── Export Leads ──
 
-def _export_leads_rows(f, user):
-    owner = None
-    if cls_db.can_view_all_leads(user["role"]):
-        owner = f["owner"] or None
-    else:
-        owner = user.get("owner_match_name") or None
+def _export_leads_rows(f):
     return cls_db.get_leads_matching(
-        stage=f["stage"] or None, project=f["project"] or None,
+        stages=f["stages"] or None, project=f["project"] or None,
         date_from=f["date_from"] or None, date_to=f["date_to"] or None,
         campaigns=f["campaigns"] or None, source=f["source"] or None,
-        owner=owner,
+        owners=f["owners"] or None,
     )
 
 
-def _export_leads_report(f, user):
+def _export_leads_report(f):
     return {
         "title": "Export Leads", "columns": LEADS_EXPORT_COLUMNS,
-        "rows": _export_leads_rows(f, user),
+        "rows": _export_leads_rows(f),
         "date_from": f["date_from"], "date_to": f["date_to"],
     }
 
 
-@app.route("/export/leads")
-@login_required
-def export_leads_view():
-    user = cls_db.get_user_by_id(session["user_id"])
-    f = _parse_bulk_filters()
-    is_oversight = cls_db.can_view_all_leads(user["role"])
-    return render_template(
-        "export_leads.html", filters=f, report=_export_leads_report(f, user),
-        stages=cls_db.ALL_STAGES, projects=cls_db.get_all_bucket_names(),
+def _export_leads_context(f):
+    return dict(
+        filters=f, stages=cls_db.ALL_STAGES, projects=cls_db.get_all_bucket_names(),
         source_options=cls_db.SOURCE_OPTIONS, campaign_options=cls_db.get_distinct_campaigns(),
-        owner_options=cls_db.get_distinct_owners() if is_oversight else [],
-        is_oversight=is_oversight,
+        owner_options=cls_db.get_distinct_owners(),
         date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
     )
 
 
-@app.route("/export/leads/excel")
+@app.route("/settings/export/leads")
 @login_required
-def export_leads_excel():
-    user = cls_db.get_user_by_id(session["user_id"])
+@admin_required
+def settings_export_leads_view():
+    f = _parse_bulk_filters()
+    return render_template("export_leads.html", show_results=False, report=None, **_export_leads_context(f))
+
+
+@app.route("/settings/export/leads/results")
+@login_required
+@admin_required
+def settings_export_leads_results():
+    f = _parse_bulk_filters()
+    return render_template("export_leads.html", show_results=True, report=_export_leads_report(f), **_export_leads_context(f))
+
+
+@app.route("/settings/export/leads/excel")
+@login_required
+@admin_required
+def settings_export_leads_excel():
     f = _parse_bulk_filters()
     try:
-        buf = cls_reports.export_to_excel(_export_leads_report(f, user))
+        buf = cls_reports.export_to_excel(_export_leads_report(f))
     except RuntimeError as e:
         flash(str(e), "error")
-        return redirect(url_for("export_leads_view", **f))
+        return redirect(url_for("settings_export_leads_results", **f))
     return send_file(buf, as_attachment=True, download_name="export-leads.xlsx",
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
-@app.route("/export/leads/email", methods=["POST"])
+@app.route("/settings/export/leads/email", methods=["POST"])
 @login_required
-def export_leads_email():
+@admin_required
+def settings_export_leads_email():
     user = cls_db.get_user_by_id(session["user_id"])
     f = _parse_bulk_filters()
-    ok, message = _send_export_email(user, _export_leads_report(f, user), "export-leads.xlsx")
+    ok, message = _send_export_email(user, _export_leads_report(f), "export-leads.xlsx")
     flash(message, "success" if ok else "error")
-    return redirect(url_for("export_leads_view", **f))
+    return redirect(url_for("settings_export_leads_results", **f))
 
 
 # ── Export Site Visits Conducted ──
 
-def _export_site_visits_report(f, user):
-    owner = f["owner"] or None
-    if not cls_db.can_view_all_leads(user["role"]):
-        owner = user.get("owner_match_name") or None
+def _export_site_visits_report(f):
     rows = cls_db.get_site_visits_conducted(
-        date_from=f["date_from"] or None, date_to=f["date_to"] or None, owner=owner,
+        date_from=f["date_from"] or None, date_to=f["date_to"] or None, owners=f["owners"] or None,
     )
     return {
         "title": "Export Site Visits Conducted", "columns": SITE_VISITS_EXPORT_COLUMNS,
@@ -1505,53 +1811,64 @@ def _export_site_visits_report(f, user):
     }
 
 
-@app.route("/export/site-visits")
-@login_required
-def export_site_visits_view():
-    user = cls_db.get_user_by_id(session["user_id"])
-    f = _parse_bulk_filters()
-    is_oversight = cls_db.can_view_all_leads(user["role"])
-    return render_template(
-        "export_site_visits.html", filters=f, report=_export_site_visits_report(f, user),
-        owner_options=cls_db.get_distinct_owners() if is_oversight else [],
-        is_oversight=is_oversight,
+def _export_site_visits_context(f):
+    return dict(
+        filters=f, owner_options=cls_db.get_distinct_owners(),
         date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
     )
 
 
-@app.route("/export/site-visits/excel")
+@app.route("/settings/export/site-visits")
 @login_required
-def export_site_visits_excel():
-    user = cls_db.get_user_by_id(session["user_id"])
+@admin_required
+def settings_export_site_visits_view():
+    f = _parse_bulk_filters()
+    return render_template("export_site_visits.html", show_results=False, report=None, **_export_site_visits_context(f))
+
+
+@app.route("/settings/export/site-visits/results")
+@login_required
+@admin_required
+def settings_export_site_visits_results():
+    f = _parse_bulk_filters()
+    return render_template("export_site_visits.html", show_results=True, report=_export_site_visits_report(f), **_export_site_visits_context(f))
+
+
+@app.route("/settings/export/site-visits/excel")
+@login_required
+@admin_required
+def settings_export_site_visits_excel():
     f = _parse_bulk_filters()
     try:
-        buf = cls_reports.export_to_excel(_export_site_visits_report(f, user))
+        buf = cls_reports.export_to_excel(_export_site_visits_report(f))
     except RuntimeError as e:
         flash(str(e), "error")
-        return redirect(url_for("export_site_visits_view", **f))
+        return redirect(url_for("settings_export_site_visits_results", **f))
     return send_file(buf, as_attachment=True, download_name="export-site-visits.xlsx",
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
-@app.route("/export/site-visits/email", methods=["POST"])
+@app.route("/settings/export/site-visits/email", methods=["POST"])
 @login_required
-def export_site_visits_email():
+@admin_required
+def settings_export_site_visits_email():
     user = cls_db.get_user_by_id(session["user_id"])
     f = _parse_bulk_filters()
-    ok, message = _send_export_email(user, _export_site_visits_report(f, user), "export-site-visits.xlsx")
+    ok, message = _send_export_email(user, _export_site_visits_report(f), "export-site-visits.xlsx")
     flash(message, "success" if ok else "error")
-    return redirect(url_for("export_site_visits_view", **f))
+    return redirect(url_for("settings_export_site_visits_results", **f))
 
 
 # ── Export Activity History ──
+# No Task B/C changes here — this screen has no Campaign/Project/Stage/
+# Owner filter today (just date range + an optional single cls_id), so
+# neither task has anything to touch. Flagged rather than silently
+# adding fields that weren't asked for.
 
-def _export_activity_report(f, user, lead_filter_cls_id):
-    owner = None
-    if not cls_db.can_view_all_leads(user["role"]):
-        owner = user.get("owner_match_name") or None
+def _export_activity_report(f, lead_filter_cls_id):
     rows = cls_db.get_activity_log_export(
         date_from=f["date_from"] or None, date_to=f["date_to"] or None,
-        cls_id=lead_filter_cls_id or None, owner=owner,
+        cls_id=lead_filter_cls_id or None,
     )
     return {
         "title": "Export Activity History", "columns": ACTIVITY_EXPORT_COLUMNS,
@@ -1559,44 +1876,57 @@ def _export_activity_report(f, user, lead_filter_cls_id):
     }
 
 
-@app.route("/export/activity")
+@app.route("/settings/export/activity")
 @login_required
-def export_activity_view():
-    user = cls_db.get_user_by_id(session["user_id"])
+@admin_required
+def settings_export_activity_view():
     f = _parse_bulk_filters()
     lead_filter_cls_id = (request.args.get("cls_id") or "").strip()
     return render_template(
-        "export_activity.html", filters=f, cls_id=lead_filter_cls_id,
-        export_args=dict(f, cls_id=lead_filter_cls_id),
-        report=_export_activity_report(f, user, lead_filter_cls_id),
+        "export_activity.html", filters=f, cls_id=lead_filter_cls_id, show_results=False, report=None,
         date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
     )
 
 
-@app.route("/export/activity/excel")
+@app.route("/settings/export/activity/results")
 @login_required
-def export_activity_excel():
-    user = cls_db.get_user_by_id(session["user_id"])
+@admin_required
+def settings_export_activity_results():
+    f = _parse_bulk_filters()
+    lead_filter_cls_id = (request.args.get("cls_id") or "").strip()
+    return render_template(
+        "export_activity.html", filters=f, cls_id=lead_filter_cls_id, show_results=True,
+        export_args=dict(f, cls_id=lead_filter_cls_id),
+        report=_export_activity_report(f, lead_filter_cls_id),
+        date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
+    )
+
+
+@app.route("/settings/export/activity/excel")
+@login_required
+@admin_required
+def settings_export_activity_excel():
     f = _parse_bulk_filters()
     lead_filter_cls_id = (request.args.get("cls_id") or "").strip()
     try:
-        buf = cls_reports.export_to_excel(_export_activity_report(f, user, lead_filter_cls_id))
+        buf = cls_reports.export_to_excel(_export_activity_report(f, lead_filter_cls_id))
     except RuntimeError as e:
         flash(str(e), "error")
-        return redirect(url_for("export_activity_view", **f, cls_id=lead_filter_cls_id))
+        return redirect(url_for("settings_export_activity_results", **f, cls_id=lead_filter_cls_id))
     return send_file(buf, as_attachment=True, download_name="export-activity.xlsx",
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
-@app.route("/export/activity/email", methods=["POST"])
+@app.route("/settings/export/activity/email", methods=["POST"])
 @login_required
-def export_activity_email():
+@admin_required
+def settings_export_activity_email():
     user = cls_db.get_user_by_id(session["user_id"])
     f = _parse_bulk_filters()
     lead_filter_cls_id = (request.form.get("cls_id") or "").strip()
-    ok, message = _send_export_email(user, _export_activity_report(f, user, lead_filter_cls_id), "export-activity.xlsx")
+    ok, message = _send_export_email(user, _export_activity_report(f, lead_filter_cls_id), "export-activity.xlsx")
     flash(message, "success" if ok else "error")
-    return redirect(url_for("export_activity_view", **f, cls_id=lead_filter_cls_id))
+    return redirect(url_for("settings_export_activity_results", **f, cls_id=lead_filter_cls_id))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1812,6 +2142,11 @@ def _parse_bulk_filters():
     DATE_PRESETS dict leads_filter.html already uses (Srikanth's
     approved call: reuse app.py's existing dict rather than pulling in
     cls_reports.py's separate REPORT_DATE_PRESETS copy).
+
+    v0.18 — gained stages/owners (lists, Task C's checkbox multi-select,
+    Export-only). Bulk Reassign's own filter form never submits these
+    (still single-value stage/owner radios) so they're just empty lists
+    for that caller — additive, no existing behavior changed.
     """
     date_preset_param = request.values.get("date_preset") or ""
     date_from = request.values.get("date_from") or ""
@@ -1836,32 +2171,52 @@ def _parse_bulk_filters():
         "stage":       request.values.get("stage") or "",
         "source":      request.values.get("source") or "",
         "owner":       request.values.get("owner") or "",
+        "stages":      request.values.getlist("stages"),
+        "owners":      request.values.getlist("owners"),
     }
 
 
-def _bulk_filters_summary(f):
+def _bulk_filters_summary(f, to_owner):
     """
     v0.17 — builds the short human-readable string stored in
-    bulk_jobs.filters_summary (e.g. "Project: Naishka, Stage: Prospect,
-    Campaign: Camp5") — deliberately plain text, not JSON, so
+    bulk_jobs.filters_summary — deliberately plain text, not JSON, so
     settings_bulk_jobs.html can print it directly with no second
     renderer. Only lists filters that were actually set; "All leads"
     if none were.
+
+    v0.19 — FIX: now actually appends "→ reassigned to {to_owner}",
+    matching the format this function's own original design doc (and
+    cls_db.create_bulk_job()'s docstring) always described — e.g.
+    "Project: Naishka, Stage: Prospect → reassigned to Devender Goud".
+    This was silently missing before (the caller never appended it
+    either), so bulk_jobs.to_owner — stored as its own column — never
+    actually showed up anywhere, since settings_bulk_jobs.html only
+    ever displays the filters_summary column. Found while reworking
+    this function for multi-select; fixed as part of the same change.
+
+    Also: Stage/Owner (now checkbox multi-select — Bulk Reassign
+    Filter UX Rework) and Campaign (already multi-select) each join
+    their own selected values with ", "; the filter CATEGORIES
+    themselves now join with " | " instead of ", " — needed once a
+    single category can itself contain commas (e.g. "Stage: Prospect,
+    Site Visit Scheduled"), so the string stays unambiguous rather than
+    running every value together indistinguishably.
     """
     parts = []
     if f["project"]:
         parts.append(f"Project: {f['project']}")
-    if f["stage"]:
-        parts.append(f"Stage: {f['stage']}")
+    if f["stages"]:
+        parts.append(f"Stage: {', '.join(f['stages'])}")
     if f["campaigns"]:
         parts.append(f"Campaign: {', '.join(f['campaigns'])}")
     if f["source"]:
         parts.append(f"Source: {f['source']}")
-    if f["owner"]:
-        parts.append(f"Current Owner: {f['owner']}")
+    if f["owners"]:
+        parts.append(f"Current Owner: {', '.join(f['owners'])}")
     if f["date_preset"]:
         parts.append(f"Date: {DATE_PRESET_LABELS.get(f['date_preset'], f['date_preset'])}")
-    return ", ".join(parts) if parts else "All leads"
+    filters_part = " | ".join(parts) if parts else "All leads"
+    return f"{filters_part} → reassigned to {to_owner}"
 
 
 @app.route("/leads")
@@ -2850,12 +3205,20 @@ def settings_lead_scoring():
 # at scale is stricter than that, per Srikanth's explicit instruction.
 
 def _bulk_reassign_matched(f):
-    """Shared lookup — filter form + preview + commit all need the SAME matched set for the SAME filters."""
+    """
+    Shared lookup — filter form + preview + commit all need the SAME
+    matched set for the SAME filters.
+
+    v0.19 — Stage and (filter-)Owner now read f["stages"]/f["owners"]
+    (lists, checkbox multi-select) instead of the single-value
+    f["stage"]/f["owner"] — reuses cls_db.py v2.30's stages=/owners=
+    params (already built for Export, no cls_db.py change needed here).
+    """
     return cls_db.get_leads_matching(
-        stage=f["stage"] or None, project=f["project"] or None,
+        stages=f["stages"] or None, project=f["project"] or None,
         date_from=f["date_from"] or None, date_to=f["date_to"] or None,
         campaigns=f["campaigns"] or None, source=f["source"] or None,
-        owner=f["owner"] or None,
+        owners=f["owners"] or None,
     )
 
 
@@ -2913,7 +3276,7 @@ def settings_bulk_reassign_commit():
 
     actor = _actor()
     reassigned_count = cls_db.bulk_reassign_leads(matched_ids, to_owner, actor)
-    cls_db.create_bulk_job("bulk_reassign", actor, _bulk_filters_summary(f), to_owner, reassigned_count)
+    cls_db.create_bulk_job("bulk_reassign", actor, _bulk_filters_summary(f, to_owner), to_owner, reassigned_count)
 
     flash(f"Reassigned {reassigned_count} lead(s) to {to_owner}.", "success")
     return redirect(url_for("settings_bulk_jobs"))

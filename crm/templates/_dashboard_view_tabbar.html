@@ -1,0 +1,32 @@
+{# _dashboard_view_tabbar.html (v1, July 2026) — top tab bar for the
+   Stats dashboard's 2 VIEWS: "Stats Overview" (the original Stats tab
+   content, unchanged) and "Leads to Booking Summary" (new). This is a
+   SEPARATE component from _dashboard_tabbar.html (the 3-tab BOTTOM icon
+   bar: Stats / Today's Performance / Pipeline Analysis) — the two tab
+   levels are independent and must never collide in code or in the
+   active_tab template variable, so this one uses its own `active_view`
+   variable ("stats_overview" | "booking_summary") instead.
+
+   Included by dashboard.html (active_view="stats_overview") and
+   dashboard_booking_summary.html (active_view="booking_summary"). Both
+   of those pages ALSO still include _dashboard_tabbar.html at the
+   bottom with active_tab="stats" — this new page lives conceptually
+   under the Stats bottom-tab, not as a 4th bottom tab. #}
+<style>
+.view-tabbar {
+  display: flex; gap: 8px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.view-tab {
+  flex: 1; text-align: center; padding: 10px 8px 12px;
+  font-size: 14px; font-weight: 600; color: var(--ink-soft);
+  text-decoration: none; border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.view-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+.view-tab:hover { text-decoration: none; color: var(--blue); }
+</style>
+<div class="view-tabbar no-print">
+  <a class="view-tab{% if active_view == 'stats_overview' %} active{% endif %}" href="{{ url_for('dashboard') }}">Stats Overview</a>
+  <a class="view-tab{% if active_view == 'booking_summary' %} active{% endif %}" href="{{ url_for('dashboard_booking_summary') }}">Leads to Booking Summary</a>
+</div>

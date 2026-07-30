@@ -2,11 +2,52 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.29
+Version : 2.31
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.31 (2026-07-29) — Dashboard owner-scoping fix + "Leads to Booking
+  Summary" tab (app.py v0.20).
+    - Part A bug fix: get_new_enquiries_count(), get_new_enquiries_leads(),
+      get_reengaged_count(), get_due_today(), get_due_by_kind() all gained
+      owner=None — same "None = company-wide, a lead_owner string = scoped"
+      convention as get_stage_snapshot_counts(owner=None). Previously these
+      5 had no owner param at all, so every salesperson dashboard showed
+      company-wide counts instead of their own — the same class of gap
+      /leads and /leads/<id> were already closed against; these 4 dashboard
+      cards + the due_today plumbing behind them were missed at the time.
+      ADDITIVE — owner=None preserves every existing call site's behavior
+      exactly (all 5 functions still default to company-wide with no arg).
+    - Part C additions (NEW functions, nothing existing touched): totals/
+      breakdown queries for the new booking-summary report page — see
+      "BOOKING SUMMARY (v2.31)" section below for the full list. All take
+      (date_from, date_to, project=None, source=None, owner=None) and are
+      period-bound (a date range), unlike get_stage_snapshot_counts()'s
+      live-snapshot semantics — deliberately NOT reusing that function.
+    - NEW config dicts (config-not-code, per house convention):
+      SOURCE_DISPLAY_LABELS (raw leads.source value -> human label) and
+      SITE_VISIT_STATUS_LABELS (breakdown row label -> site_visits.status
+      matching rule) — see their definitions below.
+
+v2.30 (2026-07) — Export rework (app.py v0.18), Task C: stage/owner
+  become checkbox multi-select on the Bulk Export screens ONLY.
+  ADDITIVE, Export-only — the existing single-value stage/owner string
+  params are untouched for every other caller (leads_filter.html's
+  regular Leads filter, leads_list(), Bulk Reassign's own filter form,
+  which still uses single-value radios).
+    - _build_lead_filter_where() gained stages=None / owners=None (both
+      lists) — OR-across-selected-values, same pattern as the existing
+      campaigns/configuration/property_type/facing multi-selects.
+      owners matches case-insensitively (LOWER(lead_owner)=LOWER(?)),
+      same convention as the existing single `owner` param.
+    - get_leads_matching() gained matching stages=/owners= passthrough
+      params. get_leads_page() deliberately NOT touched — nothing calls
+      it with these, per Srikanth's "Export-only" instruction.
+    - get_site_visits_conducted() gained owners=None (list) — same
+      OR-across-selected pattern, independent of its existing single
+      `owner` param.
+
 v2.29 (2026-07) — Follow-up to v2.28's Task 2.1: create_manual_lead()'s
   entry-into-CRM row now logs activity_type='lead_entered' (was
   'lead_created_manual') — reverses that version's "leave it, flagged
@@ -1474,6 +1515,33 @@ SORT_OPTIONS = {
 # the v2.5 changelog for why both filters exist separately.
 SOURCE_OPTIONS = ["meta", "selldo_only", "manual_crm"]
 
+# v2.31 — human-readable labels for the raw SOURCE_OPTIONS values, used
+# by the Leads to Booking Summary tab's Source filter + "Lead By Source"
+# breakdown. Config-not-code: leads.source itself is unchanged, this is
+# a display-layer mapping only (same principle as get_all_users()'s
+# email->full_name resolution for Activity History).
+SOURCE_DISPLAY_LABELS = {
+    "meta": "Meta",
+    "selldo_only": "Sell.do",
+    "manual_crm": "Manually Entered",
+}
+
+# v2.31 — Leads to Booking Summary's "Site Visits By Status" breakdown.
+# Sell.do's own report has 6 states (Missed/Conducted/Cancelled/
+# Scheduled/Pending/Dropped); our site_visits.status column only has 4
+# ('scheduled'/'conducted'/'cancelled'/'no_show' — see schema below).
+# Decision 4 (Srikanth, July 2026): map what we actually have rather
+# than invent permanent-zero rows for "Pending"/"Dropped", which we have
+# no equivalent state for. "Scheduled" vs "Missed" aren't two different
+# stored values — both are status='scheduled' rows, split live by
+# whether scheduled_at has already passed (same missed-computation
+# principle as get_due_today() above). "Didn't Visit" (not "Missed",
+# which means something different in our system — see lead_detail.html)
+# maps status='no_show'. get_site_visits_by_status_for_period() is the
+# only reader of this dict; kept here, not inline, so the row order/
+# labels are config, not scattered string literals.
+SITE_VISIT_STATUS_LABELS = ["Conducted", "Cancelled", "Didn't Visit", "Scheduled", "Missed"]
+
 # v2.28 — bulk_jobs.job_type whitelist (config-not-code, same pattern as
 # SORT_OPTIONS/SOURCE_OPTIONS above). Only one bulk action ships in this
 # batch; the table/constant are written generically so a future bulk
@@ -2574,7 +2642,7 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
                              campaign=None, campaigns=None, source=None,
                              sub_source=None, budget=None, configuration=None,
                              property_type=None, facing=None,
-                             search_all_owners=False):
+                             search_all_owners=False, stages=None, owners=None):
     """
     (v2.28) The WHERE-clause builder shared by get_leads_page() and
     get_leads_matching() — extracted out of get_leads_page() verbatim
@@ -2593,6 +2661,13 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
     substring filter — both can be supplied at once (AND'd together,
     same as any other two filters here).
 
+    stages / owners (v2.30, lists, optional): Export-only checkbox
+    multi-select — OR-across-selected-values, same pattern as
+    campaigns/configuration/property_type/facing. Independent of, and
+    additive alongside, the existing single-value stage/owner params
+    (Bulk Reassign and every other caller keeps using those unchanged).
+    owners matches case-insensitively, same convention as `owner` below.
+
     Returns (where_sql: str, params: list) — a caller runs
     f"SELECT ... WHERE {where_sql}" with params.
     """
@@ -2602,6 +2677,11 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
     if stage:
         where.append("current_stage = ?")
         params.append(stage)
+
+    if stages:
+        ors = " OR ".join("current_stage = ?" for _ in stages)
+        where.append(f"({ors})")
+        params.extend(stages)
 
     # v2.7 — an active search with search_all_owners drops the owner
     # scope for THIS query, so a salesperson can find (but only
@@ -2613,6 +2693,11 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
     if apply_owner_scope:
         where.append("LOWER(lead_owner) = LOWER(?)")
         params.append(owner)
+
+    if owners:
+        ors = " OR ".join("LOWER(lead_owner) = LOWER(?)" for _ in owners)
+        where.append(f"({ors})")
+        params.extend(owners)
 
     if has_active_search:
         search_term = search.strip().lower()
@@ -2813,7 +2898,7 @@ def get_leads_matching(stage=None, project=None, search=None, owner=None,
                        date_from=None, date_to=None, stage_reason=None,
                        campaign=None, campaigns=None, source=None,
                        sub_source=None, budget=None, configuration=None,
-                       property_type=None, facing=None):
+                       property_type=None, facing=None, stages=None, owners=None):
     """
     (v2.28) Unpaginated sibling of get_leads_page() — returns EVERY
     matching lead row (full dicts, including project_bucket), not one
@@ -2825,6 +2910,10 @@ def get_leads_matching(stage=None, project=None, search=None, owner=None,
     No search_all_owners param — bulk actions are always scoped by
     whatever `owner` the caller passes (or none, for oversight roles),
     there's no "restricted view of someone else's lead" concept here.
+
+    stages / owners (v2.30, lists, optional) — Export's checkbox multi-
+    select, passed straight through to _build_lead_filter_where(). Bulk
+    Reassign never passes these (still uses single-value stage/owner).
 
     Returns a plain list of row dicts, sorted by full_name — bulk
     screens list/preview matched leads, they don't need get_leads_page()'s
@@ -2838,6 +2927,7 @@ def get_leads_matching(stage=None, project=None, search=None, owner=None,
             campaigns=campaigns, source=source, sub_source=sub_source,
             budget=budget, configuration=configuration,
             property_type=property_type, facing=facing,
+            stages=stages, owners=owners,
         )
         all_rows = conn.execute(f"""
             SELECT cls_id, full_name, phone_raw, phone_norm, email_raw,
@@ -2881,7 +2971,7 @@ def get_distinct_campaigns():
         conn.close()
 
 
-def get_site_visits_conducted(date_from=None, date_to=None, owner=None):
+def get_site_visits_conducted(date_from=None, date_to=None, owner=None, owners=None):
     """
     (v2.28) Task 4 — Export Site Visits Conducted. site_visits rows
     with status='conducted' (never 'no_show'/'cancelled'/'scheduled'),
@@ -2889,6 +2979,11 @@ def get_site_visits_conducted(date_from=None, date_to=None, owner=None):
     conducted_at (when the visit actually happened), not scheduled_at.
     owner filters on leads.lead_owner, exact match — same convention as
     every other owner-scoped query in this file.
+
+    owners (v2.30, list, optional) — Export's checkbox multi-select,
+    OR-across-selected-values, independent of the existing single
+    `owner` param (both can be given, AND'd together, though the export
+    route only ever uses one or the other in practice).
     """
     conn = _connect()
     try:
@@ -2906,6 +3001,10 @@ def get_site_visits_conducted(date_from=None, date_to=None, owner=None):
         if owner:
             query += " AND l.lead_owner = ?"
             params.append(owner)
+        if owners:
+            ors = " OR ".join("LOWER(l.lead_owner) = LOWER(?)" for _ in owners)
+            query += f" AND ({ors})"
+            params.extend(owners)
         query += " ORDER BY v.conducted_at DESC"
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
@@ -3015,7 +3114,7 @@ def get_distinct_owners():
         conn.close()
 
 
-def get_new_enquiries_count(days=7):
+def get_new_enquiries_count(days=7, owner=None):
     """
     v1.9: was a time-window count (leads first created in the last
     `days` days); redefined to count leads currently sitting at
@@ -3036,35 +3135,54 @@ def get_new_enquiries_count(days=7):
     sitting at current_stage='Incoming' (nobody has moved the stage
     yet, just looked at it). `days` is kept as an unused parameter so
     existing call sites don't need updating.
+
+    owner (v2.31): optional, default None (existing behavior, unchanged
+    — dashboard() previously called this with zero args). Pass a
+    lead_owner to scope to one salesperson's own leads, same convention
+    as get_stage_snapshot_counts(owner=None).
     """
     conn = _connect()
     try:
-        row = conn.execute("""
+        query = """
             SELECT COUNT(*) c FROM leads l
             WHERE l.current_stage='Incoming'
               AND NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.cls_id = l.cls_id)
-        """).fetchone()
+        """
+        params = []
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        row = conn.execute(query, params).fetchone()
         return row["c"]
     finally:
         conn.close()
 
 
-def get_new_enquiries_leads():
+def get_new_enquiries_leads(owner=None):
     """
     (v2.11) List-returning counterpart to get_new_enquiries_count()
     above — SAME criteria (current_stage='Incoming' AND zero activity_
     log rows), just returning rows instead of a count, so the dashboard
     card can link through to an actual filtered list. Mirrors
     get_reengaged_leads()'s shape.
+
+    owner (v2.31): optional, default None (existing behavior, unchanged
+    — new_enquiries_list() previously called this with zero args). Pass
+    a lead_owner to scope to one salesperson's own leads.
     """
     conn = _connect()
     try:
-        rows = conn.execute("""
+        query = """
             SELECT * FROM leads l
             WHERE l.current_stage='Incoming'
               AND NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.cls_id = l.cls_id)
-            ORDER BY l.cls_created_at DESC
-        """).fetchall()
+        """
+        params = []
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        query += " ORDER BY l.cls_created_at DESC"
+        rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
@@ -3148,7 +3266,7 @@ def get_new_enquiries_leads():
 #         conn.close()
 
 
-def get_reengaged_count(days=7):
+def get_reengaged_count(days=7, owner=None):
     """
     (v2.20, Task 3) PRECISE reengagement signal, superseding the old
     approximate cls_updated_at-window definition above. Counts leads
@@ -3168,20 +3286,30 @@ def get_reengaged_count(days=7):
     definition; a lead stays counted for as long as it remains
     genuinely untouched since re-entering, however long that is.
 
+    owner (v2.31): optional, default None (existing behavior, unchanged
+    — dashboard() previously called this with only days=7). Pass a
+    lead_owner to scope to one salesperson's own leads, same convention
+    as get_stage_snapshot_counts(owner=None).
+
     EXPECTED AT DEPLOY: every existing lead has reengaged_at=NULL (the
     migration is additive, nothing is backfilled), so this reads 0
     until new re-entries happen through Job A's enrich path — not a bug.
     """
     conn = _connect()
     try:
-        row = conn.execute("""
+        query = """
             SELECT COUNT(*) c FROM leads
             WHERE reengaged_at IS NOT NULL
               AND NOT EXISTS (
                 SELECT 1 FROM activity_log a
                 WHERE a.cls_id = leads.cls_id AND a.created_at > leads.reengaged_at
               )
-        """).fetchone()
+        """
+        params = []
+        if owner:
+            query += " AND lead_owner = ?"
+            params.append(owner)
+        row = conn.execute(query, params).fetchone()
         return row["c"]
     finally:
         conn.close()
@@ -4967,7 +5095,7 @@ def get_activity_log_for_lead(cls_id):
         conn.close()
 
 
-def get_due_today():
+def get_due_today(owner=None):
     """
     Site visits and follow-ups due today or overdue, across ALL leads —
     feeds the dashboard's "Due Today" card. This is the agreed
@@ -4979,6 +5107,12 @@ def get_due_today():
     missed if scheduled_at has passed and status is still 'scheduled'.
     Cancelled/completed items are excluded entirely.
 
+    owner (v2.31): optional, default None (existing behavior, unchanged
+    — every existing call site keeps calling this with zero args). Pass
+    a lead_owner to scope both the site-visit and follow-up lists to
+    one salesperson's own leads, same convention as
+    get_stage_snapshot_counts(owner=None).
+
     Returns a list of dicts: {kind, id, cls_id, full_name, scheduled_at,
     missed, notes}, sorted by scheduled_at ascending (most overdue /
     soonest first).
@@ -4988,11 +5122,16 @@ def get_due_today():
         today = datetime.now().strftime("%Y-%m-%d")
         results = []
 
-        visits = conn.execute("""
+        visit_query = """
             SELECT v.visit_id, v.cls_id, v.scheduled_at, v.notes, l.full_name, l.crm_lead_no
             FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
             WHERE v.status = 'scheduled' AND DATE(v.scheduled_at) <= DATE(?)
-        """, (today,)).fetchall()
+        """
+        visit_params = [today]
+        if owner:
+            visit_query += " AND l.lead_owner = ?"
+            visit_params.append(owner)
+        visits = conn.execute(visit_query, visit_params).fetchall()
         for v in visits:
             results.append({
                 "kind": "site_visit",
@@ -5005,11 +5144,16 @@ def get_due_today():
                 "notes": v["notes"],
             })
 
-        follow_ups = conn.execute("""
+        followup_query = """
             SELECT f.followup_id, f.cls_id, f.scheduled_at, f.notes, l.full_name, l.crm_lead_no
             FROM follow_ups f JOIN leads l ON l.cls_id = f.cls_id
             WHERE f.status = 'scheduled' AND DATE(f.scheduled_at) <= DATE(?)
-        """, (today,)).fetchall()
+        """
+        followup_params = [today]
+        if owner:
+            followup_query += " AND l.lead_owner = ?"
+            followup_params.append(owner)
+        follow_ups = conn.execute(followup_query, followup_params).fetchall()
         for f in follow_ups:
             results.append({
                 "kind": "follow_up",
@@ -5028,14 +5172,334 @@ def get_due_today():
         conn.close()
 
 
-def get_due_by_kind(kind):
+def get_due_by_kind(kind, owner=None):
     """
     Same due/overdue logic as get_due_today() above, filtered to just
     one kind (v1.9) — feeds the two split dashboard cards (Follow-ups
     Due, Site Visits Due) instead of one combined list. kind must be
     'site_visit' or 'follow_up'.
+
+    owner (v2.31): optional, default None (existing behavior, unchanged
+    — due_list() previously called this with just kind). Passed straight
+    through to get_due_today(owner=owner).
     """
-    return [item for item in get_due_today() if item["kind"] == kind]
+    return [item for item in get_due_today(owner=owner) if item["kind"] == kind]
+
+
+# ─────────────────────────────────────────────────────────────
+# BOOKING SUMMARY (v2.31) — "Leads to Booking Summary" dashboard tab
+# ─────────────────────────────────────────────────────────────
+# Every function below is PERIOD-bound (date_from/date_to, both required
+# 'YYYY-MM-DD' strings), unlike get_stage_snapshot_counts()'s live-
+# snapshot semantics — deliberately a separate set of functions, not an
+# overload of that one (dashboard_pipeline() keeps its unrelated
+# live-snapshot meaning). All take the SAME 4 filter args — date_from,
+# date_to, project=None, source=None, owner=None — matching the tab's
+# 4-control filter bar; owner is a lead_owner string, same convention
+# as every other owner= param in this file.
+
+def _booking_summary_where(date_col, date_from, date_to, project=None, source=None, owner=None,
+                            project_col="l.project", source_col="l.source", owner_col="l.lead_owner"):
+    """
+    (v2.31) Shared WHERE-clause fragment builder for every Booking
+    Summary query below — all of them filter by the same date range +
+    optional project/source/owner, just against different date columns
+    and (for site_visits/activity_log queries, joined to leads as `l`)
+    different table aliases for the project/source/owner columns
+    themselves. Returns (sql_fragment, params); caller supplies the
+    surrounding WHERE/AND.
+
+    date_from/date_to blank/blank (the "Maximum" quick-select preset,
+    cls_reports._maximum_range()) means NO date filter at all (all-
+    time) — same "" == no-filter convention every cls_reports.py
+    builder already uses (see _maximum_range()'s own docstring), so the
+    Booking Summary page's date picker behaves identically to every
+    other report's. A bare "1=1" placeholder keeps the fragment valid
+    SQL even when every optional filter is skipped.
+    """
+    clauses = ["1=1"]
+    params = []
+    if date_from and date_to:
+        clauses.append(f"{date_col} >= ?")
+        clauses.append(f"{date_col} <= ?")
+        params.append(f"{date_from} 00:00:00")
+        params.append(f"{date_to} 23:59:59")
+    if project:
+        clauses.append(f"{project_col} = ?")
+        params.append(project)
+    if source:
+        clauses.append(f"{source_col} = ?")
+        params.append(source)
+    if owner:
+        clauses.append(f"{owner_col} = ?")
+        params.append(owner)
+    return " AND ".join(clauses), params
+
+
+def get_booking_summary_totals(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) The 3 computable Quick Summary numbers for the Booking
+    Summary tab ("Value (INR)" is NOT computed here — Decision 1,
+    deferred; the template shows "—" instead of a fake/zero number).
+
+    total_leads : leads.cls_created_at in range, matching filters.
+    site_visits : site_visits.scheduled_at in range, joined to leads
+                  for the project/source/owner filters.
+    bookings    : EVENT count (Decision 3) — activity_log rows where
+                  activity_type='stage_change' AND new_value='Booked',
+                  a.created_at in range, joined to leads for filters.
+                  Deliberately NOT current_stage='Booked' (a live
+                  snapshot would double- or zero-count a lead that
+                  unwinds and rebooks within the period).
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("l.cls_created_at", date_from, date_to, project, source, owner)
+        total_leads = conn.execute(f"SELECT COUNT(*) c FROM leads l WHERE {where}", params).fetchone()["c"]
+
+        where, params = _booking_summary_where("v.scheduled_at", date_from, date_to, project, source, owner)
+        site_visits = conn.execute(f"""
+            SELECT COUNT(*) c FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE {where}
+        """, params).fetchone()["c"]
+
+        where, params = _booking_summary_where("a.created_at", date_from, date_to, project, source, owner)
+        bookings = conn.execute(f"""
+            SELECT COUNT(*) c FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
+            WHERE a.activity_type='stage_change' AND a.new_value='Booked' AND {where}
+        """, params).fetchone()["c"]
+
+        return {"total_leads": total_leads, "site_visits": site_visits, "bookings": bookings}
+    finally:
+        conn.close()
+
+
+def get_stage_counts_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) "Lead By Stage" — leads grouped by current_stage, WITHIN the
+    date range (leads.cls_created_at) — a period count, deliberately a
+    different function from get_stage_snapshot_counts(owner=None), which
+    ignores date range entirely and is a live right-now snapshot. Every
+    ALL_STAGES key is always present (even 0), same guarantee as
+    get_stage_snapshot_counts().
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("l.cls_created_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT current_stage, COUNT(*) c FROM leads l WHERE {where} GROUP BY current_stage
+        """, params).fetchall()
+        live_counts = {r["current_stage"]: r["c"] for r in rows}
+        return {stage: live_counts.get(stage, 0) for stage in ALL_STAGES}
+    finally:
+        conn.close()
+
+
+def get_leads_by_owner_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) "Lead By Sales" — leads grouped by lead_owner, within range.
+    Unassigned/blank owners are grouped as "Unassigned" rather than
+    silently dropped, so this breakdown's total always reconciles with
+    the Total Leads card for the same filters. Ordered by count desc.
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("l.cls_created_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT COALESCE(NULLIF(TRIM(l.lead_owner), ''), 'Unassigned') AS label, COUNT(*) c
+            FROM leads l WHERE {where} GROUP BY label ORDER BY c DESC
+        """, params).fetchall()
+        return [{"label": r["label"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def get_leads_by_project_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) "Lead By Project" (Decision 2 relabel — ours is single-value
+    leads.project, not Sell.do's multi-select "Interested Project(s)").
+    Blank/NULL project grouped as "Not Available", the label already
+    used elsewhere in this app for an unset project. Ordered by count desc.
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("l.cls_created_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT COALESCE(NULLIF(TRIM(l.project), ''), 'Not Available') AS label, COUNT(*) c
+            FROM leads l WHERE {where} GROUP BY label ORDER BY c DESC
+        """, params).fetchall()
+        return [{"label": r["label"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def get_leads_by_source_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) "Lead By Source" (Decision 2 relabel). Grouped by the raw
+    leads.source value (or 'Not Available' if blank) — returns the raw
+    value as `label` for the template to translate via
+    SOURCE_DISPLAY_LABELS.get(label, label), same display-layer-
+    resolution split as get_all_users() (email -> full_name).
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("l.cls_created_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT COALESCE(NULLIF(TRIM(l.source), ''), 'Not Available') AS label, COUNT(*) c
+            FROM leads l WHERE {where} GROUP BY label ORDER BY c DESC
+        """, params).fetchall()
+        return [{"label": r["label"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def get_site_visits_by_owner_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) "Site Visits By Owner" — via leads.lead_owner (a visit's
+    owner is inherited from its lead; site_visits has no owner column
+    of its own). Unassigned grouped as "Unassigned", same as leads.
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("v.scheduled_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT COALESCE(NULLIF(TRIM(l.lead_owner), ''), 'Unassigned') AS label, COUNT(*) c
+            FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE {where} GROUP BY label ORDER BY c DESC
+        """, params).fetchall()
+        return [{"label": r["label"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def get_site_visits_by_status_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) "Site Visits By Status" — see SITE_VISIT_STATUS_LABELS'
+    definition above for the full status-mapping rationale (Decision 4).
+    "Scheduled" and "Missed" are both status='scheduled' rows, split
+    live by whether scheduled_at has already passed — same missed-
+    computation principle as get_due_today(), never a stored value.
+    Returns a dict with all 5 SITE_VISIT_STATUS_LABELS keys always
+    present (even 0), same guarantee as get_stage_snapshot_counts().
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("v.scheduled_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT v.status, v.scheduled_at FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE {where}
+        """, params).fetchall()
+        now = _now()
+        counts = {label: 0 for label in SITE_VISIT_STATUS_LABELS}
+        for r in rows:
+            if r["status"] == "conducted":
+                counts["Conducted"] += 1
+            elif r["status"] == "cancelled":
+                counts["Cancelled"] += 1
+            elif r["status"] == "no_show":
+                counts["Didn't Visit"] += 1
+            elif r["status"] == "scheduled":
+                if r["scheduled_at"] < now:
+                    counts["Missed"] += 1
+                else:
+                    counts["Scheduled"] += 1
+        return counts
+    finally:
+        conn.close()
+
+
+def get_site_visits_by_project_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """(v2.31) "Site Visits By Project" — via leads.project, 'Not Available' if blank."""
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("v.scheduled_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT COALESCE(NULLIF(TRIM(l.project), ''), 'Not Available') AS label, COUNT(*) c
+            FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE {where} GROUP BY label ORDER BY c DESC
+        """, params).fetchall()
+        return [{"label": r["label"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def get_site_visits_by_source_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) "Site Visits By Source" — via leads.source (raw value,
+    template translates via SOURCE_DISPLAY_LABELS, same as
+    get_leads_by_source_for_period()).
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("v.scheduled_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT COALESCE(NULLIF(TRIM(l.source), ''), 'Not Available') AS label, COUNT(*) c
+            FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE {where} GROUP BY label ORDER BY c DESC
+        """, params).fetchall()
+        return [{"label": r["label"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def get_bookings_by_owner_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) "Bookings By Owner" — EVENT count (Decision 3), grouped by
+    the lead's CURRENT lead_owner. activity_log doesn't snapshot who
+    owned the lead at the moment of the stage_change event, so this
+    intentionally reflects today's ownership, not the owner-at-booking-
+    time — matching the spec's own wording ("grouped by current lead_owner").
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("a.created_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT COALESCE(NULLIF(TRIM(l.lead_owner), ''), 'Unassigned') AS label, COUNT(*) c
+            FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
+            WHERE a.activity_type='stage_change' AND a.new_value='Booked' AND {where}
+            GROUP BY label ORDER BY c DESC
+        """, params).fetchall()
+        return [{"label": r["label"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def get_bookings_by_project_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """(v2.31) "Bookings By Project" — EVENT count (Decision 3), grouped by leads.project."""
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("a.created_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT COALESCE(NULLIF(TRIM(l.project), ''), 'Not Available') AS label, COUNT(*) c
+            FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
+            WHERE a.activity_type='stage_change' AND a.new_value='Booked' AND {where}
+            GROUP BY label ORDER BY c DESC
+        """, params).fetchall()
+        return [{"label": r["label"], "count": r["c"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def get_booked_leads_for_period(date_from, date_to, project=None, source=None, owner=None):
+    """
+    (v2.31) Bookings sub-tab's lead list — one row per Booked-transition
+    EVENT in range (Decision 3; a lead booked twice in the same period,
+    e.g. unwound and rebooked, appears twice — consistent with this
+    being an event list, not a deduplicated lead list). Value column
+    omitted entirely (Decision 1, deferred). Ordered most recent first.
+    """
+    conn = _connect()
+    try:
+        where, params = _booking_summary_where("a.created_at", date_from, date_to, project, source, owner)
+        rows = conn.execute(f"""
+            SELECT l.crm_lead_no, l.full_name, l.lead_owner, l.project, a.created_at AS booked_at
+            FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
+            WHERE a.activity_type='stage_change' AND a.new_value='Booked' AND {where}
+            ORDER BY a.created_at DESC
+        """, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def get_all_users():

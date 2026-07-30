@@ -1,7 +1,15 @@
-{# dashboard.html (v0.12) — "Stats" tab of the 3-tab dashboard (Stats /
-   Today's Performance / Pipeline Analysis). Bottom tab bar unchanged
-   from v0.6. Kept at the /dashboard route/filename so every existing
+{# dashboard.html (v0.13) — "Stats Overview" top-tab view, itself living
+   inside the "Stats" tab of the 3-tab BOTTOM dashboard (Stats / Today's
+   Performance / Pipeline Analysis). Bottom tab bar unchanged from v0.6.
+   Kept at the /dashboard route/filename so every existing
    url_for('dashboard') link elsewhere still works.
+
+   v0.13 (2026-07-29) — the old plain <h2>Stats</h2> heading is replaced
+   by _dashboard_view_tabbar.html's 2 top tabs (Stats Overview / Leads
+   to Booking Summary, new dashboard_booking_summary() route). Content
+   below the tab bar is otherwise UNCHANGED — same 4 cards, same
+   Tomorrow's Reminders tile, same Reengaged note, same context
+   variables from the unchanged dashboard() route.
 
    v0.12 (July 2026, Task 3) — Reengaged card/caption copy updated for
    the precise reengaged_at-based definition (cls_db.py v2.20):
@@ -34,9 +42,9 @@
 {% block title %}Dashboard{% endblock %}
 
 {% block content %}
-<h2 style="margin-top:0;">Stats</h2>
+{% include "_dashboard_view_tabbar.html" %}
 
-<div class="stat-card-grid">
+<div class="stat-card-grid" style="margin-top:16px;">
 
   <a href="{{ url_for('new_enquiries_list') }}" class="stat-card">
     <div class="stat-card-header">New Enquiries</div>
