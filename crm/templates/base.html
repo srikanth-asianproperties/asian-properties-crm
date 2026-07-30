@@ -1,9 +1,21 @@
-<!-- base.html v0.13 — first version header this file has carried,
+<!-- base.html v0.15 — first version header this file has carried,
      established in v0.10.
+     v0.15: NEW shared filterOptRows(input) function (bottom <script>
+       block) — the checkbox/radio-list search filter Export's Task B
+       introduced, now reused by Bulk Reassign's filter screen too
+       instead of a second copy. Pulled up here since it's the same
+       exact function on multiple pages (export_leads.html,
+       export_site_visits.html, bulk_reassign_filter.html), not a
+       template-specific one. No other change.
+     v0.14: REMOVED the standalone "Export" drawer link added in v0.13
+       — Export is now admin-only, moved inside Settings (its own tile
+       there instead), per Srikanth's explicit scope reversal. See
+       app.py v0.18 / settings.html for the new settings_export_* routes.
      v0.13: NEW "Export" drawer link (between Reports and Settings),
        visible to every logged-in user (role-agnostic in this template,
        same as "Reports" — each export type scopes itself internally
        via cls_db.can_view_all_leads()). Task 4 of the APX v0.7 batch.
+       SUPERSEDED by v0.14 above — kept here for history, not reverted.
      v0.12: NEW .stat-card / .stat-card-grid classes for the Sell.do-
        style 2-column card theme on all 3 dashboard tabs. .card and
        every other class untouched.
@@ -475,7 +487,6 @@
     {% endif %}
   </a>
   <a href="{{ url_for('reports_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['reports_home', 'report_view'] }}">Reports</a>
-  <a href="{{ url_for('export_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['export_home', 'export_leads_view', 'export_site_visits_view', 'export_activity_view'] }}">Export</a>
   {% if current_user.role == 'admin' %}
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   {% endif %}
@@ -500,6 +511,24 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(function(err){
       console.log('Service worker registration failed:', err);
     });
+  });
+}
+
+// v0.15 — shared checkbox/radio-list search filter (Export's Task B,
+// now reused by Bulk Reassign too instead of a second copy). Filters
+// visible .opt-row labels by textContent match, live, never touches
+// checked/selected state. Scoped to the .opt-list immediately
+// following whichever search box triggered it, so multiple search
+// boxes on one page (Campaign, Project, Owner, ...) never cross-filter
+// each other's lists. Pages using this: export_leads.html,
+// export_site_visits.html, bulk_reassign_filter.html.
+function filterOptRows(input){
+  var term = input.value.trim().toLowerCase();
+  var list = input.nextElementSibling;
+  if (!list) return;
+  list.querySelectorAll('.opt-row').forEach(function(row){
+    var text = row.textContent.trim().toLowerCase();
+    row.style.display = (!term || text.indexOf(term) !== -1) ? '' : 'none';
   });
 }
 </script>

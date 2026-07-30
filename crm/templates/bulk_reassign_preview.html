@@ -1,11 +1,17 @@
-{# bulk_reassign_preview.html (v1.0) — Settings > Bulk Reassign, step 2
+{# bulk_reassign_preview.html (v1.1) — Settings > Bulk Reassign, step 2
    of 3. Nothing has been written yet — this just shows what WOULD
    happen (matched count + target owner) with one "Confirm & Reassign"
    button (POST -> settings_bulk_reassign_commit, the only step that
    actually writes, inside cls_db.bulk_reassign_leads()'s one
    transaction). The confirm form resubmits every filter param as a
    hidden field so the commit route re-derives the EXACT same matched
-   set server-side rather than trusting a client-supplied list of ids. #}
+   set server-side rather than trusting a client-supplied list of ids.
+
+   v1.1 — Stage and (filter-)Owner are now multi-select (Bulk Reassign
+   Filter UX Rework): the single hidden `stage`/`owner` fields are
+   replaced with per-value hidden `stages`/`owners` loops, same pattern
+   already used for `campaigns`. `to_owner` (the DESTINATION, not a
+   filter) is untouched — still one hidden field, still single-select. #}
 {% extends "base.html" %}
 {% block title %}Confirm Bulk Reassign{% endblock %}
 
@@ -59,9 +65,9 @@
   <input type="hidden" name="date_preset" value="{{ filters.date_preset }}">
   {% for c in filters.campaigns %}<input type="hidden" name="campaigns" value="{{ c }}">{% endfor %}
   <input type="hidden" name="project" value="{{ filters.project }}">
-  <input type="hidden" name="stage" value="{{ filters.stage }}">
+  {% for s in filters.stages %}<input type="hidden" name="stages" value="{{ s }}">{% endfor %}
   <input type="hidden" name="source" value="{{ filters.source }}">
-  <input type="hidden" name="owner" value="{{ filters.owner }}">
+  {% for o in filters.owners %}<input type="hidden" name="owners" value="{{ o }}">{% endfor %}
   <input type="hidden" name="to_owner" value="{{ to_owner }}">
   <div class="write-form-row">
     <button type="submit" class="btn btn-primary" {% if not matched %}disabled{% endif %}>Confirm &amp; Reassign</button>

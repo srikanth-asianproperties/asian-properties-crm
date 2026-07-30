@@ -1,4 +1,4 @@
-{# bulk_reassign_filter.html (v1.0) — Settings > Bulk Reassign, step 1 of 3
+{# bulk_reassign_filter.html (v1.1) — Settings > Bulk Reassign, step 1 of 3
    (filter form -> preview -> commit; see app.py's settings_bulk_reassign*
    routes, Task 3 of the APX v0.7 batch). Admin-only.
 
@@ -11,7 +11,27 @@
 
    Submits via GET straight to the preview screen — nothing is written
    by this form or the preview that follows; only "Confirm & Reassign"
-   on the preview screen (a POST) actually changes anything. #}
+   on the preview screen (a POST) actually changes anything.
+
+   v1.1 (Bulk Reassign Filter UX Rework, matching Export's v1.1/v1.2):
+   - CRITICAL: two distinct owner fields on this page, do not conflate.
+     "Current Owner" below is the FILTER (which leads match) — now a
+     checkbox multi-select, name="owners". "Reassign matched leads to",
+     in its own card below the accordion, is the bulk action's
+     DESTINATION — stays a single <select name="to_owner">, untouched.
+   - Campaign (was already checkbox multi-select, name="campaigns") and
+     Project (stays radio, single-select — not asked to change) both
+     gained a plain-text search box above their list (Task 1).
+   - Pipeline Stage changed from radio to checkbox (name="stages",
+     was name="stage") — Task 2.
+   - Current Owner (the FILTER, see above) changed from radio to
+     checkbox (name="owners", was name="owner") — Task 2 — and also
+     gained the search box, for consistency with how Export's Owner
+     section works (not explicitly asked, matches the established
+     pattern).
+   - filterOptRows() is NOT defined here — it's the shared copy in
+     base.html v0.15 (same function Export already used; Task 1 says
+     reuse, not duplicate). #}
 {% extends "base.html" %}
 {% block title %}Bulk Reassign{% endblock %}
 
@@ -37,6 +57,7 @@
 .filter-accordion-item.open .filter-accordion-body { display:block; padding-top:12px; }
 .opt-row { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:14px; cursor:pointer; }
 .opt-row input { cursor:pointer; }
+.opt-search { width:100%; padding:7px 10px; margin-bottom:8px; border:1.5px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px; }
 </style>
 
 <a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Settings</a>
@@ -81,10 +102,13 @@
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        {% for c in campaign_options %}
-        <label class="opt-row"><input type="checkbox" name="campaigns" value="{{ c }}" {% if c in filters.campaigns %}checked{% endif %}> {{ c }}</label>
-        {% endfor %}
-        {% if not campaign_options %}<p style="font-size:13px; color:var(--ink-soft);">No campaign values recorded yet.</p>{% endif %}
+        {% if campaign_options %}<input type="text" class="opt-search no-print" placeholder="Search campaigns…" oninput="filterOptRows(this)">{% endif %}
+        <div class="opt-list">
+          {% for c in campaign_options %}
+          <label class="opt-row"><input type="checkbox" name="campaigns" value="{{ c }}" {% if c in filters.campaigns %}checked{% endif %}> {{ c }}</label>
+          {% endfor %}
+          {% if not campaign_options %}<p style="font-size:13px; color:var(--ink-soft);">No campaign values recorded yet.</p>{% endif %}
+        </div>
       </div>
     </div>
 
@@ -94,22 +118,24 @@
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="project" value="" {% if not filters.project %}checked{% endif %}> All projects</label>
-        {% for p in projects %}
-        <label class="opt-row"><input type="radio" name="project" value="{{ p }}" {% if filters.project == p %}checked{% endif %}> {{ p }}</label>
-        {% endfor %}
+        <input type="text" class="opt-search no-print" placeholder="Search projects…" oninput="filterOptRows(this)">
+        <div class="opt-list">
+          <label class="opt-row"><input type="radio" name="project" value="" {% if not filters.project %}checked{% endif %}> All projects</label>
+          {% for p in projects %}
+          <label class="opt-row"><input type="radio" name="project" value="{{ p }}" {% if filters.project == p %}checked{% endif %}> {{ p }}</label>
+          {% endfor %}
+        </div>
       </div>
     </div>
 
-    <div class="filter-accordion-item{% if filters.stage %} open{% endif %}" data-fa="stage">
+    <div class="filter-accordion-item{% if filters.stages %} open{% endif %}" data-fa="stage">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('stage')">
-        <span>Pipeline Stage{% if filters.stage %}<span class="fa-current"> · {{ filters.stage }}</span>{% endif %}</span>
+        <span>Pipeline Stage{% if filters.stages %}<span class="fa-current"> · {{ filters.stages|join(', ') }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="stage" value="" {% if not filters.stage %}checked{% endif %}> All stages</label>
         {% for s in stages %}
-        <label class="opt-row"><input type="radio" name="stage" value="{{ s }}" {% if filters.stage == s %}checked{% endif %}> {{ s }}</label>
+        <label class="opt-row"><input type="checkbox" name="stages" value="{{ s }}" {% if s in filters.stages %}checked{% endif %}> {{ s }}</label>
         {% endfor %}
       </div>
     </div>
@@ -127,21 +153,31 @@
       </div>
     </div>
 
-    <div class="filter-accordion-item{% if filters.owner %} open{% endif %}" data-fa="owner">
+    {# FILTER by current owner — narrows which leads match. Distinct from
+       "Reassign matched leads to" below, which is the bulk action's
+       destination, not a filter — do not confuse the two. #}
+    <div class="filter-accordion-item{% if filters.owners %} open{% endif %}" data-fa="owner">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('owner')">
-        <span>Current Owner{% if filters.owner %}<span class="fa-current"> · {{ filters.owner }}</span>{% endif %}</span>
+        <span>Current Owner{% if filters.owners %}<span class="fa-current"> · {{ filters.owners|join(', ') }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="owner" value="" {% if not filters.owner %}checked{% endif %}> Everyone</label>
-        {% for o in owner_options %}
-        <label class="opt-row"><input type="radio" name="owner" value="{{ o }}" {% if filters.owner == o %}checked{% endif %}> {{ o }}</label>
-        {% endfor %}
+        {% if owner_options %}<input type="text" class="opt-search no-print" placeholder="Search owners…" oninput="filterOptRows(this)">{% endif %}
+        <div class="opt-list">
+          {% for o in owner_options %}
+          <label class="opt-row"><input type="checkbox" name="owners" value="{{ o }}" {% if o in filters.owners %}checked{% endif %}> {{ o }}</label>
+          {% endfor %}
+          {% if not owner_options %}<p style="font-size:13px; color:var(--ink-soft);">No owners recorded yet.</p>{% endif %}
+        </div>
       </div>
     </div>
 
   </div>
 
+  {# DESTINATION of the bulk action — "move all matched leads to ___".
+     Single-select on purpose: you cannot reassign one batch to multiple
+     different destination owners in one job. NOT a filter — sits
+     outside the accordion above and stays a plain <select>. #}
   <div class="card" style="margin-top:16px;">
     <div class="field-label">Reassign matched leads to</div>
     <select name="to_owner" required style="width:100%; padding:9px 10px; border:1.5px solid var(--line); border-radius:8px; font-family:inherit; font-size:14px;">

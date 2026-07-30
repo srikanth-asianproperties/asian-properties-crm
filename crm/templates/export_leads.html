@@ -1,12 +1,28 @@
-{# export_leads.html (v1.0) — Export > Export Leads (Task 4 of the APX
-   v0.7 batch). Filter form (GET, same accordion CSS as
-   bulk_reassign_filter.html) + results table + 3 action buttons
-   (Excel / Print-to-PDF / Email to me), same print-stylesheet pattern
-   as report_view.html. Scoped internally: is_oversight controls
-   whether the Owner filter shows at all — a salesperson never sees it,
-   their export is always their own leads (enforced server-side in
-   app.py's _export_leads_rows(), this is just hiding a filter that
-   wouldn't do anything for them). #}
+{# export_leads.html (v1.2) — Settings > Export > Export Leads.
+
+   v1.2 — filterOptRows() moved to base.html v0.15 (shared with
+   bulk_reassign_filter.html's new search boxes instead of a second
+   copy); local definition removed here, no other change.
+   Admin-only (v1.0 was role-agnostic/self-scoped — see app.py v0.18).
+
+   v1.1 changes (APX Export Rework batch):
+   - Filter form (GET, action -> settings_export_leads_results) and
+     results (table + Excel/PDF/Email actions) now share this ONE
+     template via show_results: the _view route renders it with
+     show_results=False and report=None (no query run, no row count —
+     Task D); the _results route renders it with show_results=True and
+     the computed report. Mirrors Bulk Reassign's filter -> preview
+     split.
+   - Campaign and Project sections gained a plain-text search box
+     (Task B) — vanilla JS, filters visible .opt-row labels by
+     textContent match, never touches checked/selected state.
+   - Stage and Owner are now checkboxes (Task C, was radio/single-
+     select) — matching values are OR'd server-side via cls_db.py
+     v2.30's new stages=/owners= list params. Owner also gained the
+     Task B search box (consistent with Campaign/Project, applied here
+     regardless of list length rather than picking a length threshold).
+   - Owner section no longer gated behind is_oversight — Export is
+     admin-only now, there's no non-admin caller left to hide it from. #}
 {% extends "base.html" %}
 {% block title %}Export Leads{% endblock %}
 
@@ -32,23 +48,28 @@
   .filter-accordion-body { display:none; padding:0 16px 16px 16px; border-top:1px solid var(--line); }
   .filter-accordion-item.open .filter-accordion-body { display:block; padding-top:12px; }
   .opt-row { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:14px; cursor:pointer; }
+  .opt-search { width:100%; padding:7px 10px; margin-bottom:8px; border:1.5px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px; }
 </style>
 
-<a href="{{ url_for('export_home') }}" class="no-print" style="font-size:14px;">← Export</a>
+<a href="{{ url_for('settings_export_home') }}" class="no-print" style="font-size:14px;">← Export</a>
 <div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; margin-top:10px;">
   <h2 style="margin:0;">Export Leads</h2>
+  {% if show_results %}
   <div class="no-print" style="display:flex; gap:8px; flex-shrink:0;">
-    <a href="{{ url_for('export_leads_excel', **filters) }}" class="btn">Export Excel</a>
+    <a href="{{ url_for('settings_export_leads_excel', **filters) }}" class="btn">Export Excel</a>
     <button type="button" class="btn" onclick="window.print();">Print / Save as PDF</button>
-    <form method="post" action="{{ url_for('export_leads_email') }}" style="display:inline;">
-      {% for k, v in filters.items() %}{% if k != 'campaigns' %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
+    <form method="post" action="{{ url_for('settings_export_leads_email') }}" style="display:inline;">
+      {% for k, v in filters.items() %}{% if k not in ['campaigns', 'stages', 'owners'] %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
       {% for c in filters.campaigns %}<input type="hidden" name="campaigns" value="{{ c }}">{% endfor %}
+      {% for s in filters.stages %}<input type="hidden" name="stages" value="{{ s }}">{% endfor %}
+      {% for o in filters.owners %}<input type="hidden" name="owners" value="{{ o }}">{% endfor %}
       <button type="submit" class="btn">Email to Me</button>
     </form>
   </div>
+  {% endif %}
 </div>
 
-<form method="get" action="{{ url_for('export_leads_view') }}" class="no-print" id="exportFilterForm">
+<form method="get" action="{{ url_for('settings_export_leads_results') }}" class="no-print" id="exportFilterForm">
   <div id="filterAccordion">
     <div class="filter-accordion-item{% if filters.date_preset %} open{% endif %}" data-fa="date">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('date')">
@@ -75,10 +96,13 @@
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        {% for c in campaign_options %}
-        <label class="opt-row"><input type="checkbox" name="campaigns" value="{{ c }}" {% if c in filters.campaigns %}checked{% endif %}> {{ c }}</label>
-        {% endfor %}
-        {% if not campaign_options %}<p style="font-size:13px; color:var(--ink-soft);">No campaign values recorded yet.</p>{% endif %}
+        {% if campaign_options %}<input type="text" class="opt-search no-print" placeholder="Search campaigns…" oninput="filterOptRows(this)">{% endif %}
+        <div class="opt-list">
+          {% for c in campaign_options %}
+          <label class="opt-row"><input type="checkbox" name="campaigns" value="{{ c }}" {% if c in filters.campaigns %}checked{% endif %}> {{ c }}</label>
+          {% endfor %}
+          {% if not campaign_options %}<p style="font-size:13px; color:var(--ink-soft);">No campaign values recorded yet.</p>{% endif %}
+        </div>
       </div>
     </div>
 
@@ -88,22 +112,24 @@
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="project" value="" {% if not filters.project %}checked{% endif %}> All projects</label>
-        {% for p in projects %}
-        <label class="opt-row"><input type="radio" name="project" value="{{ p }}" {% if filters.project == p %}checked{% endif %}> {{ p }}</label>
-        {% endfor %}
+        <input type="text" class="opt-search no-print" placeholder="Search projects…" oninput="filterOptRows(this)">
+        <div class="opt-list">
+          <label class="opt-row"><input type="radio" name="project" value="" {% if not filters.project %}checked{% endif %}> All projects</label>
+          {% for p in projects %}
+          <label class="opt-row"><input type="radio" name="project" value="{{ p }}" {% if filters.project == p %}checked{% endif %}> {{ p }}</label>
+          {% endfor %}
+        </div>
       </div>
     </div>
 
-    <div class="filter-accordion-item{% if filters.stage %} open{% endif %}" data-fa="stage">
+    <div class="filter-accordion-item{% if filters.stages %} open{% endif %}" data-fa="stage">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('stage')">
-        <span>Pipeline Stage{% if filters.stage %}<span class="fa-current"> · {{ filters.stage }}</span>{% endif %}</span>
+        <span>Pipeline Stage{% if filters.stages %}<span class="fa-current"> · {{ filters.stages|join(', ') }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="stage" value="" {% if not filters.stage %}checked{% endif %}> All stages</label>
         {% for s in stages %}
-        <label class="opt-row"><input type="radio" name="stage" value="{{ s }}" {% if filters.stage == s %}checked{% endif %}> {{ s }}</label>
+        <label class="opt-row"><input type="checkbox" name="stages" value="{{ s }}" {% if s in filters.stages %}checked{% endif %}> {{ s }}</label>
         {% endfor %}
       </div>
     </div>
@@ -121,28 +147,30 @@
       </div>
     </div>
 
-    {% if is_oversight %}
-    <div class="filter-accordion-item{% if filters.owner %} open{% endif %}" data-fa="owner">
+    <div class="filter-accordion-item{% if filters.owners %} open{% endif %}" data-fa="owner">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('owner')">
-        <span>Owner{% if filters.owner %}<span class="fa-current"> · {{ filters.owner }}</span>{% endif %}</span>
+        <span>Owner{% if filters.owners %}<span class="fa-current"> · {{ filters.owners|join(', ') }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="owner" value="" {% if not filters.owner %}checked{% endif %}> Everyone</label>
-        {% for o in owner_options %}
-        <label class="opt-row"><input type="radio" name="owner" value="{{ o }}" {% if filters.owner == o %}checked{% endif %}> {{ o }}</label>
-        {% endfor %}
+        {% if owner_options %}<input type="text" class="opt-search no-print" placeholder="Search owners…" oninput="filterOptRows(this)">{% endif %}
+        <div class="opt-list">
+          {% for o in owner_options %}
+          <label class="opt-row"><input type="checkbox" name="owners" value="{{ o }}" {% if o in filters.owners %}checked{% endif %}> {{ o }}</label>
+          {% endfor %}
+          {% if not owner_options %}<p style="font-size:13px; color:var(--ink-soft);">No owners recorded yet.</p>{% endif %}
+        </div>
       </div>
     </div>
-    {% endif %}
   </div>
 
   <div class="write-form-row" style="margin-top:14px;">
     <button type="submit" class="btn btn-primary">Apply Filters</button>
-    <a href="{{ url_for('export_leads_view') }}" class="btn">Clear All</a>
+    <a href="{{ url_for('settings_export_leads_view') }}" class="btn">Clear All</a>
   </div>
 </form>
 
+{% if show_results %}
 {% if report.rows %}
 <div class="report-table-wrap">
   <table class="report-table">
@@ -159,6 +187,7 @@
   <p>No leads match these filters.</p>
 </div>
 {% endif %}
+{% endif %}
 
 <script>
 function toggleFA(name){
@@ -170,5 +199,8 @@ function onDatePresetChange(sel){
   var customBox = document.getElementById('customDateFields');
   customBox.style.display = (sel.value === 'custom') ? 'block' : 'none';
 }
+// filterOptRows() (Task B's search-box filter) moved to base.html
+// v0.15 — shared with bulk_reassign_filter.html, no longer duplicated
+// here.
 </script>
 {% endblock %}

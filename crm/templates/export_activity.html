@@ -1,10 +1,13 @@
-{# export_activity.html (v1.0) — Export > Export Activity History
-   (Task 4). Simplest of the three: date range + an optional single
-   lead (by Lead # or exact cls_id, since there's no lead search here —
-   typically reached FROM a lead's own Activity History section via a
-   link that pre-fills cls_id). Scoped internally like the other two:
-   a salesperson only ever sees their own leads' activity
-   (cls_db.get_activity_log_export(owner=...) in app.py). #}
+{# export_activity.html (v1.1) — Settings > Export > Export Activity
+   History. Admin-only (v1.0 was role-agnostic — see app.py v0.18).
+   No Task B/C changes — this screen has no Campaign/Project/Stage/
+   Owner filter (just date range + an optional single cls_id), so
+   neither task touches it; not adding fields that weren't asked for.
+
+   v1.1: filter form (GET, -> settings_export_activity_results) and
+   results now share this template via show_results (Task D — nothing
+   renders before an explicit Apply, same as the other two export
+   screens / Bulk Reassign's filter -> preview split). #}
 {% extends "base.html" %}
 {% block title %}Export Activity History{% endblock %}
 
@@ -22,21 +25,23 @@
   .report-table-wrap { overflow-x: auto; }
 </style>
 
-<a href="{{ url_for('export_home') }}" class="no-print" style="font-size:14px;">← Export</a>
+<a href="{{ url_for('settings_export_home') }}" class="no-print" style="font-size:14px;">← Export</a>
 <div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; margin-top:10px;">
   <h2 style="margin:0;">Export Activity History</h2>
+  {% if show_results %}
   <div class="no-print" style="display:flex; gap:8px; flex-shrink:0;">
-    <a href="{{ url_for('export_activity_excel', **export_args) }}" class="btn">Export Excel</a>
+    <a href="{{ url_for('settings_export_activity_excel', **export_args) }}" class="btn">Export Excel</a>
     <button type="button" class="btn" onclick="window.print();">Print / Save as PDF</button>
-    <form method="post" action="{{ url_for('export_activity_email') }}" style="display:inline;">
-      {% for k, v in filters.items() %}{% if k != 'campaigns' %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
+    <form method="post" action="{{ url_for('settings_export_activity_email') }}" style="display:inline;">
+      {% for k, v in filters.items() %}{% if k not in ['campaigns', 'stages', 'owners'] %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
       <input type="hidden" name="cls_id" value="{{ cls_id }}">
       <button type="submit" class="btn">Email to Me</button>
     </form>
   </div>
+  {% endif %}
 </div>
 
-<form method="get" action="{{ url_for('export_activity_view') }}" class="no-print card" style="margin-top:14px; display:flex; flex-wrap:wrap; gap:10px; align-items:end;">
+<form method="get" action="{{ url_for('settings_export_activity_results') }}" class="no-print card" style="margin-top:14px; display:flex; flex-wrap:wrap; gap:10px; align-items:end;">
   <div>
     <div class="field-label">From</div>
     <input type="date" name="date_from" value="{{ filters.date_from }}" style="height:34px; font-size:13px; padding:4px 8px;">
@@ -50,9 +55,10 @@
     <input type="text" name="cls_id" value="{{ cls_id }}" placeholder="Leave blank for all leads" style="height:34px; font-size:13px; padding:4px 8px;">
   </div>
   <button type="submit" class="btn btn-primary" style="height:34px;">Apply</button>
-  <a href="{{ url_for('export_activity_view') }}" class="btn" style="height:34px; display:flex; align-items:center;">Clear</a>
+  <a href="{{ url_for('settings_export_activity_view') }}" class="btn" style="height:34px; display:flex; align-items:center;">Clear</a>
 </form>
 
+{% if show_results %}
 {% if report.rows %}
 <div class="report-table-wrap">
   <table class="report-table">
@@ -68,5 +74,6 @@
 <div class="card empty-state" style="margin-top:14px;">
   <p>No activity matches these filters.</p>
 </div>
+{% endif %}
 {% endif %}
 {% endblock %}

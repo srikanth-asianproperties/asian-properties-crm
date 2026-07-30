@@ -1,7 +1,20 @@
-{# export_site_visits.html (v1.0) — Export > Export Site Visits Conducted
-   (Task 4). Same filter-accordion + print/table pattern as
+{# export_site_visits.html (v1.2) — Settings > Export > Export Site
+   Visits Conducted. Admin-only (v1.0 was role-agnostic — see app.py
+   v0.18). Same filter-accordion + print/table pattern as
    export_leads.html, trimmed to the 2 fields this export offers: date
-   range (filters on conducted_at) and owner (oversight roles only). #}
+   range (filters on conducted_at) and Owner.
+
+   v1.2: filterOptRows() moved to base.html v0.15 (shared with
+   bulk_reassign_filter.html's new search boxes); local definition
+   removed here, no other change.
+
+   v1.1: filter form (GET, -> settings_export_site_visits_results) and
+   results now share this template via show_results (Task D, mirrors
+   Bulk Reassign's filter -> preview split — nothing renders before an
+   explicit Apply). Owner is now a checkbox multi-select with a search
+   box (Task C + B — OR'd server-side via cls_db.py v2.30's owners=
+   list param), no longer gated behind is_oversight (admin-only now,
+   no salesperson caller left to hide it from). #}
 {% extends "base.html" %}
 {% block title %}Export Site Visits Conducted{% endblock %}
 
@@ -24,23 +37,27 @@
   .filter-accordion-body { display:none; padding:0 16px 16px 16px; border-top:1px solid var(--line); }
   .filter-accordion-item.open .filter-accordion-body { display:block; padding-top:12px; }
   .opt-row { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:14px; cursor:pointer; }
+  .opt-search { width:100%; padding:7px 10px; margin-bottom:8px; border:1.5px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px; }
 </style>
 
-<a href="{{ url_for('export_home') }}" class="no-print" style="font-size:14px;">← Export</a>
+<a href="{{ url_for('settings_export_home') }}" class="no-print" style="font-size:14px;">← Export</a>
 <div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; margin-top:10px;">
   <h2 style="margin:0;">Export Site Visits Conducted</h2>
+  {% if show_results %}
   <div class="no-print" style="display:flex; gap:8px; flex-shrink:0;">
-    <a href="{{ url_for('export_site_visits_excel', **filters) }}" class="btn">Export Excel</a>
+    <a href="{{ url_for('settings_export_site_visits_excel', **filters) }}" class="btn">Export Excel</a>
     <button type="button" class="btn" onclick="window.print();">Print / Save as PDF</button>
-    <form method="post" action="{{ url_for('export_site_visits_email') }}" style="display:inline;">
-      {% for k, v in filters.items() %}{% if k != 'campaigns' %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
+    <form method="post" action="{{ url_for('settings_export_site_visits_email') }}" style="display:inline;">
+      {% for k, v in filters.items() %}{% if k not in ['campaigns', 'stages', 'owners'] %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
+      {% for o in filters.owners %}<input type="hidden" name="owners" value="{{ o }}">{% endfor %}
       <button type="submit" class="btn">Email to Me</button>
     </form>
   </div>
+  {% endif %}
 </div>
 <p style="font-size:13px; color:var(--ink-soft); margin-top:4px;">Date range filters on when the visit was CONDUCTED, not when it was scheduled.</p>
 
-<form method="get" action="{{ url_for('export_site_visits_view') }}" class="no-print" id="exportFilterForm">
+<form method="get" action="{{ url_for('settings_export_site_visits_results') }}" class="no-print" id="exportFilterForm">
   <div id="filterAccordion">
     <div class="filter-accordion-item{% if filters.date_preset %} open{% endif %}" data-fa="date">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('date')">
@@ -61,28 +78,30 @@
       </div>
     </div>
 
-    {% if is_oversight %}
-    <div class="filter-accordion-item{% if filters.owner %} open{% endif %}" data-fa="owner">
+    <div class="filter-accordion-item{% if filters.owners %} open{% endif %}" data-fa="owner">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('owner')">
-        <span>Owner{% if filters.owner %}<span class="fa-current"> · {{ filters.owner }}</span>{% endif %}</span>
+        <span>Owner{% if filters.owners %}<span class="fa-current"> · {{ filters.owners|join(', ') }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="owner" value="" {% if not filters.owner %}checked{% endif %}> Everyone</label>
-        {% for o in owner_options %}
-        <label class="opt-row"><input type="radio" name="owner" value="{{ o }}" {% if filters.owner == o %}checked{% endif %}> {{ o }}</label>
-        {% endfor %}
+        {% if owner_options %}<input type="text" class="opt-search no-print" placeholder="Search owners…" oninput="filterOptRows(this)">{% endif %}
+        <div class="opt-list">
+          {% for o in owner_options %}
+          <label class="opt-row"><input type="checkbox" name="owners" value="{{ o }}" {% if o in filters.owners %}checked{% endif %}> {{ o }}</label>
+          {% endfor %}
+          {% if not owner_options %}<p style="font-size:13px; color:var(--ink-soft);">No owners recorded yet.</p>{% endif %}
+        </div>
       </div>
     </div>
-    {% endif %}
   </div>
 
   <div class="write-form-row" style="margin-top:14px;">
     <button type="submit" class="btn btn-primary">Apply Filters</button>
-    <a href="{{ url_for('export_site_visits_view') }}" class="btn">Clear All</a>
+    <a href="{{ url_for('settings_export_site_visits_view') }}" class="btn">Clear All</a>
   </div>
 </form>
 
+{% if show_results %}
 {% if report.rows %}
 <div class="report-table-wrap">
   <table class="report-table">
@@ -99,6 +118,7 @@
   <p>No conducted site visits match these filters.</p>
 </div>
 {% endif %}
+{% endif %}
 
 <script>
 function toggleFA(name){
@@ -110,5 +130,8 @@ function onDatePresetChange(sel){
   var customBox = document.getElementById('customDateFields');
   customBox.style.display = (sel.value === 'custom') ? 'block' : 'none';
 }
+// filterOptRows() (Task B's search-box filter) moved to base.html
+// v0.15 — shared with bulk_reassign_filter.html, no longer duplicated
+// here.
 </script>
 {% endblock %}
