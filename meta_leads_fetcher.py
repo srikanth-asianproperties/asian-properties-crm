@@ -2,11 +2,23 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.5
+Version : 1.6
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.6 (2026-07-30) : Capture Meta's "platform" field (e.g. "fb"/"ig"),
+                    requires cls_db.py v2.32's new upsert_meta_lead(
+                    meta_platform=...) param. ADDITIONS ONLY:
+                      - fetch_leads_for_form()'s `fields` param now also
+                        requests "platform".
+                      - extract_lead_fields() returns a new
+                        "meta_platform": raw_lead.get("platform", "") key
+                        — read straight off raw_lead, same pattern as the
+                        existing meta_campaign_id/meta_adset_id/etc.
+                      - run()'s upsert_meta_lead() call gained one new
+                        passthrough kwarg (meta_platform=fields["meta_platform"]).
+                    Nothing else in this file changes.
 v1.5 (2026-07)    : APX v0.7 batch, Task 2.1 — Complete Activity History.
                     extract_lead_fields() now ALSO collects any field_data
                     entries that don't match the name/phone/email alias
@@ -336,7 +348,7 @@ def fetch_leads_for_form(form, page_token, app_secret, since_unix=None):
 
     params = {
         "fields": "id,created_time,campaign_id,campaign_name,"
-                   "adset_id,adset_name,ad_id,ad_name,field_data",
+                   "adset_id,adset_name,ad_id,ad_name,platform,field_data",
         "limit" : PAGE_SIZE,
     }
     if since_unix is not None:
@@ -393,11 +405,11 @@ def extract_lead_fields(raw_lead):
     of known aliases for each of name / phone / email.
 
     Returns dict: leadgen_id, created_time, full_name, phone, email,
-    plus the 6 meta_-prefixed ad/campaign fields (v1.4) — read straight
-    from raw_lead, not field_data, same as leadgen_id/created_time.
-    Prefixed with meta_ specifically so they're never confused with
-    LEAD_FORMS's own "campaign_name" config key (a Campaign Routing
-    label, unrelated to Meta's own campaign_name field).
+    plus the 6 meta_-prefixed ad/campaign fields (v1.4) and meta_platform
+    (v1.6) — all read straight from raw_lead, not field_data, same as
+    leadgen_id/created_time. Prefixed with meta_ specifically so they're
+    never confused with LEAD_FORMS's own "campaign_name" config key (a
+    Campaign Routing label, unrelated to Meta's own campaign_name field).
 
     Also returns extra_answers (v1.5): an ordered list of
     {"question": <field name>, "answer": <value>} for every field_data
@@ -413,6 +425,7 @@ def extract_lead_fields(raw_lead):
         "meta_adset_name"   : raw_lead.get("adset_name", ""),
         "meta_ad_id"        : raw_lead.get("ad_id", ""),
         "meta_ad_name"      : raw_lead.get("ad_name", ""),
+        "meta_platform"     : raw_lead.get("platform", ""),
         "full_name"         : "",
         "phone"             : "",
         "email"             : "",
@@ -580,6 +593,7 @@ def run():
                     meta_adset_name    = fields["meta_adset_name"],
                     meta_ad_id         = fields["meta_ad_id"],
                     meta_ad_name       = fields["meta_ad_name"],
+                    meta_platform      = fields["meta_platform"],
                     extra_answers      = fields.get("extra_answers") or None,
                 )
                 upserted += 1

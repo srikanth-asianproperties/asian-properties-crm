@@ -2,11 +2,41 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.31
+Version : 2.32
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.32 (2026-07-30) — Meta "platform" capture + lead_entered description
+  rebuild for Meta-sourced leads (meta_leads_fetcher.py v1.6). Fixes the
+  bug where lead_detail.html had no {% elif %} branch for activity_type
+  'lead_entered', so it fell through to the generic {% else %} and
+  showed the literal string "lead_entered" instead of a description.
+    - Self-healing migration: new nullable `meta_platform TEXT` column
+      on `leads` (drip_migrations list), same ALTER TABLE ... IF NOT
+      EXISTS pattern as the other meta_ columns. Additive only.
+    - upsert_meta_lead() gained an optional meta_platform=None param,
+      stored on branch 1 (leadgen_id-refresh UPDATE) and branch 3
+      (brand-new INSERT) — identical treatment to meta_campaign_id/
+      meta_adset_id/meta_ad_id. Branch 2 (Sell.do-only contact-match
+      enrich) leaves it untouched, same as the other meta_ fields today.
+    - Branch 3's lead_entered description rebuilt from the old
+      single-line prose ("Lead entered via campaign 'X' — Name: ...")
+      into a labeled, multi-line block — one field per line, in fixed
+      order: Lead Source, Leadgen Id, Campaign Name, Adset Name, Ad
+      Name, Platform, Lead Name, Lead Contact, Lead Email. Blank fields
+      are omitted (same "omit rather than print None" convention as
+      before), and Lead Source is always the fixed string "Facebook
+      Lead Ads" for this branch. The extra_answers "Also answered — "
+      text still appends below the block on its own line, same content
+      as before. Scoped to THIS branch (genuinely-new Meta lead) ONLY —
+      upsert_selldo_lead()'s and create_manual_lead()'s own lead_entered
+      descriptions are untouched, out of scope per Srikanth's
+      instruction. activity_log is append-only, so existing
+      old-format lead_entered rows are unaffected and still render fine
+      under lead_detail.html v9's new generic (description-agnostic)
+      template branch.
+
 v2.31 (2026-07-29) — Dashboard owner-scoping fix + "Leads to Booking
   Summary" tab (app.py v0.20).
     - Part A bug fix: get_new_enquiries_count(), get_new_enquiries_leads(),
@@ -2080,6 +2110,11 @@ def init_db():
         ("meta_adset_name",    "TEXT"),
         ("meta_ad_id",         "TEXT"),
         ("meta_ad_name",       "TEXT"),
+        # v2.32 — Meta's "platform" field (e.g. "fb"/"ig"), populated by
+        # meta_leads_fetcher.py v1.6+. Same nullable/additive pattern as
+        # the other meta_ columns above. NULL on all leads created before
+        # this version.
+        ("meta_platform",      "TEXT"),
     ]
     for col_name, col_type in drip_migrations:
         if col_name not in lead_cols:
@@ -6113,7 +6148,8 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                      phone_raw, email_raw, meta_created_time, campaign=None,
                      meta_campaign_id=None, meta_campaign_name=None,
                      meta_adset_id=None, meta_adset_name=None,
-                     meta_ad_id=None, meta_ad_name=None, extra_answers=None):
+                     meta_ad_id=None, meta_ad_name=None, meta_platform=None,
+                     extra_answers=None):
     """
     Called by meta_leads_fetcher.py (Job A) for each Facebook lead.
 
@@ -6144,6 +6180,12 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
     the campaign column/Campaign Routing above — meta_ prefix avoids
     any confusion between Meta's own campaign_name and LEAD_FORMS's
     unrelated "campaign_name" routing config key.
+
+    meta_platform (v2.32, optional): Meta's "platform" field (e.g.
+    "fb"/"ig"), from meta_leads_fetcher.py v1.6+. Same idempotent
+    direct-overwrite treatment as the other meta_ fields on branches 1
+    and 3 (branch 2's contact-match enrich path leaves it untouched,
+    identical to how the other meta_ fields are handled there today).
 
     extra_answers (v2.28, optional): ordered list of {"question",
     "answer"} dicts — any instant-form field_data entries that didn't
@@ -6176,7 +6218,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                     meta_created_time=?,
                     meta_campaign_id=?, meta_campaign_name=?,
                     meta_adset_id=?, meta_adset_name=?,
-                    meta_ad_id=?, meta_ad_name=?,
+                    meta_ad_id=?, meta_ad_name=?, meta_platform=?,
                     cls_updated_at=?
                 WHERE cls_id=?
             """, (form_id, project, full_name,
@@ -6184,7 +6226,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                   meta_created_time,
                   meta_campaign_id, meta_campaign_name,
                   meta_adset_id, meta_adset_name,
-                  meta_ad_id, meta_ad_name,
+                  meta_ad_id, meta_ad_name, meta_platform,
                   now, cls_id))
             conn.commit()
             return cls_id
@@ -6236,44 +6278,51 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                 current_stage, stage_updated_at, lead_owner, campaign,
                 meta_campaign_id, meta_campaign_name,
                 meta_adset_id, meta_adset_name,
-                meta_ad_id, meta_ad_name,
+                meta_ad_id, meta_ad_name, meta_platform,
                 cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (cls_id, leadgen_id, form_id, project, full_name,
               phone_raw, phone_norm, email_raw, email_norm,
               meta_created_time, "meta", crm_lead_no,
               "Incoming", now, default_owner, campaign,
               meta_campaign_id, meta_campaign_name,
               meta_adset_id, meta_adset_name,
-              meta_ad_id, meta_ad_name,
+              meta_ad_id, meta_ad_name, meta_platform,
               now, now))
 
         # v2.28 — Task 2.1: one lead_entered row at the exact moment
         # this lead first exists in CLS, backdated to Meta's own
         # created_time (not "now", which is just whenever Job A polled
-        # it). Blank pieces (campaign name unset, no email, etc.) are
-        # omitted rather than printed as "None".
-        via_parts = []
+        # it).
+        # v2.32 — rebuilt as a labeled, multi-line block (one field per
+        # line, fixed order) instead of the old single-line prose
+        # ("Lead entered via campaign 'X' / adset 'Y' — Name: ..."),
+        # so lead_detail.html can render it plainly without re-parsing
+        # prose. Same "omit rather than print None" convention as
+        # before — a blank field just isn't a line, never "None".
+        # Scoped to THIS branch only (genuinely-new Meta lead) — Job B's
+        # upsert_selldo_lead() and the CRM's create_manual_lead() keep
+        # their own existing single-line lead_entered descriptions
+        # untouched.
+        line_parts = [("Lead Source", "Facebook Lead Ads")]
+        if leadgen_id:
+            line_parts.append(("Leadgen Id", leadgen_id))
         if meta_campaign_name:
-            via_parts.append(f"campaign '{meta_campaign_name}'")
+            line_parts.append(("Campaign Name", meta_campaign_name))
         if meta_adset_name:
-            via_parts.append(f"adset '{meta_adset_name}'")
+            line_parts.append(("Adset Name", meta_adset_name))
         if meta_ad_name:
-            via_parts.append(f"ad '{meta_ad_name}'")
-
-        detail_parts = []
+            line_parts.append(("Ad Name", meta_ad_name))
+        if meta_platform:
+            line_parts.append(("Platform", meta_platform))
         if full_name:
-            detail_parts.append(f"Name: {full_name}")
+            line_parts.append(("Lead Name", full_name))
         if phone_raw:
-            detail_parts.append(f"Phone: {phone_raw}")
+            line_parts.append(("Lead Contact", phone_raw))
         if email_raw:
-            detail_parts.append(f"Email: {email_raw}")
+            line_parts.append(("Lead Email", email_raw))
 
-        description = "Lead entered"
-        if via_parts:
-            description += " via " + " / ".join(via_parts)
-        if detail_parts:
-            description += " — " + ", ".join(detail_parts)
+        description = "\n".join(f"{label}: {value}" for label, value in line_parts)
 
         if extra_answers:
             qa = "; ".join(
@@ -6281,7 +6330,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                 for a in extra_answers if a.get("answer")
             )
             if qa:
-                description += f". Also answered — {qa}"
+                description += f"\nAlso answered — {qa}"
 
         _log_activity(conn, cls_id, "lead_entered", "system",
                       description=description,

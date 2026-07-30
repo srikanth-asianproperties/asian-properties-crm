@@ -1,4 +1,14 @@
-{# lead_detail.html v8 (July 2026) — stage pill picker replacing native
+{# lead_detail.html v9 (2026-07-30) — renders activity_type 'lead_entered'
+   (was falling through to the generic {% else %} and showing the literal
+   string "lead_entered"). New branch renders a.description with '\n'
+   converted to '<br>' (safe — description is always system-generated,
+   never user free-text), icon 🆕. Also added 'lead_entered': 'other' to
+   ACTIVITY_BUCKETS for clarity. Requires cls_db.py v2.32's rebuilt
+   lead_entered description for Meta-sourced leads; works unchanged for
+   Sell.do-sync/manual-entry leads' existing single-line descriptions too,
+   since the branch is description-agnostic. No other lines changed.
+
+   lead_detail.html v8 (July 2026) — stage pill picker replacing native
    <select> (Srikanth's UI request; template + CSS + JS-in-template only,
    no route/backend changes). The stage badge (line ~167) is now tappable
    when can_write + allowed_next_stages (same gating the old dropdown
@@ -176,6 +186,7 @@
   'stage_change'           : 'stage_change',
   'assignment_change'      : 'assignment_change',
   'contact_info_updated'   : 'contact_info',
+  'lead_entered'           : 'other',
 } %}
 
 <a href="{{ url_for('leads_list') }}" style="font-size:14px;">← Back to leads</a>
@@ -564,6 +575,8 @@
             <div>🏠 Property details updated — {{ a.description }}</div>
           {% elif a.activity_type == 'contact_info_updated' %}
             <div>✏️ Contact info updated — {{ a.description }}</div>
+          {% elif a.activity_type == 'lead_entered' %}
+            <div>🆕 {{ a.description|replace('\n', '<br>')|safe if a.description else '' }}</div>
           {% else %}
             <div>{{ a.activity_type }}</div>
           {% endif %}
