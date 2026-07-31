@@ -17,7 +17,9 @@
    is a destructive-at-scale action.
    v0.18 — NEW "Export" tile. Export MOVED here from a standalone nav
    link (base.html v0.13 -> v0.14) — was role-agnostic/self-scoped like
-   Reports, now admin-only, per Srikanth's explicit reversal. #}
+   Reports, now admin-only, per Srikanth's explicit reversal.
+   v0.19 — NEW "Telephony" tile (settings_telephony.html, Phase B
+   call-recording matching, cls_db.py v2.33). #}
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 
@@ -116,6 +118,16 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
       Export leads, conducted site visits, or activity history to Excel, PDF, or your inbox.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_telephony') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+      <span style="font-weight:700; font-size:16px;">Telephony</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Per-salesperson recording folder paths and API tokens for the call-recording pilot.
     </p>
   </a>
 

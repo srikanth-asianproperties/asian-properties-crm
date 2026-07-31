@@ -1,0 +1,70 @@
+{# settings_telephony.html (v1) — admin Settings > Telephony (Phase B).
+   Two independent forms, deliberately not nested (HTML disallows nested
+   <form> tags): the top form saves every user's recording-folder path in
+   one Save click (settings_lead_scoring.html's "one input per item, one
+   Save button" pattern). The per-user "Generate Token" buttons below are
+   each their own small form (settings_users.html's per-row-form pattern)
+   so saving paths can never accidentally regenerate someone's token.
+   Placeholder folder patterns are examples only — an admin types the
+   actual path for that salesperson's phone. #}
+{% extends "base.html" %}
+{% block title %}Telephony{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+<h2 style="margin-top:10px;">Telephony</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:-6px;">
+  Phase B pilot config: where each salesperson's phone stores call recordings, and the
+  bearer token their app uses to report call-log data. Recordings are only ever fetched
+  for calls matching an existing lead — see TELEPHONY_RECORDING_POLICY.md.
+</p>
+
+<form method="post" action="{{ url_for('settings_telephony') }}">
+  <div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0; font-size:16px;">Recording folder paths</h3>
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      {% for u in users %}
+      <div>
+        <div class="field-label">
+          {{ u.full_name or u.email }}
+          <span class="badge" style="background:{{ 'var(--blue)' if u.role == 'admin' else ('#7C5CBF' if u.role == 'manager' else 'var(--ink-soft)') }}; margin-left:6px;">
+            {{ u.role or 'salesperson' }}
+          </span>
+        </div>
+        <input type="text" name="path_{{ u.user_id }}" value="{{ u.recording_folder_path }}"
+               placeholder="Music/Recordings/Call Recordings/" style="width:100%;">
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div style="margin-top:16px;">
+    <button type="submit" class="btn btn-primary">Save</button>
+  </div>
+</form>
+
+<div class="card" style="margin-top:16px;">
+  <h3 style="margin-top:0; font-size:16px;">API tokens</h3>
+  <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">
+    Generating a new token immediately deactivates that user's previous one — they'll need
+    to re-enter the new token in the app. Shown once, right after you generate it.
+  </p>
+  <div style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">
+    {% for u in users %}
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:10px;">
+      <span style="font-size:14px;">{{ u.full_name or u.email }}</span>
+      <form method="post" action="{{ url_for('settings_telephony_generate_token', user_id=u.user_id) }}"
+            onsubmit="return confirm('Generate a new telephony token for {{ u.full_name or u.email }}? Their current token will stop working immediately.');">
+        <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">Generate Token</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{% if not users %}
+<div class="card empty-state">
+  <p>No users found.</p>
+</div>
+{% endif %}
+{% endblock %}

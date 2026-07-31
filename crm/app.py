@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.20
+Version : 0.21
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,39 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.21 (2026-07-31) — Phase B Telephony: server-side call-recording
+  matching backend. Requires cls_db.py v2.33. Additions only.
+
+  Admin Settings > Telephony (new): per-user recording-folder path
+  config (settings_telephony, one form/one Save button, following
+  settings_lead_scoring.html's pattern) + per-user bearer-token
+  generation (settings_telephony_generate_token, a deliberately
+  separate small form so saving paths can never accidentally
+  regenerate a token). Gated @login_required + @admin_required, same
+  as every other Settings route — NOT can_write_any_lead, which is a
+  different lead-scoped gate.
+
+  New token_required decorator + 2 new /api/telephony/* endpoints
+  (report-calls, upload-recording) — the FIRST token-based auth and
+  FIRST /api/* JSON routes in this file, entirely independent of the
+  session-cookie login (no `session` access at all in token_required).
+  jsonify/g added to the flask import; secure_filename added from
+  werkzeug.utils (first file-upload handling in this file).
+  RECORDINGS_DIR = C:\\CLS\\call_recordings — new, intentionally
+  excluded from cls_backup.py's rclone sync (see that file's v1.2
+  changelog) pending DPDP consent-notice design.
+
+  New /recordings/<lead_id>/<filename> route for the <audio> player in
+  lead_detail.html's timeline — @login_required (not @token_required,
+  this is for browser/WebView playback by a logged-in human), gated by
+  the same READ condition lead_detail() itself uses to decide whether
+  the timeline is shown (can_write OR can_view_all_leads) — NOT
+  _check_lead_ownership, which is the stricter WRITE-only gate and
+  would incorrectly 403 an oversight viewer.
+
+  Does not touch android_pilot/ — the app-side code that calls these
+  new endpoints is a follow-up, out of scope for this change.
+
 v0.20 (2026-07-29) — Dashboard owner-scoping fix + "Leads to Booking
   Summary" tab. Requires cls_db.py v2.31.
 
@@ -981,14 +1014,23 @@ from functools import wraps
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, send_from_directory, send_file, abort, flash
+    session, send_from_directory, send_file, abort, flash,
+    jsonify, g
 )
+from werkzeug.utils import secure_filename
 
 # ── Import cls_db.py the same way every other CLS job does ──
 BASE_DIR = r"C:\CLS"
 sys.path.insert(0, BASE_DIR)
 import cls_db  # noqa: E402  (must follow the sys.path insert above)
 import cls_reports  # v0.6 — Reports section; lives in crm/ alongside app.py, no sys.path change needed
+
+# v0.21 — Phase B Telephony: where uploaded call recordings land.
+# Deliberately outside cls_db.py's DB file (this is plain files, not
+# rows) but still under C:\CLS\ for a single-drive backup story.
+# Intentionally EXCLUDED from cls_backup.py's rclone sync (see that
+# file's v1.2 changelog) pending DPDP consent-notice design.
+RECORDINGS_DIR = os.path.join(BASE_DIR, "call_recordings")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1165,6 +1207,30 @@ def admin_required(view):
         user = cls_db.get_user_by_id(session["user_id"])
         if not user or user["role"] != "admin":
             abort(403, description="This area is for admins only.")
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def token_required(view):
+    """
+    v0.21 — Phase B Telephony. Auth for the 2 telephony API endpoints
+    ONLY, entirely independent of the session-cookie login every other
+    route in this file uses — no `session` read or write happens here
+    at all. Reads 'Authorization: Bearer <token>', resolves it via
+    cls_db.verify_api_token(), and stashes the resolved user on
+    flask.g for the view. 401s on anything missing/invalid, same
+    fail-closed posture as login_required/admin_required.
+    """
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            abort(401, description="Missing or malformed Authorization header.")
+        raw_token = auth_header[len("Bearer "):].strip()
+        user = cls_db.verify_api_token(raw_token)
+        if not user:
+            abort(401, description="Invalid or expired token.")
+        g.telephony_user = user
         return view(*args, **kwargs)
     return wrapped
 
@@ -3346,6 +3412,60 @@ def settings_user_new():
     return render_template("settings_user_new.html", roles=cls_db.CRM_ROLES, form=form)
 
 
+@app.route("/settings/telephony", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_telephony():
+    """
+    v0.21 — admin Settings > Telephony. Phase B: per-salesperson OEM
+    recording-folder path config (cls_db.user_recording_paths), one text
+    input per user saved together in a single form — same shape as
+    settings_lead_scoring.html's "one input per item, one Save button"
+    pattern, not settings_users.html's per-row-own-form pattern.
+    Token generation (per-user bearer token for the 2 telephony API
+    endpoints) is a SEPARATE small form per row below, deliberately not
+    bundled into this save form so saving paths can never accidentally
+    regenerate someone's token.
+    """
+    if request.method == "POST":
+        users = cls_db.get_all_users_detailed()
+        for u in users:
+            field = f"path_{u['user_id']}"
+            if field in request.form:
+                cls_db.set_recording_path(u["user_id"], request.form.get(field, "").strip())
+        flash("Recording folder paths saved.", "success")
+        return redirect(url_for("settings_telephony"))
+
+    users = cls_db.get_all_users_detailed()
+    for u in users:
+        u["recording_folder_path"] = cls_db.get_recording_path(u["user_id"]) or ""
+    return render_template("settings_telephony.html", users=users)
+
+
+@app.route("/settings/telephony/token/<int:user_id>", methods=["POST"])
+@login_required
+@admin_required
+def settings_telephony_generate_token(user_id):
+    """
+    v0.21 — issues a new telephony API token for one user (old one is
+    deactivated, not deleted — cls_db.generate_api_token()'s "never
+    discard" posture). The raw token is shown exactly once via flash —
+    it is never logged (crm_app_log.txt never sees it) and cls_db.py
+    never stores it, only its hash.
+    """
+    user = cls_db.get_user_by_id(user_id)
+    if not user:
+        flash("Unknown user.", "error")
+        return redirect(url_for("settings_telephony"))
+    raw_token = cls_db.generate_api_token(user_id)
+    flash(
+        f"New token for {user['full_name'] or user['email']}: {raw_token} "
+        f"— copy this now, it will not be shown again.",
+        "success"
+    )
+    return redirect(url_for("settings_telephony"))
+
+
 @app.route("/settings/user-activity")
 @login_required
 @admin_required
@@ -3518,6 +3638,146 @@ def whatsapp_reminder_template_delete(template_id):
     ok, message = cls_db.delete_whatsapp_reminder_template(template_id)
     flash(message, "success" if ok else "error")
     return redirect(url_for("whatsapp_reminder_templates_admin"))
+
+
+# ─────────────────────────────────────────────────────────────
+# PHASE B TELEPHONY API  (v0.21) — token auth, NOT session-cookie auth
+# ─────────────────────────────────────────────────────────────
+# The Android app's job is dumb and simple: report call-log metadata
+# (never files) to report-calls below, then upload ONLY the specific
+# recordings the server said matched a lead. See
+# C:\CLS\TELEPHONY_RECORDING_POLICY.md for the locked scope rule these
+# two endpoints enforce, and cls_db.py v2.33's changelog for the schema.
+
+@app.route("/api/telephony/report-calls", methods=["POST"])
+@token_required
+def api_telephony_report_calls():
+    """
+    Body: {"calls": [{"number": "...", "timestamp": "YYYY-MM-DD HH:MM:SS",
+    "duration": <seconds>, "direction": "INCOMING"/"OUTGOING"/...}, ...]}
+
+    Every entry is normalized + matched via cls_db.record_call_log_entry()
+    (reuses norm_phone()/find_match() — no new matching logic) and logged
+    to call_log_staging regardless of outcome. The response contains
+    ONLY matched entries plus this user's configured recording folder —
+    unmatched numbers are never returned to the app and are never
+    persisted anywhere but call_log_staging.
+    """
+    user = g.telephony_user
+    body = request.get_json(silent=True) or {}
+    calls = body.get("calls", [])
+    if not isinstance(calls, list):
+        return jsonify({"error": "'calls' must be a list."}), 400
+
+    matched = []
+    for entry in calls:
+        if not isinstance(entry, dict):
+            continue
+        number = str(entry.get("number", "")).strip()
+        timestamp = str(entry.get("timestamp", "")).strip()
+        duration = entry.get("duration", 0)
+        direction = str(entry.get("direction", "")).strip()
+        if not number or not timestamp:
+            continue
+        result = cls_db.record_call_log_entry(user["user_id"], number, timestamp, duration, direction)
+        if result["matched"]:
+            matched.append({
+                "lead_id": result["cls_id"],
+                "call_timestamp": result["call_timestamp"],
+                "duration_seconds": result["duration_seconds"],
+            })
+
+    return jsonify({
+        "recording_folder_path": cls_db.get_recording_path(user["user_id"]),
+        "matched": matched,
+    })
+
+
+@app.route("/api/telephony/upload-recording", methods=["POST"])
+@token_required
+def api_telephony_upload_recording():
+    """
+    Multipart form: file field 'recording', plus 'lead_id',
+    'call_timestamp', 'duration' fields. Only called by the app for
+    entries this user's own prior report-calls response marked matched.
+
+    Validates lead_id is a real lead, saves the file under
+    RECORDINGS_DIR/<lead_id>/<safe filename>, and logs it to that
+    lead's activity timeline via cls_db.log_call_recording() with
+    created_at backdated to the real call time (not upload time).
+    matched_phone is taken from the lead's OWN stored phone_norm, not
+    from client input — that's the number that actually matched.
+
+    recording_file_path is stored as JUST the filename (not lead_id/
+    filename) — the lead_id half of the path is already the row's own
+    cls_id, and lead_detail.html's <audio> src builds the URL from both
+    separately (url_for('serve_recording', lead_id=a.cls_id,
+    filename=a.recording_file_path)), so there's no path-separator
+    (Windows "\\" vs URL "/") ambiguity to resolve in the template.
+    """
+    user = g.telephony_user
+    lead_id = request.form.get("lead_id", "").strip()
+    call_timestamp = request.form.get("call_timestamp", "").strip()
+    duration_raw = request.form.get("duration", "0").strip()
+    uploaded = request.files.get("recording")
+
+    if not lead_id or not call_timestamp or not uploaded:
+        return jsonify({
+            "success": False,
+            "message": "lead_id, call_timestamp, and recording file are all required."
+        }), 400
+
+    lead = cls_db.get_lead_by_id(lead_id)
+    if not lead:
+        return jsonify({"success": False, "message": "Unknown lead_id."}), 404
+
+    try:
+        duration_seconds = int(float(duration_raw))
+    except ValueError:
+        duration_seconds = 0
+
+    safe_lead_id = secure_filename(lead_id)
+    safe_name = secure_filename(uploaded.filename) or f"{call_timestamp.replace(':', '-').replace(' ', '_')}.mp3"
+    lead_dir = os.path.join(RECORDINGS_DIR, safe_lead_id)
+    os.makedirs(lead_dir, exist_ok=True)
+    uploaded.save(os.path.join(lead_dir, safe_name))
+
+    ok, msg = cls_db.log_call_recording(
+        lead_id, user["email"], safe_name,
+        duration_seconds, lead.get("phone_norm"), call_timestamp,
+    )
+    return jsonify({"success": ok, "message": msg})
+
+
+@app.route("/recordings/<lead_id>/<path:filename>")
+@login_required
+def serve_recording(lead_id, filename):
+    """
+    v0.21 — authenticated playback for the <audio> player in
+    lead_detail.html's timeline. Deliberately @login_required, NOT
+    @token_required — this is for a logged-in human viewing the CRM in
+    a browser/WebView, not the app's own upload flow.
+
+    Gated by the same READ condition lead_detail() itself uses to decide
+    whether this lead's activity timeline (and therefore any
+    call_recording entry) is shown at all — can_write OR
+    can_view_all_leads — NOT _check_lead_ownership, which is the
+    stricter WRITE-only gate. Conflating the two would 403 a manager/
+    oversight viewer who can already see this exact recording referenced
+    on the lead's page. See _is_lead_owner_or_admin()'s docstring on why
+    read and write are deliberately separate checks in this file.
+    """
+    lead = cls_db.get_lead_by_id(lead_id)
+    if not lead:
+        abort(404)
+    user = cls_db.get_user_by_id(session["user_id"])
+    can_read = _is_lead_owner_or_admin(lead, user) or cls_db.can_view_all_leads(user["role"])
+    if not can_read:
+        abort(403, description="This lead isn't assigned to you.")
+    return send_from_directory(
+        os.path.join(RECORDINGS_DIR, secure_filename(lead_id)),
+        filename
+    )
 
 
 # ─────────────────────────────────────────────────────────────

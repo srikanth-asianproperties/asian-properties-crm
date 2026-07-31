@@ -2,11 +2,17 @@
 =============================================================
 cls_backup.py  —  CLS Daily Backup to Google Drive
 =============================================================
-Version : 1.1
+Version : 1.2
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.2  (2026-07-31) — Exclude call_recordings/ (Phase B Telephony) from
+  both Step 1 (daily copy) and Step 2 (latest sync) via a new
+  --exclude "call_recordings/**" flag on each rclone call. Nothing else
+  changed — every other file/folder under C:\\CLS\\ is still backed up
+  exactly as before. See RCLONE_EXCLUDE_CALL_RECORDINGS above for why.
+
 v1.1  (June 2026) — Three fixes after first live run:
   FIX 1 — RCLONE_TIMEOUT increased from 300s to 1800s (30 min).
     C:\CLS\ is 262 MB, not the estimated 15 MB. At typical Indian
@@ -146,6 +152,15 @@ RETAIN_DAYS = 7
 # C:\CLS\ is ~262 MB. At 1 MB/s upload (conservative Indian broadband),
 # transfer takes ~4-5 min. 30 minutes gives ample headroom.
 RCLONE_TIMEOUT = 1800
+
+# v1.2 — call_recordings/ (Phase B Telephony, app.py v0.21) is
+# deliberately excluded from this backup. Call-recording audio is more
+# sensitive than the rest of C:\CLS and the DPDP consent-notice
+# mechanics for this feature are still a separate open item (see
+# TELEPHONY_RECORDING_POLICY.md) — don't widen where this data lives
+# (i.e. syncing it to Google Drive) before that's resolved. rclone
+# filter syntax: a trailing /** excludes the folder's full contents.
+RCLONE_EXCLUDE_CALL_RECORDINGS = "call_recordings/**"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -377,6 +392,7 @@ def run_backup():
             daily_dest,
             "--progress",
             "--stats-one-line",
+            "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
         ],
         f"Daily backup → {daily_dest}"
     )
@@ -391,6 +407,7 @@ def run_backup():
             GDRIVE_LATEST,
             "--progress",
             "--stats-one-line",
+            "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
         ],
         f"Latest backup → {GDRIVE_LATEST}"
     )

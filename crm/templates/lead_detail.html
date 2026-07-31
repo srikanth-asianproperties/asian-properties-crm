@@ -1,4 +1,15 @@
-{# lead_detail.html v9 (2026-07-30) — renders activity_type 'lead_entered'
+{# lead_detail.html v10 (2026-07-31) — Phase B Telephony: new branch for
+   activity_type 'call_recording' (cls_db.py v2.33's new columns —
+   recording_file_path, duration_seconds, matched_phone — on
+   activity_log). Renders "📞 Call recording — M:SS" with an inline
+   <audio> player, src pointed at the new app.py route
+   serve_recording(lead_id, filename) — login_required, gated by the
+   same read condition (can_write OR can_view_all_leads) this page
+   itself uses to decide whether the timeline renders at all, NOT the
+   stricter write-only ownership check. Added 'call_recording':
+   'call_recording' to ACTIVITY_BUCKETS. No other branch changed.
+
+   lead_detail.html v9 (2026-07-30) — renders activity_type 'lead_entered'
    (was falling through to the generic {% else %} and showing the literal
    string "lead_entered"). New branch renders a.description with '\n'
    converted to '<br>' (safe — description is always system-generated,
@@ -187,6 +198,7 @@
   'assignment_change'      : 'assignment_change',
   'contact_info_updated'   : 'contact_info',
   'lead_entered'           : 'other',
+  'call_recording'         : 'call_recording',
 } %}
 
 <a href="{{ url_for('leads_list') }}" style="font-size:14px;">← Back to leads</a>
@@ -577,6 +589,13 @@
             <div>✏️ Contact info updated — {{ a.description }}</div>
           {% elif a.activity_type == 'lead_entered' %}
             <div>🆕 {{ a.description|replace('\n', '<br>')|safe if a.description else '' }}</div>
+          {% elif a.activity_type == 'call_recording' %}
+            <div>
+              📞 Call recording{% if a.duration_seconds is not none %} — {{ (a.duration_seconds // 60) }}:{{ '%02d'|format(a.duration_seconds % 60) }}{% endif %}
+              <audio controls preload="none" style="display:block; margin-top:6px; max-width:320px; width:100%;">
+                <source src="{{ url_for('serve_recording', lead_id=a.cls_id, filename=a.recording_file_path) }}" type="audio/mpeg">
+              </audio>
+            </div>
           {% else %}
             <div>{{ a.activity_type }}</div>
           {% endif %}

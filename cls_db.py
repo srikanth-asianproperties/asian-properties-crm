@@ -2,11 +2,42 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.32
+Version : 2.33
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.33 (2026-07-31) — Phase B Telephony: call-recording matching schema.
+  Additions only — nothing existing removed or modified. Server-side
+  half of the "dumb app, smart server" architecture confirmed after the
+  android_pilot Phase A finding (scoped storage doesn't block OEM
+  recording-folder access): the Android app reports call-log metadata
+  only; this file matches phone numbers against existing leads and
+  decides which calls get a recording fetched.
+    - Self-healing migration: 3 new nullable columns on activity_log —
+      recording_file_path TEXT, duration_seconds INTEGER, matched_phone
+      TEXT — for activity_type='call_recording' rows. cls_id and
+      created_at (already backdatable via _log_activity's v2.28
+      created_at param) were reused as-is; no JSON/payload column
+      existed to repurpose, so these 3 were genuinely new.
+    - 3 new tables: user_recording_paths (one row per user, admin-set
+      OEM folder path), user_api_tokens (per-user hashed bearer token
+      for the 2 new telephony endpoints, entirely separate from the
+      session-cookie login), call_log_staging (every call-log entry
+      reported by the app, matched or not — proves the "no scan
+      without a lead match" policy; unmatched numbers are NEVER
+      persisted anywhere else).
+    - _log_activity() gained 3 optional keyword-only params
+      (recording_file_path/duration_seconds/matched_phone), all
+      default None — every pre-existing caller unaffected.
+    - New functions: get_recording_path/set_recording_path,
+      generate_api_token/verify_api_token, record_call_log_entry,
+      log_call_recording. Phone matching reuses the existing
+      norm_phone()/find_match() — no new normalization logic written.
+    - See TELEPHONY_RECORDING_POLICY.md (new, C:\\CLS\\) for the locked
+      scope policy this schema enforces, and DPDP note (consent-notice
+      mechanics remain a separate open item, not covered by this change).
+
 v2.32 (2026-07-30) — Meta "platform" capture + lead_entered description
   rebuild for Meta-sourced leads (meta_leads_fetcher.py v1.6). Fixes the
   bug where lead_detail.html had no {% elif %} branch for activity_type
@@ -2163,6 +2194,20 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_cls ON activity_log(cls_id);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);")
 
+    # ── Self-healing migration: call-recording columns (v2.33) ──
+    # activity_type='call_recording' rows need 3 structured fields that
+    # prev_value/new_value/description don't cleanly cover (two generic
+    # slots, not three). All nullable — every pre-existing activity_type
+    # leaves these NULL and is completely unaffected.
+    activity_cols = [r["name"] for r in
+                      conn.execute("PRAGMA table_info(activity_log)").fetchall()]
+    if "recording_file_path" not in activity_cols:
+        conn.execute("ALTER TABLE activity_log ADD COLUMN recording_file_path TEXT;")
+    if "duration_seconds" not in activity_cols:
+        conn.execute("ALTER TABLE activity_log ADD COLUMN duration_seconds INTEGER;")
+    if "matched_phone" not in activity_cols:
+        conn.execute("ALTER TABLE activity_log ADD COLUMN matched_phone TEXT;")
+
     # ── site_visits / follow_ups — CRM v0.5 (Writer) scheduling ──
     # "Missed" is NEVER a stored value on either table — it's computed
     # at query time (now > scheduled_at AND status='scheduled') by
@@ -2434,6 +2479,62 @@ def init_db():
         );
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bulk_jobs_created ON bulk_jobs(created_at);")
+
+    # ── Phase B Telephony schema (v2.33) ──
+    # Server-side call-recording matching: the Android app reports call-log
+    # metadata (never files) to /api/telephony/report-calls; only numbers
+    # that match an existing lead get a recording fetched and uploaded to
+    # /api/telephony/upload-recording. See TELEPHONY_RECORDING_POLICY.md.
+
+    # One row per user — per-salesperson OEM recording-folder path,
+    # configured by an admin from Settings > Telephony. user_id itself is
+    # the primary key (not a separate autoincrement id) so "one row per
+    # user" is structural and a save is a plain INSERT OR REPLACE.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_recording_paths (
+            user_id               INTEGER PRIMARY KEY REFERENCES users(user_id),
+            recording_folder_path TEXT,
+            updated_at            TEXT
+        );
+    """)
+
+    # Per-user bearer token for the 2 telephony API endpoints — entirely
+    # separate from the session-cookie login used by every other route.
+    # Only the SHA-256 hash is ever stored; the raw token is shown once
+    # at generation time (Settings > Telephony) and never logged.
+    # Regenerating deactivates the old row (active=0) rather than
+    # deleting it, matching the codebase's "never discard" posture.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_api_tokens (
+            token_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER REFERENCES users(user_id),
+            token_hash    TEXT,
+            created_at    TEXT,
+            last_used_at  TEXT,
+            active        INTEGER DEFAULT 1
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_api_tokens_hash ON user_api_tokens(token_hash);")
+
+    # Raw call-log entries reported by the app, matched or not — proves
+    # the "no scan without a lead match" policy is actually being
+    # followed. Unmatched numbers are logged here with match_status=
+    # 'no_lead_match' and are NEVER persisted anywhere else in the system.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS call_log_staging (
+            staging_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id          INTEGER REFERENCES users(user_id),
+            raw_phone        TEXT,
+            phone_norm       TEXT,
+            call_timestamp   TEXT,
+            duration_seconds INTEGER,
+            direction        TEXT,
+            matched_cls_id   TEXT,
+            match_status     TEXT,
+            created_at       TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_staging_created ON call_log_staging(created_at);")
 
     conn.commit()
     conn.close()
@@ -3577,7 +3678,9 @@ def get_latest_stage_and_owner_changes():
 # untouched (see the v1.8 changelog note on why that's intentional).
 
 def _log_activity(conn, cls_id, activity_type, actor, prev_value=None,
-                  new_value=None, description=None, created_at=None):
+                  new_value=None, description=None, created_at=None,
+                  recording_file_path=None, duration_seconds=None,
+                  matched_phone=None):
     """
     Internal helper — appends one row to activity_log. Takes an OPEN
     connection (not a fresh one) so callers can log the activity in
@@ -3590,14 +3693,21 @@ def _log_activity(conn, cls_id, activity_type, actor, prev_value=None,
     when this write ran — used by upsert_meta_lead()'s lead_entered
     row, which should read as the lead's real Meta created_time, not
     whenever Job A happened to poll it.
+
+    v2.33: optional recording_file_path/duration_seconds/matched_phone
+    params, all None by default — every pre-existing caller is
+    unaffected. Used only by log_call_recording() for activity_type=
+    'call_recording' rows (see Phase B Telephony schema above).
     """
     conn.execute("""
         INSERT INTO activity_log (
             cls_id, activity_type, actor, prev_value, new_value,
-            description, created_at
-        ) VALUES (?,?,?,?,?,?,?)
+            description, created_at, recording_file_path,
+            duration_seconds, matched_phone
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
     """, (cls_id, activity_type, actor, prev_value, new_value,
-          description, created_at or _now()))
+          description, created_at or _now(), recording_file_path,
+          duration_seconds, matched_phone))
 
 
 # Stages that cancel any open schedule the moment a lead lands on them.
@@ -3737,6 +3847,172 @@ def update_lead_stage(cls_id, new_stage, actor, reason_code=None, reason_notes=N
 
         conn.commit()
         return True, f"Stage changed: {live_stage} → {new_stage}.{cancelled_note}"
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# PHASE B TELEPHONY — call-recording matching (v2.33)
+# ─────────────────────────────────────────────────────────────
+# Server-side half of the "dumb app, smart server" architecture: the
+# Android app reports call-log metadata only (never files) to
+# /api/telephony/report-calls; record_call_log_entry() normalizes and
+# matches each number against existing leads using the SAME
+# norm_phone()/find_match() already used by the Meta/Sell.do sync paths
+# — no new normalization logic. Only matched numbers get a recording
+# fetched and uploaded via /api/telephony/upload-recording, which calls
+# log_call_recording(). See TELEPHONY_RECORDING_POLICY.md for the
+# locked scope rule this enforces.
+
+def get_recording_path(user_id):
+    """Return this user's configured OEM recording-folder path, or None if unset."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT recording_folder_path FROM user_recording_paths WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+        return row["recording_folder_path"] if row else None
+    finally:
+        conn.close()
+
+
+def set_recording_path(user_id, path):
+    """
+    Save (or clear) a user's OEM recording-folder path. Admin-only —
+    the caller (app.py's Settings > Telephony route) is responsible for
+    the @admin_required gate; this function does no role check itself,
+    matching every other writer function in this file. user_id is the
+    table's primary key, so this is a plain INSERT OR REPLACE (same
+    idiom as add_project_alias()/app_settings elsewhere in this file).
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO user_recording_paths (user_id, recording_folder_path, updated_at) VALUES (?,?,?)",
+            (user_id, path, _now())
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def generate_api_token(user_id):
+    """
+    Issue a new telephony API token for this user, deactivating any
+    previous one (kept, not deleted, for audit — same "never discard"
+    posture as everything else in this file). Returns the RAW token —
+    this is the only time it's ever available; only its SHA-256 hash is
+    stored. Caller (the Settings > Telephony route) must show it once
+    and never log it.
+    """
+    raw_token = secrets.token_hex(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE user_api_tokens SET active=0 WHERE user_id=? AND active=1",
+            (user_id,)
+        )
+        conn.execute(
+            "INSERT INTO user_api_tokens (user_id, token_hash, created_at, active) VALUES (?,?,?,1)",
+            (user_id, token_hash, _now())
+        )
+        conn.commit()
+        return raw_token
+    finally:
+        conn.close()
+
+
+def verify_api_token(raw_token):
+    """
+    Look up an active telephony API token by its SHA-256 hash. Returns
+    the associated (active) user dict, or None if the token is missing,
+    inactive, or belongs to a deactivated user. Stamps last_used_at on
+    every successful check. Entirely independent of the session-cookie
+    login used by every other route in app.py.
+    """
+    if not raw_token:
+        return None
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    conn = _connect()
+    try:
+        row = conn.execute("""
+            SELECT u.* FROM user_api_tokens t
+            JOIN users u ON u.user_id = t.user_id
+            WHERE t.token_hash=? AND t.active=1 AND u.active=1
+        """, (token_hash,)).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE user_api_tokens SET last_used_at=? WHERE token_hash=?",
+            (_now(), token_hash)
+        )
+        conn.commit()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def record_call_log_entry(user_id, raw_phone, call_timestamp, duration_seconds, direction):
+    """
+    Normalize + match one call-log entry reported by the app, and log
+    it to call_log_staging regardless of outcome — this table is what
+    proves the "no scan without a lead match" policy is being followed.
+    Unmatched numbers are NEVER persisted anywhere else in the system.
+
+    Returns a dict: {"matched": bool, "cls_id": str|None,
+    "call_timestamp": ..., "duration_seconds": ...} for the route to
+    build its response from.
+    """
+    phone_norm = norm_phone(raw_phone)
+    conn = _connect()
+    try:
+        cls_id, _tier = find_match(conn, phone_norm, "") if phone_norm else (None, "unmatched")
+        match_status = "matched" if cls_id else "no_lead_match"
+        conn.execute("""
+            INSERT INTO call_log_staging (
+                user_id, raw_phone, phone_norm, call_timestamp,
+                duration_seconds, direction, matched_cls_id,
+                match_status, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+        """, (user_id, raw_phone, phone_norm, call_timestamp,
+              duration_seconds, direction, cls_id, match_status, _now()))
+        conn.commit()
+        return {
+            "matched": bool(cls_id),
+            "cls_id": cls_id,
+            "call_timestamp": call_timestamp,
+            "duration_seconds": duration_seconds,
+        }
+    finally:
+        conn.close()
+
+
+def log_call_recording(cls_id, actor, file_path, duration_seconds, matched_phone, call_timestamp):
+    """
+    Log an uploaded call recording to a lead's activity timeline.
+    created_at is backdated to call_timestamp (the real call time, via
+    _log_activity's v2.28 created_at param) rather than upload time —
+    same convention as upsert_meta_lead()'s lead_entered row.
+
+    Returns (ok: bool, message: str), same convention as add_note()/
+    change_lead_stage().
+    """
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT cls_id FROM leads WHERE cls_id=?", (cls_id,)).fetchone()
+        if not row:
+            return False, "Lead not found."
+        _log_activity(
+            conn, cls_id, "call_recording", actor,
+            created_at=call_timestamp,
+            recording_file_path=file_path,
+            duration_seconds=duration_seconds,
+            matched_phone=matched_phone,
+        )
+        conn.commit()
+        return True, "Call recording logged."
     finally:
         conn.close()
 
