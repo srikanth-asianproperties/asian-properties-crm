@@ -2,11 +2,51 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.33
+Version : 2.35
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.35 (2026-07-31) — Bug 2 fix corrected: recover missing recording files
+  instead of permanently blocking re-sync. Additions only.
+    - call_recording_exists(cls_id, call_timestamp) (v2.34, a plain
+      boolean) is REMOVED and replaced by get_call_recording_file_path()
+      — same day, never committed/relied upon, so no back-compat concern.
+      Root cause: on 2026-07-31, the call_recordings/ folder was
+      accidentally deleted from disk (unrelated ops mistake — files only,
+      no DB rows touched; see app.py v0.23 changelog). A row-exists-only
+      duplicate check would have permanently blocked recovering those
+      legitimate recordings via re-sync, since an existing row would
+      always look like "already logged," file or no file.
+    - New get_call_recording_file_path(cls_id, call_timestamp): returns
+      the row's recorded file path (or None), so the caller can check
+      whether that file is ACTUALLY still on disk before deciding
+      duplicate-vs-recovery.
+    - New update_call_recording_file(cls_id, call_timestamp, file_path,
+      duration_seconds, matched_phone): UPDATEs the existing row's file/
+      duration/matched_phone in place — does NOT insert a new row, so a
+      recovered file never recreates the duplicate-row problem this fix
+      exists to prevent. created_at/actor are left untouched.
+
+v2.34 (2026-07-31) — Bug 2 fix (duplicate call recordings on repeat sync)
+  + privacy-remediation audit tooling. Additions only — nothing existing
+  removed or modified.
+    - New call_recording_exists(cls_id, call_timestamp): checked by
+      app.py's upload-recording route BEFORE any file write, so a retried
+      upload (e.g. app crash after a successful upload but before it
+      saves its own sync watermark) skips both the disk write and the
+      duplicate activity_log row instead of creating a second identical
+      one. SUPERSEDED by v2.35 above the same day — see that entry.
+    - New list_call_recording_activities() / delete_call_recording_
+      activity(activity_id): built for the new cls_call_recording_audit.py
+      script, after a confirmed privacy incident where a personal call's
+      recording was wrongly attached to a lead (root cause fixed
+      separately in android_pilot's MainActivity.kt v0.6). Lists every
+      call_recording activity_log row for human review; deletion is
+      scoped to activity_type='call_recording' only and is a deliberate,
+      explicitly-reviewed exception to activity_log's normal append-only
+      posture — never auto-triggered, never a general-purpose deleter.
+
 v2.33 (2026-07-31) — Phase B Telephony: call-recording matching schema.
   Additions only — nothing existing removed or modified. Server-side
   half of the "dumb app, smart server" architecture confirmed after the
@@ -3989,6 +4029,63 @@ def record_call_log_entry(user_id, raw_phone, call_timestamp, duration_seconds, 
         conn.close()
 
 
+def get_call_recording_file_path(cls_id, call_timestamp):
+    """
+    (v2.35) Returns the recording_file_path already logged for this exact
+    (cls_id, call_timestamp), or None if no call_recording row exists yet.
+
+    Supersedes v2.34's call_recording_exists() (a plain boolean), which
+    turned out to be the wrong check on its own: a caller needs to know
+    not just THAT a row exists but WHAT file it points to, so it can
+    check whether that file is still actually on disk before deciding a
+    re-upload is a genuine duplicate versus a legitimate recovery of a
+    file that went missing (confirmed real: recordings were accidentally
+    deleted from disk on 2026-07-31 while their activity_log rows
+    survived — a same-row-exists-only check would have permanently
+    blocked recovering them via re-sync).
+    """
+    conn = _connect()
+    try:
+        row = conn.execute("""
+            SELECT recording_file_path FROM activity_log
+            WHERE cls_id=? AND activity_type='call_recording' AND created_at=?
+            LIMIT 1
+        """, (cls_id, call_timestamp)).fetchone()
+        return row["recording_file_path"] if row else None
+    finally:
+        conn.close()
+
+
+def update_call_recording_file(cls_id, call_timestamp, file_path, duration_seconds, matched_phone):
+    """
+    (v2.35) Updates recording_file_path/duration_seconds/matched_phone on
+    an EXISTING call_recording activity_log row for this exact (cls_id,
+    call_timestamp) — used only when that row's previously-logged file
+    has gone missing from disk and the app is re-uploading it. Does NOT
+    insert a new row (that would recreate the exact duplicate-row problem
+    the v2.34 dedupe check was fixing) and does not touch created_at
+    (still the real call time) or actor. Returns (ok: bool, message: str).
+    """
+    conn = _connect()
+    try:
+        row = conn.execute("""
+            SELECT activity_id FROM activity_log
+            WHERE cls_id=? AND activity_type='call_recording' AND created_at=?
+            LIMIT 1
+        """, (cls_id, call_timestamp)).fetchone()
+        if not row:
+            return False, "No existing call_recording row found to update."
+        conn.execute("""
+            UPDATE activity_log
+            SET recording_file_path=?, duration_seconds=?, matched_phone=?
+            WHERE activity_id=?
+        """, (file_path, duration_seconds, matched_phone, row["activity_id"]))
+        conn.commit()
+        return True, "Recovered missing recording file for existing activity_log row."
+    finally:
+        conn.close()
+
+
 def log_call_recording(cls_id, actor, file_path, duration_seconds, matched_phone, call_timestamp):
     """
     Log an uploaded call recording to a lead's activity timeline.
@@ -4013,6 +4110,60 @@ def log_call_recording(cls_id, actor, file_path, duration_seconds, matched_phone
         )
         conn.commit()
         return True, "Call recording logged."
+    finally:
+        conn.close()
+
+
+def list_call_recording_activities():
+    """
+    (v2.34) Read-only audit list of every activity_log row of type
+    'call_recording', newest first, joined to the lead's name/phone for
+    human review. Built for cls_call_recording_audit.py after a confirmed
+    privacy incident (a personal call's recording was wrongly attached to
+    a lead) — surfaces every such row so Srikanth can review and choose
+    which to delete via delete_call_recording_activity(), never auto.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT a.activity_id, a.cls_id, a.actor, a.created_at,
+                   a.recording_file_path, a.duration_seconds, a.matched_phone,
+                   l.full_name, l.phone_norm, l.lead_owner
+            FROM activity_log a
+            LEFT JOIN leads l ON l.cls_id = a.cls_id
+            WHERE a.activity_type = 'call_recording'
+            ORDER BY a.activity_id DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_call_recording_activity(activity_id):
+    """
+    (v2.34) Deletes ONE activity_log row by activity_id, scoped to
+    activity_type='call_recording' only (refuses to touch any other
+    activity type even if called with a mismatched id, so this can never
+    be repurposed into a general-purpose activity_log deleter). This is a
+    deliberate, human-reviewed exception to activity_log's normal
+    append-only posture — used only for privacy remediation (a wrongly-
+    matched recording), never as a general editing capability. Returns
+    (ok: bool, message: str).
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT activity_id FROM activity_log WHERE activity_id=? AND activity_type='call_recording'",
+            (activity_id,)
+        ).fetchone()
+        if not row:
+            return False, "No call_recording activity found with that id."
+        conn.execute(
+            "DELETE FROM activity_log WHERE activity_id=? AND activity_type='call_recording'",
+            (activity_id,)
+        )
+        conn.commit()
+        return True, f"Deleted call_recording activity_id={activity_id}."
     finally:
         conn.close()
 

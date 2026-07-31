@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.21
+Version : 0.23
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,35 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.23 (2026-07-31) — Bug 2 fix CORRECTED: recover missing recording files
+  instead of permanently blocking re-sync. Requires cls_db.py v2.35.
+
+  Separately, unrelated ops mistake this same day: the call_recordings/
+  folder was accidentally deleted from disk while testing (files only —
+  no activity_log rows were touched). v0.22's row-exists-only duplicate
+  check would have permanently blocked recovering those legitimate
+  recordings via re-sync, since an existing row always looks like
+  "already logged" regardless of whether its file still exists.
+
+  api_telephony_upload_recording() now calls cls_db.get_call_recording_
+  file_path(lead_id, call_timestamp) instead of the old call_recording_
+  exists() boolean, and checks os.path.exists() on that path under
+  RECORDINGS_DIR: row+file both present -> genuine duplicate, skip as
+  before; row present but file missing -> recovery — falls through to
+  save the new file and calls cls_db.update_call_recording_file()
+  (UPDATE in place) instead of cls_db.log_call_recording() (INSERT), so
+  a recovered file never creates a second row for the same real call.
+  No row present at all -> normal first-time path, unchanged.
+
+v0.22 (2026-07-31) — Bug 2 fix: duplicate call recordings on repeat sync.
+  Requires cls_db.py v2.34. api_telephony_upload_recording() now calls
+  cls_db.call_recording_exists(lead_id, call_timestamp) immediately after
+  validating the lead, BEFORE any file write — a duplicate returns
+  {"success": true, "message": "...duplicate upload skipped."} without
+  touching disk or activity_log a second time. Confirmed real: seen
+  during Srikanth's own repeat-sync test. No other route logic changed.
+  SUPERSEDED by v0.23 above the same day — see that entry.
+
 v0.21 (2026-07-31) — Phase B Telephony: server-side call-recording
   matching backend. Requires cls_db.py v2.33. Additions only.
 
@@ -3731,21 +3760,52 @@ def api_telephony_upload_recording():
     if not lead:
         return jsonify({"success": False, "message": "Unknown lead_id."}), 404
 
+    safe_lead_id = secure_filename(lead_id)
+
+    # v0.23 — Bug 2 fix, corrected: a retried upload for a call already
+    # logged (e.g. the app crashes after a successful upload but before it
+    # saves its own sync watermark) must not create a second identical
+    # activity_log row — confirmed real via a repeat-sync duplicate during
+    # testing. v0.22's first cut checked ROW existence only, which turned
+    # out to be wrong on its own: recordings were accidentally deleted
+    # from disk on 2026-07-31 (unrelated ops mistake, files only, no DB
+    # rows touched) while their activity_log rows survived — a
+    # row-exists-only check would have permanently blocked ever recovering
+    # them via re-sync, since the row "existing" would always look like a
+    # duplicate. Now checks whether the row's recorded file is ACTUALLY
+    # still on disk: row+file both present -> genuine duplicate, skip:
+    # row present but file missing -> recovery, fall through and UPDATE
+    # that same row instead of inserting a second one.
+    existing_file_path = cls_db.get_call_recording_file_path(lead_id, call_timestamp)
+    recovering_missing_file = False
+    if existing_file_path:
+        existing_full_path = os.path.join(RECORDINGS_DIR, safe_lead_id, existing_file_path)
+        if os.path.exists(existing_full_path):
+            return jsonify({
+                "success": True,
+                "message": "Already logged for this call — duplicate upload skipped."
+            })
+        recovering_missing_file = True
+
     try:
         duration_seconds = int(float(duration_raw))
     except ValueError:
         duration_seconds = 0
 
-    safe_lead_id = secure_filename(lead_id)
     safe_name = secure_filename(uploaded.filename) or f"{call_timestamp.replace(':', '-').replace(' ', '_')}.mp3"
     lead_dir = os.path.join(RECORDINGS_DIR, safe_lead_id)
     os.makedirs(lead_dir, exist_ok=True)
     uploaded.save(os.path.join(lead_dir, safe_name))
 
-    ok, msg = cls_db.log_call_recording(
-        lead_id, user["email"], safe_name,
-        duration_seconds, lead.get("phone_norm"), call_timestamp,
-    )
+    if recovering_missing_file:
+        ok, msg = cls_db.update_call_recording_file(
+            lead_id, call_timestamp, safe_name, duration_seconds, lead.get("phone_norm"),
+        )
+    else:
+        ok, msg = cls_db.log_call_recording(
+            lead_id, user["email"], safe_name,
+            duration_seconds, lead.get("phone_norm"), call_timestamp,
+        )
     return jsonify({"success": ok, "message": msg})
 
 
