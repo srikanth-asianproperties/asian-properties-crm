@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.24
+Version : 0.25
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,31 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.25 (2026-08-01) — android_pilot APK distribution. Additive only, no
+  cls_db.py change (pure file I/O, no SQLite involved).
+
+  New POST /api/apk/upload (CI-only, X-Upload-Secret header checked via
+  hmac.compare_digest against CLS_APK_UPLOAD_SECRET — a real OS env var,
+  same never-hardcoded/never-in-.env convention as cls_db.py's
+  CLS_DB_PATH, NOT this file's own _env/dotenv dict). Always overwrites
+  apk_releases/clspilot-latest.apk so the public link never changes.
+  Logs one line per upload to apk_upload_log.txt (its own file, not
+  job_results.txt — that one's for the A-D pipeline only) so Srikanth
+  can confirm a new build landed without opening GitHub.
+
+  New GET /download/clspilot.apk (public, no @login_required — has to
+  work for a team member who isn't a CRM user yet on that phone).
+  Flagged and confirmed with Srikanth before building: gated by a
+  DIFFERENT secret (?key=..., CLS_APK_DOWNLOAD_SECRET) than the upload
+  endpoint uses — sharing one secret for both would have meant a leaked
+  download link also grants the ability to push a malicious build, not
+  just read the APK. Both secrets fail closed if unset (empty string
+  never matches). Serves with the correct APK mimetype
+  (application/vnd.android.package-archive) and a friendly plain-text
+  message instead of a raw 404 if nothing's been uploaded yet.
+
+  New import: hmac (stdlib, no new dependency).
+
 v0.24 (2026-08-01) — New admin Settings > Telephony > Synced Recordings
   page. Requires cls_db.py v2.36. Additive only.
 
@@ -1071,6 +1096,7 @@ v0.1  (July 2026) — first working version:
 """
 
 import base64
+import hmac
 import os
 import re
 import sys
@@ -1097,6 +1123,33 @@ import cls_reports  # v0.6 — Reports section; lives in crm/ alongside app.py, 
 # Intentionally EXCLUDED from cls_backup.py's rclone sync (see that
 # file's v1.2 changelog) pending DPDP consent-notice design.
 RECORDINGS_DIR = os.path.join(BASE_DIR, "call_recordings")
+
+# v0.25 — android_pilot APK distribution. GitHub Actions pushes each new
+# build here (POST /api/apk/upload) instead of relying on GitHub's
+# private-repo Releases, which require a GitHub login and don't work for
+# team-wide phone installs. Always overwrites the same filename so the
+# public download link never changes across builds.
+APK_RELEASES_DIR = os.path.join(BASE_DIR, "apk_releases")
+APK_FILENAME = "clspilot-latest.apk"
+APK_UPLOAD_LOG = os.path.join(BASE_DIR, "apk_upload_log.txt")
+
+# Two SEPARATE secrets, deliberately not shared — same "config-driven,
+# never hardcoded, never in .env" convention as cls_db.py's CLS_DB_PATH
+# (real OS environment variables, read via os.environ directly, NOT via
+# this file's own _env/dotenv-loaded dict below).
+#   CLS_APK_UPLOAD_SECRET   — CI-only (X-Upload-Secret header), never
+#                             shared with a human or the Android app.
+#   CLS_APK_DOWNLOAD_SECRET — embedded in the shareable download URL
+#                             Srikanth gives the team. Separate on
+#                             purpose: if the download link ever leaks,
+#                             an attacker gets read access to the APK
+#                             only — NOT the ability to push a malicious
+#                             build, which is what sharing one secret
+#                             for both would have allowed.
+# Left "" if unset — every check below treats an empty secret as "reject
+# everything" (fail closed), never as "no protection needed."
+APK_UPLOAD_SECRET = os.environ.get("CLS_APK_UPLOAD_SECRET", "")
+APK_DOWNLOAD_SECRET = os.environ.get("CLS_APK_DOWNLOAD_SECRET", "")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -4004,6 +4057,83 @@ def service_worker():
     return send_from_directory(
         os.path.join(app.root_path, "static"), "sw.js",
         mimetype="application/javascript"
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# APK DISTRIBUTION  (v0.25) — android_pilot's CI push + team download
+# ─────────────────────────────────────────────────────────────
+# Both routes are intentionally OUTSIDE the session-cookie login system —
+# upload is CI-only (a build machine, never a browser), download must
+# work for a team member who isn't a CRM user yet on that phone. Neither
+# uses @login_required/@admin_required; each has its OWN secret check
+# instead (see APK_UPLOAD_SECRET/APK_DOWNLOAD_SECRET above).
+
+@app.route("/api/apk/upload", methods=["POST"])
+def api_apk_upload():
+    """
+    v0.25 — CI-only. Multipart form field 'file'. Auth via
+    'X-Upload-Secret' header, compared with hmac.compare_digest (not
+    Python's '==') to avoid a timing side-channel on the secret —
+    cheap and correct even though the actual sensitivity here is low
+    (this endpoint can only overwrite the APK file, nothing else).
+    Always overwrites APK_RELEASES_DIR/APK_FILENAME — no versioned
+    filenames, so the public download link never changes.
+    """
+    provided = request.headers.get("X-Upload-Secret", "")
+    if not APK_UPLOAD_SECRET or not provided or not hmac.compare_digest(provided, APK_UPLOAD_SECRET):
+        abort(403, description="Invalid or missing upload secret.")
+
+    uploaded = request.files.get("file")
+    if not uploaded:
+        return jsonify({"success": False, "message": "No file provided (expected form field 'file')."}), 400
+
+    os.makedirs(APK_RELEASES_DIR, exist_ok=True)
+    dest_path = os.path.join(APK_RELEASES_DIR, APK_FILENAME)
+    uploaded.save(dest_path)
+    size_bytes = os.path.getsize(dest_path)
+
+    # v0.25 — small rolling log, same one-line-per-event plain-append
+    # style as cls_db.write_job_result(), but its OWN file rather than
+    # job_results.txt (that file is specifically for the A-D pipeline
+    # jobs per this project's convention — this isn't part of that
+    # pipeline). Lets Srikanth sanity-check "was a new build actually
+    # received" without opening GitHub at all.
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(APK_UPLOAD_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] APK Upload: SUCCESS — {size_bytes} bytes\n")
+    except Exception:
+        pass  # logging failure must never fail the upload itself
+
+    return jsonify({"success": True, "size_bytes": size_bytes})
+
+
+@app.route("/download/clspilot.apk")
+def download_apk():
+    """
+    v0.25 — public, no login (see section note above). Gated by a
+    query-string secret ('?key=...') instead — Srikanth's confirmed
+    call: closes off the "URL leaks and is downloadable by anyone
+    forever" exposure a fully predictable public path would have, while
+    keeping the one-tap-on-a-phone install flow (no password prompt).
+    A DIFFERENT secret from the upload endpoint's — see
+    APK_DOWNLOAD_SECRET's comment above on why sharing one would be
+    unsafe. If no build has been uploaded yet, returns a plain friendly
+    message instead of a raw 404.
+    """
+    provided = request.args.get("key", "")
+    if not APK_DOWNLOAD_SECRET or not provided or not hmac.compare_digest(provided, APK_DOWNLOAD_SECRET):
+        abort(403, description="Invalid or missing download key.")
+
+    dest_path = os.path.join(APK_RELEASES_DIR, APK_FILENAME)
+    if not os.path.exists(dest_path):
+        return "No build has been uploaded yet — check back after the next CI run.", 200
+
+    return send_from_directory(
+        APK_RELEASES_DIR, APK_FILENAME,
+        mimetype="application/vnd.android.package-archive",
+        as_attachment=True, download_name="clspilot.apk"
     )
 
 
