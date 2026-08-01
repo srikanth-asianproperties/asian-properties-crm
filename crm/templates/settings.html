@@ -1,6 +1,5 @@
-{# settings.html (v0.18) — admin Settings hub. A grid of tiles; each
-   future admin tool drops in here as another tile, inheriting the
-   /settings admin gate rather than adding its own hamburger link.
+{# settings.html (v0.20) — Settings hub. A grid of tiles; each future
+   admin tool drops in here as another tile.
 
    v0.10 — NEW "WhatsApp Reminder Templates" tile (site-visit reminders,
    separate from the existing WhatsApp Templates tile/table).
@@ -19,12 +18,28 @@
    link (base.html v0.13 -> v0.14) — was role-agnostic/self-scoped like
    Reports, now admin-only, per Srikanth's explicit reversal.
    v0.19 — NEW "Telephony" tile (settings_telephony.html, Phase B
-   call-recording matching, cls_db.py v2.33). #}
+   call-recording matching, cls_db.py v2.33).
+
+   v0.20 — /settings itself is now reachable by any logged-in user
+   (app.py v0.26, @login_required only, @admin_required removed at the
+   route level). Every EXISTING tile below is now wrapped in
+   {% if current_user.role == 'admin' %} — same role-check pattern
+   already used elsewhere in this codebase (base.html, lead_detail.html,
+   lead_new.html, whatsapp_picker.html) — so a non-admin still sees NONE
+   of them, identical to before. NEW "Device Sync (this phone)" section
+   at the bottom is the one genuinely role-agnostic addition: a pure
+   native-bridge entry point (calls window.AndroidBridge.
+   openDeviceSyncSettings() from the Android pilot app, added there in
+   android_pilot's v9), no server-side data of its own, so it needs no
+   role gate beyond "is this a logged-in user" (already guaranteed by
+   @login_required on the route). #}
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 
 {% block content %}
 <h2 style="margin-top:0;">Settings</h2>
+
+{% if current_user.role == 'admin' %}
 <p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:-6px;">
   Admin-only configuration for the CRM.
 </p>
@@ -132,4 +147,40 @@
   </a>
 
 </div>
+{% endif %}
+
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-top:16px;">
+
+  <div class="card">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      <span style="font-weight:700; font-size:16px;">Device Sync (this phone)</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Configure this phone's call-recording sync (token, recording folder) and check
+      call-log access — available in the Asian Properties CRM mobile app only.
+    </p>
+    <button type="button" class="btn btn-primary" style="margin-top:10px;" onclick="openDeviceSyncSettings()">
+      Open Device Sync Settings
+    </button>
+    <p id="deviceSyncFallback" style="display:none; font-size:12px; color:var(--ink-soft); margin-top:8px;">
+      This feature is only available in the Asian Properties CRM mobile app.
+    </p>
+  </div>
+
+</div>
+
+<script>
+// v0.20 — calls the native bridge android_pilot's MainActivity.kt v9
+// exposes (window.AndroidBridge, a single-method JS interface). Feature-
+// detected so this same button degrades gracefully to an inline message
+// when viewed in a normal desktop/browser context, not the app's WebView.
+function openDeviceSyncSettings() {
+  if (window.AndroidBridge) {
+    AndroidBridge.openDeviceSyncSettings();
+  } else {
+    document.getElementById('deviceSyncFallback').style.display = 'block';
+  }
+}
+</script>
 {% endblock %}

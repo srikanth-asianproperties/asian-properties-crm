@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.25
+Version : 0.26
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,26 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.26 (2026-08-01) — /settings gate loosened + user-facing "APX" removed.
+
+  /settings: @admin_required REMOVED from the route (still @login_required)
+  — the page itself is reachable by any logged-in user now. Every EXISTING
+  tile is still admin-only, just gated at the template level instead of
+  the route level (see settings.html v0.20's own changelog) — verified
+  against a plain salesperson-role test login: sees Settings, sees ONLY
+  the new Device Sync section, none of the 10 existing admin tiles.
+  Every settings/* SUB-route (settings_projects, settings_users,
+  settings_telephony, etc.) is UNCHANGED — still @admin_required at the
+  route level, so direct-URL access by a non-admin is still blocked
+  exactly as before; only the hub page's own gate and tile visibility
+  changed.
+
+  login.html: heading changed from literal "APX" to "Asian Properties
+  CRM" — the only genuine user-facing "APX" occurrence found in a
+  repo-wide search of crm/ (every other hit was inside a Python/Jinja/JS
+  comment, e.g. this file's own top banner two lines above, left
+  untouched as internal project terminology, not a rename).
+
 v0.25 (2026-08-01) — android_pilot APK distribution. Additive only, no
   cls_db.py change (pure file I/O, no SQLite involved).
 
@@ -3204,12 +3224,24 @@ def reminder_mark_sent(visit_id):
 
 @app.route("/settings")
 @login_required
-@admin_required
 def settings_home():
-    """v0.9.1 — the admin Settings landing page. A hub of tiles;
+    """
+    v0.9.1 — the admin Settings landing page. A hub of tiles;
     WhatsApp Templates is the first tenant, with room for more (user
     management, list config, etc.) without touching the hamburger menu
-    each time."""
+    each time.
+
+    v0.26 — gate loosened from @admin_required to @login_required: the
+    page itself is now reachable by any logged-in user, but every
+    EXISTING tile is wrapped in {% if current_user.role == 'admin' %} in
+    settings.html itself, so a non-admin still sees none of them — this
+    route change is additive/gating only, no existing admin functionality
+    was removed, just moved from a route-level gate to a template-level
+    one for the specific sections that still need it. The one new
+    section that's genuinely role-agnostic (Device Sync, a native-bridge
+    entry point with no server-side data of its own) is what actually
+    needed this loosened gate.
+    """
     return render_template("settings.html")
 
 

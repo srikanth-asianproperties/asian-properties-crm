@@ -1,5 +1,8 @@
-<!-- base.html v0.15 — first version header this file has carried,
-     established in v0.10.
+<!-- base.html v0.16 — Settings drawer link un-admin-gated (see the
+     inline comment right at that link, further down this file, for the
+     full reasoning) — /settings itself is now reachable by any
+     logged-in user (app.py v0.26), and this link is how they'd actually
+     navigate there instead of needing the raw URL.
      v0.15: NEW shared filterOptRows(input) function (bottom <script>
        block) — the checkbox/radio-list search filter Export's Task B
        introduced, now reused by Bulk Reassign's filter screen too
@@ -487,9 +490,15 @@
     {% endif %}
   </a>
   <a href="{{ url_for('reports_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['reports_home', 'report_view'] }}">Reports</a>
-  {% if current_user.role == 'admin' %}
+  <!-- v0.16 — Settings link is no longer admin-only: /settings itself
+       is now @login_required (app.py v0.26), and every logged-in user
+       needs a way to actually NAVIGATE there to reach the new
+       role-agnostic "Device Sync" section (settings.html v0.20) — a
+       non-admin has nothing to see there but that one section, same as
+       before for everything else, but they need to be able to find the
+       page at all. Un-admin-gating this link is what makes that
+       reachable via normal navigation instead of only a raw URL. -->
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
-  {% endif %}
   <div class="drawer-divider"></div>
   <a href="{{ url_for('logout') }}" class="drawer-link">Log out</a>
   <div class="drawer-footer">Asian Properties CRM</div>

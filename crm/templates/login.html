@@ -1,11 +1,26 @@
+{# login.html (v1) — first formal version header for this file.
+
+   v1 — two changes:
+   1. Heading changed from literal "APX" to "Asian Properties CRM"
+      (app.py/settings.html session's user-facing branding pass — "APX"
+      only ever appears elsewhere in this codebase inside Python/Jinja/
+      JS comments, never rendered markup, so this heading was the only
+      genuine occurrence). The old subtitle line directly below it also
+      said "Asian Properties CRM" — now-redundant with the heading, so
+      it's REMOVED rather than left duplicating the exact same text
+      right under itself. Flagging this specific adjustment since it
+      goes slightly beyond a literal find-replace — happy to restore a
+      (different) subtitle line if you'd rather keep two lines there.
+   2. NEW "Show password" checkbox next to the password field — plain
+      JS toggling the input's type between "password"/"text", no new
+      dependency, matching this page's existing plain-form style. #}
 {% extends "base.html" %}
 {% block title %}Log in{% endblock %}
 
 {% block content %}
 <div style="max-width:360px; margin: 60px auto 0;">
   <div class="card">
-    <h2 style="margin-top:0; margin-bottom:4px;">APX</h2>
-    <p style="color:var(--ink-soft); margin-top:0; font-size:14px;">Asian Properties CRM</p>
+    <h2 style="margin-top:0; margin-bottom:4px;">Asian Properties CRM</h2>
 
     {% if error %}
       <p style="background:#FDEDED; color:var(--red); border:1px solid #F5C6C6; padding:10px 12px; border-radius:8px; font-size:14px;">
@@ -20,10 +35,20 @@
       </div>
       <div>
         <div class="field-label">Password</div>
-        <input type="password" name="password" required style="width:100%;">
+        <input type="password" id="passwordInput" name="password" required style="width:100%;">
+        <label style="display:flex; align-items:center; gap:6px; margin-top:6px; font-size:13px; color:var(--ink-soft); cursor:pointer;">
+          <input type="checkbox" onchange="togglePasswordVisibility(this)">
+          Show password
+        </label>
       </div>
       <button type="submit" class="btn btn-primary" style="margin-top:6px;">Log in</button>
     </form>
   </div>
 </div>
+
+<script>
+function togglePasswordVisibility(checkbox) {
+  document.getElementById('passwordInput').type = checkbox.checked ? 'text' : 'password';
+}
+</script>
 {% endblock %}
