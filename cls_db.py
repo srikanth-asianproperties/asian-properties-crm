@@ -2,11 +2,20 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.35
+Version : 2.36
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.36 (2026-08-01) — New list_call_recordings(...) for the admin "Synced
+  Recordings" report page (app.py's new /settings/telephony/recordings).
+  Additive only. Filtered/paginated variant of v2.34's
+  list_call_recording_activities() — date range, answered/missed,
+  lead_owner, activity_owner (activity_log.actor, an email), and lead-
+  name search, with get_leads_page()'s exact pagination shape/style
+  (Python-side slice, no SQL LIMIT/OFFSET). No schema change — every
+  filter/column this needs already existed on activity_log since v2.33.
+
 v2.35 (2026-07-31) — Bug 2 fix corrected: recover missing recording files
   instead of permanently blocking re-sync. Additions only.
     - call_recording_exists(cls_id, call_timestamp) (v2.34, a plain
@@ -4164,6 +4173,79 @@ def delete_call_recording_activity(activity_id):
         )
         conn.commit()
         return True, f"Deleted call_recording activity_id={activity_id}."
+    finally:
+        conn.close()
+
+
+def list_call_recordings(date_from=None, date_to=None, call_status=None,
+                          lead_owner=None, activity_owner=None, search=None,
+                          page=1, per_page=25):
+    """
+    (v2.36) Filtered, paginated list of call_recording activity_log rows
+    for the admin "Synced Recordings" page — the same underlying rows
+    list_call_recording_activities() (v2.34) shows unfiltered for CLI
+    audit use, but with real filters and pagination for a web table.
+
+    WHERE-clause style follows get_call_activity()'s ad-hoc inline
+    convention (few filters, not worth the extracted-helper pattern
+    _build_lead_filter_where() uses for /leads' much larger filter set).
+    Pagination follows get_leads_page()'s exact shape/style: fetch all
+    matching rows, slice in Python (no SQL LIMIT/OFFSET), page clamped
+    into [1, total_pages].
+
+    call_status: 'answered' (duration_seconds > 0), 'missed' (== 0), or
+    None/other (no filter). activity_owner is an email (activity_log.
+    actor) — same value type callers get from cls_db.get_all_users_
+    detailed(); lead_owner is free-text matching leads.lead_owner, same
+    as everywhere else in this file. Does NOT resolve actor/lead_owner
+    to display names itself — that's the route's job via get_all_users(),
+    matching how every existing consumer of activity_log.actor works.
+
+    Returns {"rows", "total", "page", "per_page", "total_pages"}.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT a.activity_id, a.cls_id, a.actor, a.created_at,
+                   a.recording_file_path, a.duration_seconds, a.matched_phone,
+                   l.full_name, l.lead_owner, l.crm_lead_no
+            FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
+            WHERE a.activity_type = 'call_recording'
+        """
+        params = []
+        if date_from and date_to:
+            query += " AND substr(a.created_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        if call_status == "answered":
+            query += " AND a.duration_seconds > 0"
+        elif call_status == "missed":
+            query += " AND a.duration_seconds = 0"
+        if lead_owner:
+            query += " AND l.lead_owner = ?"
+            params.append(lead_owner)
+        if activity_owner:
+            query += " AND a.actor = ?"
+            params.append(activity_owner)
+        if search:
+            query += " AND l.full_name LIKE ?"
+            params.append(f"%{search}%")
+        query += " ORDER BY a.created_at DESC"
+
+        rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+
+        total = len(rows)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * per_page
+        page_rows = rows[start:start + per_page]
+
+        return {
+            "rows": page_rows,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+        }
     finally:
         conn.close()
 

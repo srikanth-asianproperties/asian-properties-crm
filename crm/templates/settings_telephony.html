@@ -1,4 +1,4 @@
-{# settings_telephony.html (v1) — admin Settings > Telephony (Phase B).
+{# settings_telephony.html (v2) — admin Settings > Telephony (Phase B).
    Two independent forms, deliberately not nested (HTML disallows nested
    <form> tags): the top form saves every user's recording-folder path in
    one Save click (settings_lead_scoring.html's "one input per item, one
@@ -6,7 +6,10 @@
    each their own small form (settings_users.html's per-row-form pattern)
    so saving paths can never accidentally regenerate someone's token.
    Placeholder folder patterns are examples only — an admin types the
-   actual path for that salesperson's phone. #}
+   actual path for that salesperson's phone.
+
+   v2 — NEW "View Synced Recordings →" link to the new
+   settings_telephony_recordings.html report page. #}
 {% extends "base.html" %}
 {% block title %}Telephony{% endblock %}
 
@@ -17,6 +20,9 @@
   Phase B pilot config: where each salesperson's phone stores call recordings, and the
   bearer token their app uses to report call-log data. Recordings are only ever fetched
   for calls matching an existing lead — see TELEPHONY_RECORDING_POLICY.md.
+</p>
+<p style="margin-top:8px;">
+  <a href="{{ url_for('settings_telephony_recordings') }}">View Synced Recordings →</a>
 </p>
 
 <form method="post" action="{{ url_for('settings_telephony') }}">

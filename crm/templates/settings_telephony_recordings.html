@@ -1,0 +1,204 @@
+{# settings_telephony_recordings.html (v2) — admin Settings > Telephony >
+   Synced Recordings. Filtered/paginated table of every call_recording
+   activity_log row, with inline playback and per-row delete.
+
+   Patterns reused rather than invented: date-preset quick-select mirrors
+   _report_date_picker.html's auto-submit-unless-Custom behavior (app.py's
+   own DATE_PRESETS dict, not cls_reports.py's separate copy — established
+   convention, see _parse_bulk_filters()'s docstring in app.py); table
+   markup + .report-table/.report-table-wrap styling copied from
+   report_view.html/bulk_reassign_preview.html (these classes live locally
+   in report_view.html, not base.html); pagination copied from
+   leads_list.html's Page X of Y / Prev/Next pattern; <audio> player copied
+   from lead_detail.html's call_recording timeline branch, unchanged; the
+   Delete button's confirm() matches settings_users.html's Deactivate
+   button style. Row actions are plain inline buttons (View Lead + Delete)
+   — no dropdown/kebab menu, confirmed with Srikanth: nothing like that
+   exists anywhere else in this codebase.
+
+   v2 — Delete now requires TWO sequential confirm() dialogs (chained via
+   && so the second only fires if the first is accepted, and the form
+   only submits if both are) — Srikanth's explicit ask for extra
+   friction before a permanent, unrecoverable delete. No new JS function
+   needed; same plain inline onsubmit style as every other confirm-guarded
+   action in this codebase. #}
+{% extends "base.html" %}
+{% block title %}Synced Recordings{% endblock %}
+
+{% block head %}
+<style>
+  .report-table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+  .report-table th, .report-table td {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+    font-size: 13px; white-space: nowrap;
+  }
+  .report-table th { color: var(--ink-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .report-table tbody tr:hover { background: var(--paper); }
+  .report-table-wrap { overflow-x: auto; }
+</style>
+{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_telephony') }}" style="font-size:14px;">← Back to Telephony</a>
+<h2 style="margin-top:10px;">
+  Synced Recordings
+  <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ result.total }})</span>
+</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:-6px;">
+  Every call recording synced from a salesperson's phone. Play back, review, or remove a
+  wrong entry — deleting here removes both the activity log entry and the recording file.
+</p>
+
+<form method="get" action="{{ url_for('settings_telephony_recordings') }}" id="recordingsFilterForm"
+      class="card" style="margin-top:16px; display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
+
+  <div>
+    <div class="field-label">Date range</div>
+    <select name="date_preset" id="datePresetSelect" onchange="onRecordingsDatePresetChange(this)"
+            style="height:34px; font-size:13px; padding:4px 8px;">
+      <option value="" {% if not filters.date_preset %}selected{% endif %}>— All time —</option>
+      {% for key in date_preset_order %}
+      <option value="{{ key }}" {% if filters.date_preset == key %}selected{% endif %}>{{ date_preset_labels[key] }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div id="customRecordingsDateFields"
+       style="display:{{ 'flex' if filters.date_preset == 'custom' else 'none' }}; gap:6px; align-items:flex-end;">
+    <div>
+      <div class="field-label">From</div>
+      <input type="date" name="date_from" value="{{ filters.date_from }}" style="height:34px; font-size:13px; padding:4px 8px;">
+    </div>
+    <div>
+      <div class="field-label">To</div>
+      <input type="date" name="date_to" value="{{ filters.date_to }}" style="height:34px; font-size:13px; padding:4px 8px;">
+    </div>
+  </div>
+
+  <div>
+    <div class="field-label">Call status</div>
+    <select name="call_status" onchange="this.form.submit()" style="height:34px; font-size:13px; padding:4px 8px;">
+      <option value="" {% if not filters.call_status %}selected{% endif %}>All</option>
+      <option value="answered" {% if filters.call_status == 'answered' %}selected{% endif %}>Answered</option>
+      <option value="missed" {% if filters.call_status == 'missed' %}selected{% endif %}>Missed</option>
+    </select>
+  </div>
+
+  <div>
+    <div class="field-label">Lead owner</div>
+    <select name="lead_owner" onchange="this.form.submit()" style="height:34px; font-size:13px; padding:4px 8px;">
+      <option value="">All</option>
+      {% for o in lead_owner_options %}
+      <option value="{{ o }}" {% if filters.lead_owner == o %}selected{% endif %}>{{ o }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div>
+    <div class="field-label">Activity owner (who synced it)</div>
+    <select name="activity_owner" onchange="this.form.submit()" style="height:34px; font-size:13px; padding:4px 8px;">
+      <option value="">All</option>
+      {% for u in activity_owner_options %}
+      <option value="{{ u.email }}" {% if filters.activity_owner == u.email %}selected{% endif %}>{{ u.full_name or u.email }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div>
+    <div class="field-label">Lead name</div>
+    <input type="text" name="search" value="{{ filters.search }}" placeholder="Search…" style="height:34px; font-size:13px; padding:4px 8px;">
+  </div>
+
+  <button type="submit" class="btn btn-primary" style="height:34px; padding:5px 14px; font-size:13px;">Apply</button>
+  {% if filters.date_preset or filters.call_status or filters.lead_owner or filters.activity_owner or filters.search %}
+  <a href="{{ url_for('settings_telephony_recordings') }}" class="btn" style="height:34px; padding:5px 14px; font-size:13px;">Clear</a>
+  {% endif %}
+</form>
+
+<script>
+function onRecordingsDatePresetChange(sel){
+  var customBox = document.getElementById('customRecordingsDateFields');
+  if (sel.value === 'custom') {
+    customBox.style.display = 'flex';
+    return;
+  }
+  customBox.style.display = 'none';
+  if (sel.value !== '') {
+    sel.form.submit();
+  }
+}
+</script>
+
+<div class="report-table-wrap">
+  <table class="report-table">
+    <thead>
+      <tr>
+        <th>Lead #</th>
+        <th>Lead Name</th>
+        <th>Call Status</th>
+        <th>Duration</th>
+        <th>Activity Owner</th>
+        <th>Lead Owner</th>
+        <th>Date &amp; Time</th>
+        <th>Recording</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in result.rows %}
+      <tr>
+        <td>#{{ r.crm_lead_no or '—' }}</td>
+        <td>{{ r.full_name or '(no name)' }}</td>
+        <td>
+          {% if r.duration_seconds == 0 %}
+          <span class="badge" style="background:var(--red);">Missed/Unanswered</span>
+          {% else %}
+          <span class="badge" style="background:var(--green);">Answered</span>
+          {% endif %}
+        </td>
+        <td>{{ (r.duration_seconds // 60) }}:{{ '%02d'|format(r.duration_seconds % 60) }}</td>
+        <td>{{ r.actor_name }}</td>
+        <td>{{ r.lead_owner or '—' }}</td>
+        <td>{{ r.created_at }}</td>
+        <td>
+          {% if r.file_exists %}
+          <audio controls preload="none" style="display:block; max-width:220px; width:100%;">
+            <source src="{{ url_for('serve_recording', lead_id=r.cls_id, filename=r.recording_file_path) }}" type="audio/mpeg">
+          </audio>
+          {% else %}
+          <span style="color:var(--red); font-size:12px;">File missing</span>
+          {% endif %}
+        </td>
+        <td>
+          <div style="display:flex; gap:6px;">
+            <a href="{{ url_for('lead_detail', cls_id=r.cls_id) }}" class="btn" style="padding:4px 10px; font-size:12px;">View Lead</a>
+            <form method="post" action="{{ url_for('settings_telephony_recording_delete', activity_id=r.activity_id) }}"
+                  onsubmit="return confirm('Permanently delete this recording and its activity log entry for {{ r.full_name or r.cls_id }}? This cannot be undone.') && confirm('Are you absolutely sure? The recording file and its activity log entry will be permanently removed — this cannot be recovered.');">
+              <button type="submit" class="btn" style="color:var(--red); border-color:#F3C9C9; padding:4px 10px; font-size:12px;">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if not result.rows %}
+<div class="card empty-state" style="margin-top:16px;">
+  <p>No synced recordings match these filters.</p>
+</div>
+{% endif %}
+
+{% if result.total_pages > 1 %}
+<div style="display:flex; justify-content:center; gap:10px; margin-top:16px; align-items:center;">
+  {% set base_args = filters.copy() %}
+  {% if result.page > 1 %}
+    <a class="btn" href="{{ url_for('settings_telephony_recordings', page=result.page-1, **base_args) }}">← Previous</a>
+  {% endif %}
+  <span style="color:var(--ink-soft); font-size:14px;">Page {{ result.page }} of {{ result.total_pages }}</span>
+  {% if result.page < result.total_pages %}
+    <a class="btn" href="{{ url_for('settings_telephony_recordings', page=result.page+1, **base_args) }}">Next →</a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

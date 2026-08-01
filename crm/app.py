@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.23
+Version : 0.24
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,43 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.24 (2026-08-01) — New admin Settings > Telephony > Synced Recordings
+  page. Requires cls_db.py v2.36. Additive only.
+
+  New /settings/telephony/recordings (@login_required + @admin_required,
+  same gate as /settings/telephony): filtered/paginated table of every
+  call_recording activity_log row. Date-preset filter reuses app.py's
+  own DATE_PRESETS dict (same convention _parse_bulk_filters() already
+  established: copy the 4-branch resolution logic, don't share a helper,
+  don't pull in cls_reports.py's separate copy). Call Status/Lead Owner/
+  Activity Owner/search filters call the new cls_db.list_call_recordings().
+  actor->display-name resolution done in the route via cls_db.
+  get_all_users() (email->full_name dict), matching how lead_detail.html's
+  timeline already resolves activity_log.actor — no SQL JOIN for this,
+  by established convention. Each row also gets a file_exists flag (same
+  os.path.exists() check cls_call_recording_audit.py already does) so an
+  admin can see at a glance whether a recording actually plays, given the
+  2026-07-31 file-loss incident.
+
+  New /settings/telephony/recordings/<id>/delete (POST, same gate): calls
+  cls_db.delete_call_recording_activity() UNCHANGED (the same function
+  cls_call_recording_audit.py already uses — nothing duplicated/moved),
+  and additionally removes the underlying file if the row had one. A web
+  "Delete" click is a single deliberate action after visually reviewing
+  the row on-screen, so — unlike the CLI audit tool's careful separate
+  --delete-file flag for incident-response review — this always removes
+  both together, with the confirm() text saying so explicitly.
+
+  settings_telephony.html gets one new "View Synced Recordings ->" link.
+
+  Row actions are plain inline buttons (View Lead + Delete), not a new
+  dropdown/kebab component — confirmed with Srikanth: nothing like that
+  exists anywhere in this codebase, and every existing per-row action
+  here (settings_users.html's Deactivate, settings_projects.html's
+  delete) is 1-3 small buttons. "View Activity Detail" as a separate
+  action was dropped — the table row already shows every field a detail
+  view would.
+
 v0.23 (2026-07-31) — Bug 2 fix CORRECTED: recover missing recording files
   instead of permanently blocking re-sync. Requires cls_db.py v2.35.
 
@@ -3493,6 +3530,121 @@ def settings_telephony_generate_token(user_id):
         "success"
     )
     return redirect(url_for("settings_telephony"))
+
+
+def _parse_recordings_filters():
+    """
+    v0.24 — filter parser for /settings/telephony/recordings. Date-preset
+    resolution is COPIED from _parse_lead_filters()/_parse_bulk_filters()
+    rather than shared as a sub-helper — same established convention
+    those two already follow (see _parse_bulk_filters()'s own docstring):
+    same 4-branch logic, reusing app.py's own DATE_PRESETS dict rather
+    than cls_reports.py's separate REPORT_DATE_PRESETS copy.
+    """
+    date_preset_param = request.args.get("date_preset") or ""
+    date_from = request.args.get("date_from") or ""
+    date_to = request.args.get("date_to") or ""
+
+    if date_preset_param and date_preset_param != "custom" and date_preset_param in DATE_PRESETS:
+        date_from, date_to = DATE_PRESETS[date_preset_param]()
+        active_preset = date_preset_param
+    elif date_preset_param == "custom":
+        active_preset = "custom"
+    elif date_from or date_to:
+        active_preset = _detect_active_date_preset(date_from, date_to)
+    else:
+        active_preset = ""
+
+    return {
+        "date_from":       date_from,
+        "date_to":         date_to,
+        "date_preset":     active_preset,
+        "call_status":     request.args.get("call_status") or "",
+        "lead_owner":      request.args.get("lead_owner") or "",
+        "activity_owner":  request.args.get("activity_owner") or "",
+        "search":          request.args.get("search") or "",
+    }
+
+
+@app.route("/settings/telephony/recordings")
+@login_required
+@admin_required
+def settings_telephony_recordings():
+    """
+    v0.24 — admin Settings > Telephony > Synced Recordings. Filtered,
+    paginated table of every call_recording activity_log row, with
+    inline playback (reuses serve_recording() as-is) and per-row delete.
+    Gated @login_required + @admin_required, same as every other Settings
+    route — NOT can_write_any_lead, a separate lead-scoped gate.
+    """
+    f = _parse_recordings_filters()
+    page = request.args.get("page", 1, type=int)
+
+    result = cls_db.list_call_recordings(
+        date_from=f["date_from"] or None, date_to=f["date_to"] or None,
+        call_status=f["call_status"] or None, lead_owner=f["lead_owner"] or None,
+        activity_owner=f["activity_owner"] or None, search=f["search"] or None,
+        page=page,
+    )
+
+    # v0.24 — actor/lead_owner display-name resolution happens here, in
+    # the route, matching the established convention: activity_log.actor
+    # is always resolved to a display name in Python via get_all_users()
+    # (an email->full_name dict), never via a SQL JOIN — every existing
+    # consumer of activity_log.actor (lead_detail.html's timeline) does
+    # this the same way.
+    user_names = cls_db.get_all_users()
+    for r in result["rows"]:
+        r["actor_name"] = user_names.get(r["actor"], r["actor"])
+        # File-existence check — same os.path.exists() logic
+        # cls_call_recording_audit.py already uses, surfaced here so an
+        # admin can see at a glance whether a recording is actually
+        # playable, given the recent file-loss incident.
+        if r["recording_file_path"]:
+            full_path = os.path.join(RECORDINGS_DIR, secure_filename(r["cls_id"]), r["recording_file_path"])
+            r["file_exists"] = os.path.exists(full_path)
+        else:
+            r["file_exists"] = False
+
+    return render_template(
+        "settings_telephony_recordings.html",
+        result=result, filters=f,
+        date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
+        lead_owner_options=cls_db.get_distinct_owners(),
+        activity_owner_options=cls_db.get_all_users_detailed(),
+    )
+
+
+@app.route("/settings/telephony/recordings/<int:activity_id>/delete", methods=["POST"])
+@login_required
+@admin_required
+def settings_telephony_recording_delete(activity_id):
+    """
+    v0.24 — deletes ONE call_recording row AND its underlying file
+    together. Unlike cls_call_recording_audit.py's CLI tool (which
+    deliberately separates row-deletion from file-deletion for careful
+    incident-response review), a web admin clicking "Delete" here has
+    already reviewed the row on-screen (lead, status, duration, played
+    the audio) — one deliberate, confirmed action removes both. Calls
+    cls_db.delete_call_recording_activity() UNCHANGED — the same
+    function the CLI audit script uses, not a duplicate.
+    """
+    activities = cls_db.list_call_recording_activities()
+    match = next((a for a in activities if a["activity_id"] == activity_id), None)
+
+    ok, msg = cls_db.delete_call_recording_activity(activity_id)
+    if ok and match and match.get("recording_file_path"):
+        file_path = os.path.join(
+            RECORDINGS_DIR, secure_filename(match["cls_id"]), match["recording_file_path"]
+        )
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError as e:
+                _log(f"settings_telephony_recording_delete: could not remove {file_path}: {e}", "WARNING")
+
+    flash(msg, "success" if ok else "error")
+    return redirect(url_for("settings_telephony_recordings"))
 
 
 @app.route("/settings/user-activity")
