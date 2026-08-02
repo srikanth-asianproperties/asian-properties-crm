@@ -1,4 +1,4 @@
-{# settings.html (v0.20) — Settings hub. A grid of tiles; each future
+{# settings.html (v0.21) — Settings hub. A grid of tiles; each future
    admin tool drops in here as another tile.
 
    v0.10 — NEW "WhatsApp Reminder Templates" tile (site-visit reminders,
@@ -32,7 +32,18 @@
    openDeviceSyncSettings() from the Android pilot app, added there in
    android_pilot's v9), no server-side data of its own, so it needs no
    role gate beyond "is this a logged-in user" (already guaranteed by
-   @login_required on the route). #}
+   @login_required on the route).
+
+   v0.21 — NEW self-scoped "My Telephony Settings" tile, OUTSIDE the
+   admin-only block above, alongside "Device Sync". Every logged-in
+   user reaches settings_telephony via a tile now: admin/manager still
+   have the existing admin-only "Telephony" tile above (untouched,
+   company-wide view), and EVERY user (including admin/manager) also
+   sees this second tile pointing at the exact same route — app.py
+   v0.27's settings_telephony()/settings_telephony_recordings() routes
+   are what actually decide company-wide vs self-scoped based on role,
+   not this template; a non-admin just has only one path in instead of
+   two. #}
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 
@@ -150,6 +161,16 @@
 {% endif %}
 
 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-top:16px;">
+
+  <a href="{{ url_for('settings_telephony') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+      <span style="font-weight:700; font-size:16px;">My Telephony Settings</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Your recording folder path, API token, and your own synced recordings.
+    </p>
+  </a>
 
   <div class="card">
     <div style="display:flex; align-items:center; gap:10px;">

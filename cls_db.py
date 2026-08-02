@@ -2,11 +2,58 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.36
+Version : 2.38
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.38 (2026-08-02) — APX Attendance v0.9 pilot: schema only (Build Order
+  step 1 of the v0.9 spec), additions only, nothing existing removed or
+  modified. This is a SIBLING module — own tables, own API prefix (later
+  step) — and must never touch leads/activity_log/assignments or any
+  Job A-D logic. New tables, all self-healing CREATE TABLE IF NOT EXISTS
+  inside init_db(), same idiom as the v2.33 Telephony block just above:
+    - attendance_project_locations: one row per project bucket (matches
+      project_aliases.project_bucket text, same loose string-match
+      convention as owner_match_name/lead_owner elsewhere — no FK).
+    - attendance: one row per user per day (UNIQUE(user_id,
+      attendance_date) — same-day re-punch is an update, not a dup).
+    - attendance_corrections: employee-initiated change requests,
+      pending/approved/rejected queue.
+    - attendance_holidays: admin-managed holiday calendar.
+    - attendance_location_pings: hourly WorkManager pings while punched
+      in; a separate future housekeeping script (mirrors cls_backup.py's
+      cadence, NOT a Job A-D addition) should purge/archive rows older
+      than 90 days — not built this step.
+    - user_fcm_tokens: one row per user (INSERT OR REPLACE keyed on
+      user_id, same idiom as user_recording_paths), for push-on-
+      login/logout to admin-role users (FCM wiring itself is a later
+      build-order step, not this one).
+  Also: users.assigned_project TEXT (self-healing ALTER, same
+  table_info-check pattern as v1.7's owner_match_name) — matches
+  attendance_project_locations.project_bucket; set by an admin, not by
+  this migration. And two app_settings seed keys via the existing
+  INSERT OR IGNORE idiom (never clobbers an admin-set value on re-run):
+  'attendance_late_after_time' -> '10:00', 'attendance_default_radius_m'
+  -> '1500'. No new roles, no new routes, no API endpoints yet — those
+  are later steps in the same v0.9 build order, done and reported on
+  separately.
+
+v2.37 (2026-08-01) — New get_leads_created_in_range(date_from, date_to) for
+  the Pipeline Analysis dashboard's date-range-aware "Total Leads" tile
+  (app.py's dashboard_pipeline() route). Additive only. Same
+  substr(cls_created_at, 1, 10) BETWEEN ? AND ? pattern already used by
+  list_call_recordings()'s date filter, including that filter's "both or
+  neither" convention (no date_from/date_to together -> no filter, i.e.
+  all-time count) so it composes cleanly with the existing DATE_PRESETS
+  "maximum" preset, whose resolver returns ("", ""). Note: this uses
+  leads.cls_created_at, NOT a plain "created_at" column — cls_created_at
+  is the same column get_leads_created_today_count() already reads;
+  there is no separate "created_at" column on the leads table.
+  get_leads_created_today_count() is unchanged and still used by its one
+  existing caller (dashboard_pipeline() itself, for the no-query-string
+  default).
+
 v2.36 (2026-08-01) — New list_call_recordings(...) for the admin "Synced
   Recordings" report page (app.py's new /settings/telephony/recordings).
   Additive only. Filtered/paginated variant of v2.34's
@@ -2349,6 +2396,15 @@ def init_db():
     if "owner_match_name" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN owner_match_name TEXT;")
 
+    # ── Self-healing migration: assigned_project (v2.38, APX Attendance) ──
+    # Matches attendance_project_locations.project_bucket (loose string
+    # match, same convention as owner_match_name above). Admin-set from a
+    # Settings > Attendance screen (later build-order step) — this
+    # migration only adds the column, existing users get NULL, treated as
+    # "not yet assigned" by the geofence check.
+    if "assigned_project" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN assigned_project TEXT;")
+
     # ── v2.7 — WhatsApp message templates ──
     # One template per project (project is the title AND the unique key,
     # mirroring how Sell.do titles each template by project name).
@@ -2584,6 +2640,122 @@ def init_db():
         );
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_staging_created ON call_log_staging(created_at);")
+
+    # ── APX Attendance v0.9 schema (v2.38) ──
+    # SIBLING module to the lead-management engine — own tables, own API
+    # prefix (later step). Nothing in this block touches leads,
+    # activity_log, assignments, or any Job A-D logic. See the v2.38
+    # changelog entry at the top of this file for the full rationale.
+
+    # One row per project bucket. Matches project_aliases.project_bucket
+    # text, same loose string-match convention as owner_match_name/
+    # lead_owner elsewhere in this file — no FK enforcement.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS attendance_project_locations (
+            project_bucket  TEXT PRIMARY KEY,
+            latitude        REAL,
+            longitude       REAL,
+            radius_meters   INTEGER DEFAULT 1500,
+            updated_at      TEXT
+        );
+    """)
+
+    # One row per user per day. UNIQUE(user_id, attendance_date) means a
+    # same-day re-punch is handled as an UPDATE by the caller, not a
+    # second row — mirrors how leads.UNIQUE-style upserts already work
+    # elsewhere in this file.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS attendance (
+            attendance_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id                INTEGER REFERENCES users(user_id),
+            attendance_date        TEXT,
+            status                 TEXT,
+            login_ts               TEXT,
+            login_lat              REAL,
+            login_lng              REAL,
+            login_geofence_breach  INTEGER DEFAULT 0,
+            login_photo_path       TEXT,
+            logout_ts              TEXT,
+            logout_lat             REAL,
+            logout_lng             REAL,
+            logout_geofence_breach INTEGER DEFAULT 0,
+            logout_photo_path      TEXT,
+            late_minutes           INTEGER DEFAULT 0,
+            created_at             TEXT,
+            updated_at             TEXT,
+            UNIQUE(user_id, attendance_date)
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, attendance_date);")
+
+    # Employee-initiated change requests against an existing attendance
+    # row. Approving one (later build-order step, Settings > Attendance >
+    # Corrections) applies new_value to the attendance row and logs it
+    # here — this migration only creates the queue table.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS attendance_corrections (
+            correction_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            attendance_id   INTEGER REFERENCES attendance(attendance_id),
+            requested_by    TEXT,
+            request_note    TEXT,
+            field_changed   TEXT,
+            old_value       TEXT,
+            new_value       TEXT,
+            status          TEXT DEFAULT 'pending',
+            actor           TEXT,
+            resolved_at     TEXT,
+            created_at      TEXT
+        );
+    """)
+
+    # Admin-managed holiday calendar.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS attendance_holidays (
+            holiday_date  TEXT PRIMARY KEY,
+            label         TEXT,
+            created_at    TEXT
+        );
+    """)
+
+    # Hourly WorkManager location pings while punched in. Housekeeping
+    # (purge/archive rows older than 90 days) is a separate small script,
+    # same category as cls_parallel_diff.py — not a Job A-D addition, and
+    # not built in this step.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS attendance_location_pings (
+            ping_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id        INTEGER,
+            attendance_id  INTEGER,
+            ts             TEXT,
+            lat            REAL,
+            lng            REAL,
+            created_at     TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pings_created ON attendance_location_pings(created_at);")
+
+    # One row per user — FCM push token, same INSERT OR REPLACE-keyed-on-
+    # user_id idiom as user_recording_paths (v2.33) above. Populated by a
+    # later build-order step (app start + Firebase token-refresh callback).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_fcm_tokens (
+            user_id     INTEGER PRIMARY KEY REFERENCES users(user_id),
+            fcm_token   TEXT,
+            updated_at  TEXT
+        );
+    """)
+
+    # Self-healing seed, same INSERT OR IGNORE pattern as
+    # default_fallback_owner (v2.25) — never clobbers a value Srikanth
+    # already changed via the (later) Settings > Attendance screen.
+    conn.execute(
+        "INSERT OR IGNORE INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+        ("attendance_late_after_time", "10:00", _now())
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+        ("attendance_default_radius_m", "1500", _now())
+    )
 
     conn.commit()
     conn.close()
@@ -3588,6 +3760,33 @@ def get_leads_created_today_count():
             "SELECT COUNT(*) c FROM leads WHERE substr(cls_created_at, 1, 10) = ?",
             (today,)
         ).fetchone()
+        return row["c"]
+    finally:
+        conn.close()
+
+
+def get_leads_created_in_range(date_from=None, date_to=None):
+    """
+    (v2.37) New-lead count (by leads.cls_created_at date) within an
+    inclusive date range — feeds Pipeline Analysis's date-range-aware
+    "Total Leads" tile (dashboard_pipeline() route, app.py). Same
+    substr(cls_created_at, 1, 10) BETWEEN ? AND ? pattern
+    list_call_recordings() already uses for its own date filter,
+    including that filter's "both or neither" rule: pass both
+    date_from and date_to to filter, or leave either blank/None for an
+    all-time count (this is what makes the "maximum" preset — whose
+    resolver returns ("", "") — work correctly here with no special
+    case). get_leads_created_today_count() is untouched; this is a
+    separate, additive function, not a replacement.
+    """
+    conn = _connect()
+    try:
+        query = "SELECT COUNT(*) c FROM leads"
+        params = []
+        if date_from and date_to:
+            query += " WHERE substr(cls_created_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        row = conn.execute(query, params).fetchone()
         return row["c"]
     finally:
         conn.close()

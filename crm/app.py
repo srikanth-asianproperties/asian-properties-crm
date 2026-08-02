@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.26
+Version : 0.27
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,53 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.27 (2026-08-01) — Five-item batch: Pipeline date-range tile, self-scoped
+  Telephony access, Synced Recordings filter/UI polish.
+
+  1. dashboard_pipeline(): NEW date-range parsing (reuses this file's own
+     DATE_PRESETS/DATE_PRESET_ORDER/DATE_PRESET_LABELS, same 4-branch
+     resolution style as _parse_recordings_filters()), feeding NEW
+     cls_db.get_leads_created_in_range() for the "Total Leads" tile only.
+     Default preset is "today" ONLY when the route has no query string at
+     all, preserving the old default. Stage tiles (get_stage_snapshot_counts)
+     are UNTOUCHED — still a live snapshot regardless of the picker.
+
+  2. Self-scoped Telephony access for all logged-in users, same
+     cls_db.can_view_all_leads(role) gate used everywhere else (leads_list()
+     etc.) — oversight roles (admin, manager) unchanged/company-wide; a
+     salesperson now reaches these routes too but scoped to themselves only:
+       - settings_telephony(): @admin_required REMOVED (now @login_required
+         only). Non-oversight logins get `users` filtered to their own row;
+         POST only ever writes their own path_<user_id> field regardless of
+         what else is in the submitted form.
+       - settings_telephony_generate_token(): @admin_required REMOVED (now
+         @login_required only). NEW explicit guard: a non-oversight login
+         gets abort(403) if the URL's user_id isn't their own — they may
+         only ever regenerate their own token.
+       - settings_telephony_recordings(): @admin_required REMOVED (now
+         @login_required only). Non-oversight logins are force-scoped to
+         their own owner_match_name server-side — same fails-closed
+         convention as leads_list()'s owner gate, a salesperson's own
+         ?lead_owner= query param is never trusted. NEW company_wide flag
+         passed to the template so it can hide the now-redundant Lead
+         owner/Activity owner filter dropdowns for that role.
+       - settings_telephony_recording_delete(): UNCHANGED, still
+         @admin_required — defense in depth, the Delete button is now also
+         hidden client-side in the template for non-admins (settings.html
+         v0.21 also adds a role-agnostic "My Telephony Settings" tile
+         pointing at the same settings_telephony route).
+
+  3/4/5. No app.py change needed — settings_telephony_recordings.html v3
+     handles the filter-row grid layout, admin-only Delete button, and the
+     clickable Lead #/wider audio player entirely at the template level.
+
+  Verified via a Flask-test-client script against a throwaway temp SQLite
+  DB (never CLS1.db) — 32/32 checks passed, covering: date-range default/
+  maximum/custom Total Leads counts; admin vs. salesperson scoping on all
+  three telephony routes; the query-string lead_owner override being
+  ignored for a salesperson; the token-generation 403 guard; and the
+  delete endpoint still 403ing a salesperson directly.
+
 v0.26 (2026-08-01) — /settings gate loosened + user-facing "APX" removed.
 
   /settings: @admin_required REMOVED from the route (still @login_required)
@@ -1679,21 +1726,54 @@ def dashboard_today():
 @login_required
 def dashboard_pipeline():
     """
-    v0.6 — Pipeline Analysis tab. Tiles are a live snapshot of where
-    every lead sits right now (see cls_db.get_stage_snapshot_counts()
-    docstring for why this is a snapshot, not a historical-as-of-today
-    figure), except "Total Leads" which is specifically today's new
-    intake — flagged inline on the page itself so it isn't mistaken
-    for another snapshot tile.
+    v0.7 — Pipeline Analysis tab. Stage tiles are UNCHANGED: always a
+    live snapshot of where every lead sits right now regardless of the
+    date picker below (see cls_db.get_stage_snapshot_counts()
+    docstring for why this is a snapshot, not a historical-as-of-date
+    figure) — only "Total Leads" responds to the date-range picker.
+
+    Date-range parsing reuses this file's own DATE_PRESETS /
+    DATE_PRESET_ORDER / DATE_PRESET_LABELS dict (NOT
+    cls_reports.REPORT_DATE_PRESETS — established convention, see
+    _parse_recordings_filters()'s docstring), same 4-branch resolution
+    style. Default preset is "today" ONLY when the route is hit with
+    no query string at all, preserving the pre-v0.7 "Total Leads" =
+    today's new intake default; an explicit ?date_preset=... (any
+    value, including "maximum" for all-time) is always respected as-is.
+    cls_db.get_leads_created_today_count() is no longer called here —
+    replaced by the new date-range-aware get_leads_created_in_range() —
+    but is left untouched since nothing else uses it.
     """
     stage_counts = cls_db.get_stage_snapshot_counts()
-    leads_today = cls_db.get_leads_created_today_count()
+
+    date_preset_param = request.args.get("date_preset") or ""
+    date_from = request.args.get("date_from") or ""
+    date_to = request.args.get("date_to") or ""
+
+    if not date_preset_param and not date_from and not date_to:
+        date_preset_param = "today"  # first-load default, unchanged behavior
+
+    if date_preset_param and date_preset_param != "custom" and date_preset_param in DATE_PRESETS:
+        date_from, date_to = DATE_PRESETS[date_preset_param]()
+        active_preset = date_preset_param
+    elif date_preset_param == "custom":
+        active_preset = "custom"
+    elif date_from or date_to:
+        active_preset = _detect_active_date_preset(date_from, date_to)
+    else:
+        active_preset = ""
+
+    leads_total = cls_db.get_leads_created_in_range(date_from or None, date_to or None)
+
     return render_template(
         "dashboard_pipeline.html",
         active_tab="pipeline",
         stage_counts=stage_counts,
-        leads_today=leads_today,
+        leads_total=leads_total,
         all_stages=cls_db.ALL_STAGES,
+        filters={"date_preset": active_preset, "date_from": date_from, "date_to": date_to},
+        date_preset_order=DATE_PRESET_ORDER,
+        date_preset_labels=DATE_PRESET_LABELS,
     )
 
 
@@ -3565,10 +3645,9 @@ def settings_user_new():
 
 @app.route("/settings/telephony", methods=["GET", "POST"])
 @login_required
-@admin_required
 def settings_telephony():
     """
-    v0.21 — admin Settings > Telephony. Phase B: per-salesperson OEM
+    v0.22 — Settings > Telephony. Phase B: per-salesperson OEM
     recording-folder path config (cls_db.user_recording_paths), one text
     input per user saved together in a single form — same shape as
     settings_lead_scoring.html's "one input per item, one Save button"
@@ -3577,9 +3656,24 @@ def settings_telephony():
     endpoints) is a SEPARATE small form per row below, deliberately not
     bundled into this save form so saving paths can never accidentally
     regenerate someone's token.
+
+    v0.22 — self-scoped access: was @admin_required, now @login_required
+    only, same can_view_all_leads(role) gate used everywhere else in
+    this file (e.g. leads_list()). Oversight roles (admin, manager) keep
+    today's unchanged company-wide view of every user's row. A
+    salesperson instead sees ONLY their own row, and on POST may only
+    ever write their own path_<user_id> field — any other path_<id> key
+    present in the submitted form is ignored (defense in depth; the
+    template they're served only ever renders an input for their own
+    user_id, so this should be unreachable via the UI itself).
     """
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.can_view_all_leads(user["role"])
+
     if request.method == "POST":
         users = cls_db.get_all_users_detailed()
+        if not company_wide:
+            users = [u for u in users if u["user_id"] == user["user_id"]]
         for u in users:
             field = f"path_{u['user_id']}"
             if field in request.form:
@@ -3588,22 +3682,33 @@ def settings_telephony():
         return redirect(url_for("settings_telephony"))
 
     users = cls_db.get_all_users_detailed()
+    if not company_wide:
+        users = [u for u in users if u["user_id"] == user["user_id"]]
     for u in users:
         u["recording_folder_path"] = cls_db.get_recording_path(u["user_id"]) or ""
-    return render_template("settings_telephony.html", users=users)
+    return render_template("settings_telephony.html", users=users, company_wide=company_wide)
 
 
 @app.route("/settings/telephony/token/<int:user_id>", methods=["POST"])
 @login_required
-@admin_required
 def settings_telephony_generate_token(user_id):
     """
-    v0.21 — issues a new telephony API token for one user (old one is
+    v0.22 — issues a new telephony API token for one user (old one is
     deactivated, not deleted — cls_db.generate_api_token()'s "never
     discard" posture). The raw token is shown exactly once via flash —
     it is never logged (crm_app_log.txt never sees it) and cls_db.py
     never stores it, only its hash.
+
+    v0.22 — self-scoped access: was @admin_required, now @login_required
+    only. Oversight roles (admin, manager) may still regenerate anyone's
+    token, same as before. A non-oversight (salesperson) login may only
+    ever regenerate their OWN token — 403s regardless of what the URL's
+    user_id says, never trusting the request to self-report.
     """
+    requester = cls_db.get_user_by_id(session["user_id"])
+    if not cls_db.can_view_all_leads(requester["role"]) and user_id != requester["user_id"]:
+        abort(403, description="You may only regenerate your own telephony token.")
+
     user = cls_db.get_user_by_id(user_id)
     if not user:
         flash("Unknown user.", "error")
@@ -3653,16 +3758,30 @@ def _parse_recordings_filters():
 
 @app.route("/settings/telephony/recordings")
 @login_required
-@admin_required
 def settings_telephony_recordings():
     """
-    v0.24 — admin Settings > Telephony > Synced Recordings. Filtered,
+    v0.25 — Settings > Telephony > Synced Recordings. Filtered,
     paginated table of every call_recording activity_log row, with
     inline playback (reuses serve_recording() as-is) and per-row delete.
-    Gated @login_required + @admin_required, same as every other Settings
-    route — NOT can_write_any_lead, a separate lead-scoped gate.
+    Gated @login_required only now (was + @admin_required) — NOT
+    can_write_any_lead, a separate lead-scoped gate.
+
+    v0.25 — self-scoped access, same can_view_all_leads(role) gate used
+    everywhere else in this file. Oversight roles (admin, manager) keep
+    today's unchanged company-wide view. A salesperson is force-scoped
+    to their own owner_match_name — same fails-closed convention as
+    leads_list()'s owner gate: any ?lead_owner= they pass on the query
+    string is never trusted, always overwritten server-side. The
+    Lead-owner/Activity-owner filter dropdowns are also omitted from
+    what's passed to the template for this role (see company_wide below)
+    since every row shown is already theirs.
     """
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.can_view_all_leads(user["role"])
+
     f = _parse_recordings_filters()
+    if not company_wide:
+        f["lead_owner"] = user.get("owner_match_name") or ""
     page = request.args.get("page", 1, type=int)
 
     result = cls_db.list_call_recordings(
@@ -3693,7 +3812,7 @@ def settings_telephony_recordings():
 
     return render_template(
         "settings_telephony_recordings.html",
-        result=result, filters=f,
+        result=result, filters=f, company_wide=company_wide,
         date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
         lead_owner_options=cls_db.get_distinct_owners(),
         activity_owner_options=cls_db.get_all_users_detailed(),

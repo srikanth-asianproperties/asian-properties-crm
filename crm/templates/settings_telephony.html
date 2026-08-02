@@ -1,5 +1,5 @@
-{# settings_telephony.html (v2) — admin Settings > Telephony (Phase B).
-   Two independent forms, deliberately not nested (HTML disallows nested
+{# settings_telephony.html (v3) — Settings > Telephony (Phase B). Two
+   independent forms, deliberately not nested (HTML disallows nested
    <form> tags): the top form saves every user's recording-folder path in
    one Save click (settings_lead_scoring.html's "one input per item, one
    Save button" pattern). The per-user "Generate Token" buttons below are
@@ -9,18 +9,33 @@
    actual path for that salesperson's phone.
 
    v2 — NEW "View Synced Recordings →" link to the new
-   settings_telephony_recordings.html report page. #}
+   settings_telephony_recordings.html report page.
+
+   v3 — self-scoped access (app.py v0.27's settings_telephony() route).
+   `users`/`company_wide` are now the same shape either way — the
+   template just iterates whatever list the route hands it (a
+   salesperson's `users` list has exactly one row: their own) — so no
+   structural change was needed here, only this conditional intro line
+   so the page doesn't read like a stray admin page to a salesperson. #}
 {% extends "base.html" %}
 {% block title %}Telephony{% endblock %}
 
 {% block content %}
 <a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
 <h2 style="margin-top:10px;">Telephony</h2>
+{% if company_wide %}
 <p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:-6px;">
   Phase B pilot config: where each salesperson's phone stores call recordings, and the
   bearer token their app uses to report call-log data. Recordings are only ever fetched
   for calls matching an existing lead — see TELEPHONY_RECORDING_POLICY.md.
 </p>
+{% else %}
+<p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:-6px;">
+  Your recording folder path and API token — used by your phone's sync app. Recordings
+  are only ever fetched for calls matching an existing lead — see
+  TELEPHONY_RECORDING_POLICY.md.
+</p>
+{% endif %}
 <p style="margin-top:8px;">
   <a href="{{ url_for('settings_telephony_recordings') }}">View Synced Recordings →</a>
 </p>

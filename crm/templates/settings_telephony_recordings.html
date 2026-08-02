@@ -1,4 +1,4 @@
-{# settings_telephony_recordings.html (v2) — admin Settings > Telephony >
+{# settings_telephony_recordings.html (v3) — Settings > Telephony >
    Synced Recordings. Filtered/paginated table of every call_recording
    activity_log row, with inline playback and per-row delete.
 
@@ -21,7 +21,38 @@
    only submits if both are) — Srikanth's explicit ask for extra
    friction before a permanent, unrecoverable delete. No new JS function
    needed; same plain inline onsubmit style as every other confirm-guarded
-   action in this codebase. #}
+   action in this codebase.
+
+   v3 — four changes:
+   1. Self-scoped access (app.py v0.27's settings_telephony_recordings()
+      route). NEW `company_wide` boolean (matching dashboard_
+      booking_summary.html's existing naming, per Srikanth's request)
+      wraps the Lead owner / Activity owner filter <select> blocks —
+      redundant for a salesperson since every row they're shown is
+      already their own (server-side force-scoped, this template never
+      re-derives that).
+   2. Filter row changed from flex-wrap (uneven wrapping at real screen
+      widths) to a CSS grid (repeat(auto-fit, minmax(160px, 1fr))) so
+      every filter box gets a consistent width and lines up in neat
+      rows. Apply/Clear moved to their own row below, no longer
+      stretched to filter-box width.
+   3. Delete <form> (whole cell, not just the button) is now wrapped in
+      {% raw %}{% if current_user.role == 'admin' %}{% endraw %} — a
+      salesperson's/manager's Actions column shows ONLY "View Lead".
+      Admin-only (not WRITE_ANYWHERE_ROLES/managers), matching the
+      stricter precedent Bulk Reassign already set for destructive-at-
+      scale actions — confirmed assumption, flag back if managers should
+      also get Delete. Server-side settings_telephony_recording_delete()
+      KEEPS its unchanged @admin_required decorator regardless — this is
+      defense in depth, not the only gate.
+   4. Lead # is now also a link to the same lead_detail destination
+      "View Lead" already uses (additive — View Lead button unchanged).
+      Recording column's <audio> width raised from max-width:220px
+      (collapsed the native player to a play-button-only control at
+      that width) to min-width:280px/width:320px so the native scrubber
+      and time display render fully; the table already scrolls
+      horizontally (.report-table-wrap), so this is safe on narrow
+      screens. #}
 {% extends "base.html" %}
 {% block title %}Synced Recordings{% endblock %}
 
@@ -50,68 +81,78 @@
 </p>
 
 <form method="get" action="{{ url_for('settings_telephony_recordings') }}" id="recordingsFilterForm"
-      class="card" style="margin-top:16px; display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
+      class="card" style="margin-top:16px;">
 
-  <div>
-    <div class="field-label">Date range</div>
-    <select name="date_preset" id="datePresetSelect" onchange="onRecordingsDatePresetChange(this)"
-            style="height:34px; font-size:13px; padding:4px 8px;">
-      <option value="" {% if not filters.date_preset %}selected{% endif %}>— All time —</option>
-      {% for key in date_preset_order %}
-      <option value="{{ key }}" {% if filters.date_preset == key %}selected{% endif %}>{{ date_preset_labels[key] }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div id="customRecordingsDateFields"
-       style="display:{{ 'flex' if filters.date_preset == 'custom' else 'none' }}; gap:6px; align-items:flex-end;">
+  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:10px;">
+
     <div>
-      <div class="field-label">From</div>
-      <input type="date" name="date_from" value="{{ filters.date_from }}" style="height:34px; font-size:13px; padding:4px 8px;">
+      <div class="field-label">Date range</div>
+      <select name="date_preset" id="datePresetSelect" onchange="onRecordingsDatePresetChange(this)"
+              style="height:34px; font-size:13px; padding:4px 8px; width:100%;">
+        <option value="" {% if not filters.date_preset %}selected{% endif %}>— All time —</option>
+        {% for key in date_preset_order %}
+        <option value="{{ key }}" {% if filters.date_preset == key %}selected{% endif %}>{{ date_preset_labels[key] }}</option>
+        {% endfor %}
+      </select>
     </div>
+    <div id="customRecordingsDateFields"
+         style="display:{{ 'flex' if filters.date_preset == 'custom' else 'none' }}; gap:6px; align-items:flex-end;">
+      <div style="flex:1;">
+        <div class="field-label">From</div>
+        <input type="date" name="date_from" value="{{ filters.date_from }}" style="height:34px; font-size:13px; padding:4px 8px; width:100%;">
+      </div>
+      <div style="flex:1;">
+        <div class="field-label">To</div>
+        <input type="date" name="date_to" value="{{ filters.date_to }}" style="height:34px; font-size:13px; padding:4px 8px; width:100%;">
+      </div>
+    </div>
+
     <div>
-      <div class="field-label">To</div>
-      <input type="date" name="date_to" value="{{ filters.date_to }}" style="height:34px; font-size:13px; padding:4px 8px;">
+      <div class="field-label">Call status</div>
+      <select name="call_status" onchange="this.form.submit()" style="height:34px; font-size:13px; padding:4px 8px; width:100%;">
+        <option value="" {% if not filters.call_status %}selected{% endif %}>All</option>
+        <option value="answered" {% if filters.call_status == 'answered' %}selected{% endif %}>Answered</option>
+        <option value="missed" {% if filters.call_status == 'missed' %}selected{% endif %}>Missed</option>
+      </select>
     </div>
+
+    {% if company_wide %}
+    <div>
+      <div class="field-label">Lead owner</div>
+      <select name="lead_owner" onchange="this.form.submit()" style="height:34px; font-size:13px; padding:4px 8px; width:100%;">
+        <option value="">All</option>
+        {% for o in lead_owner_options %}
+        <option value="{{ o }}" {% if filters.lead_owner == o %}selected{% endif %}>{{ o }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <div class="field-label">Activity owner (who synced it)</div>
+      <select name="activity_owner" onchange="this.form.submit()" style="height:34px; font-size:13px; padding:4px 8px; width:100%;">
+        <option value="">All</option>
+        {% for u in activity_owner_options %}
+        <option value="{{ u.email }}" {% if filters.activity_owner == u.email %}selected{% endif %}>{{ u.full_name or u.email }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+
+    <div>
+      <div class="field-label">Lead name</div>
+      <input type="text" name="search" value="{{ filters.search }}" placeholder="Search…" style="height:34px; font-size:13px; padding:4px 8px; width:100%;">
+    </div>
+
   </div>
 
-  <div>
-    <div class="field-label">Call status</div>
-    <select name="call_status" onchange="this.form.submit()" style="height:34px; font-size:13px; padding:4px 8px;">
-      <option value="" {% if not filters.call_status %}selected{% endif %}>All</option>
-      <option value="answered" {% if filters.call_status == 'answered' %}selected{% endif %}>Answered</option>
-      <option value="missed" {% if filters.call_status == 'missed' %}selected{% endif %}>Missed</option>
-    </select>
+  <div style="display:flex; gap:10px; margin-top:12px;">
+    <button type="submit" class="btn btn-primary" style="height:34px; padding:5px 14px; font-size:13px;">Apply</button>
+    {% set has_active_filter = filters.date_preset or filters.call_status or filters.search
+        or (company_wide and (filters.lead_owner or filters.activity_owner)) %}
+    {% if has_active_filter %}
+    <a href="{{ url_for('settings_telephony_recordings') }}" class="btn" style="height:34px; padding:5px 14px; font-size:13px;">Clear</a>
+    {% endif %}
   </div>
-
-  <div>
-    <div class="field-label">Lead owner</div>
-    <select name="lead_owner" onchange="this.form.submit()" style="height:34px; font-size:13px; padding:4px 8px;">
-      <option value="">All</option>
-      {% for o in lead_owner_options %}
-      <option value="{{ o }}" {% if filters.lead_owner == o %}selected{% endif %}>{{ o }}</option>
-      {% endfor %}
-    </select>
-  </div>
-
-  <div>
-    <div class="field-label">Activity owner (who synced it)</div>
-    <select name="activity_owner" onchange="this.form.submit()" style="height:34px; font-size:13px; padding:4px 8px;">
-      <option value="">All</option>
-      {% for u in activity_owner_options %}
-      <option value="{{ u.email }}" {% if filters.activity_owner == u.email %}selected{% endif %}>{{ u.full_name or u.email }}</option>
-      {% endfor %}
-    </select>
-  </div>
-
-  <div>
-    <div class="field-label">Lead name</div>
-    <input type="text" name="search" value="{{ filters.search }}" placeholder="Search…" style="height:34px; font-size:13px; padding:4px 8px;">
-  </div>
-
-  <button type="submit" class="btn btn-primary" style="height:34px; padding:5px 14px; font-size:13px;">Apply</button>
-  {% if filters.date_preset or filters.call_status or filters.lead_owner or filters.activity_owner or filters.search %}
-  <a href="{{ url_for('settings_telephony_recordings') }}" class="btn" style="height:34px; padding:5px 14px; font-size:13px;">Clear</a>
-  {% endif %}
 </form>
 
 <script>
@@ -146,7 +187,7 @@ function onRecordingsDatePresetChange(sel){
     <tbody>
       {% for r in result.rows %}
       <tr>
-        <td>#{{ r.crm_lead_no or '—' }}</td>
+        <td><a href="{{ url_for('lead_detail', cls_id=r.cls_id) }}">#{{ r.crm_lead_no or '—' }}</a></td>
         <td>{{ r.full_name or '(no name)' }}</td>
         <td>
           {% if r.duration_seconds == 0 %}
@@ -161,7 +202,7 @@ function onRecordingsDatePresetChange(sel){
         <td>{{ r.created_at }}</td>
         <td>
           {% if r.file_exists %}
-          <audio controls preload="none" style="display:block; max-width:220px; width:100%;">
+          <audio controls preload="none" style="display:block; min-width:280px; width:320px;">
             <source src="{{ url_for('serve_recording', lead_id=r.cls_id, filename=r.recording_file_path) }}" type="audio/mpeg">
           </audio>
           {% else %}
@@ -171,10 +212,12 @@ function onRecordingsDatePresetChange(sel){
         <td>
           <div style="display:flex; gap:6px;">
             <a href="{{ url_for('lead_detail', cls_id=r.cls_id) }}" class="btn" style="padding:4px 10px; font-size:12px;">View Lead</a>
+            {% if current_user.role == 'admin' %}
             <form method="post" action="{{ url_for('settings_telephony_recording_delete', activity_id=r.activity_id) }}"
                   onsubmit="return confirm('Permanently delete this recording and its activity log entry for {{ r.full_name or r.cls_id }}? This cannot be undone.') && confirm('Are you absolutely sure? The recording file and its activity log entry will be permanently removed — this cannot be recovered.');">
               <button type="submit" class="btn" style="color:var(--red); border-color:#F3C9C9; padding:4px 10px; font-size:12px;">Delete</button>
             </form>
+            {% endif %}
           </div>
         </td>
       </tr>
