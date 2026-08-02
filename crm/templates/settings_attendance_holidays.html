@@ -1,0 +1,40 @@
+{# settings_attendance_holidays.html (v0.28) — admin Settings > Attendance
+   > Holidays. Same "single add form + list with a delete button per row"
+   CRUD pattern as settings_projects.html. #}
+{% extends "base.html" %}
+{% block title %}Holidays{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_attendance') }}" style="font-size:14px;">&larr; Back to Attendance</a>
+<h2 style="margin-top:10px;">Holidays</h2>
+
+<div class="card" style="margin-top:16px; max-width:480px;">
+  <strong style="font-size:15px;">Add / update a holiday</strong>
+  <form method="post" style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+    <input type="date" name="holiday_date" required>
+    <input type="text" name="label" placeholder="Label (e.g. Diwali)">
+    <button type="submit" class="btn btn-primary" style="align-self:flex-start;">Save</button>
+  </form>
+</div>
+
+<div style="display:flex; flex-direction:column; gap:10px; margin-top:16px; max-width:480px;">
+  {% for h in holidays %}
+  <div class="card" style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+    <div>
+      <strong style="font-size:14px;">{{ h.holiday_date }}</strong>
+      <div style="font-size:13px; color:var(--ink-soft);">{{ h.label or '(no label)' }}</div>
+    </div>
+    <form method="post" action="{{ url_for('settings_attendance_holiday_delete', holiday_date=h.holiday_date) }}"
+          onsubmit="return confirm('Remove the {{ h.holiday_date }} holiday?');">
+      <button type="submit" class="btn" style="color:var(--red); border-color:#F3C9C9; padding:5px 14px; font-size:13px;">Remove</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+
+{% if not holidays %}
+<div class="card empty-state" style="max-width:480px; margin-top:16px;">
+  <p>No holidays configured yet.</p>
+</div>
+{% endif %}
+{% endblock %}

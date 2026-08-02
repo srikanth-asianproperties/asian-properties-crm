@@ -43,7 +43,13 @@
    v0.27's settings_telephony()/settings_telephony_recordings() routes
    are what actually decide company-wide vs self-scoped based on role,
    not this template; a non-admin just has only one path in instead of
-   two. #}
+   two.
+
+   v0.28 — NEW admin-only "Attendance" tile (settings_attendance.html
+   hub) in the admin block, alongside Telephony. NEW role-agnostic "My
+   Attendance" tile in the second block, pointing at /attendance (the
+   employee page every logged-in user gets, same "one tile per role
+   scope" reasoning as My Telephony Settings above). #}
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 
@@ -157,6 +163,16 @@
     </p>
   </a>
 
+  <a href="{{ url_for('settings_attendance') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+      <span style="font-weight:700; font-size:16px;">Attendance</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Corrections queue, holidays, project GPS/geofence, and project assignment (APX Attendance pilot).
+    </p>
+  </a>
+
 </div>
 {% endif %}
 
@@ -169,6 +185,16 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
       Your recording folder path, API token, and your own synced recordings.
+    </p>
+  </a>
+
+  <a href="{{ url_for('attendance_home') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+      <span style="font-weight:700; font-size:16px;">My Attendance</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Login/Logout, Weekoff, Leave, and Correction Requests.
     </p>
   </a>
 

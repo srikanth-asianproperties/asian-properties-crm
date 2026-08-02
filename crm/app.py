@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.27
+Version : 0.28
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,47 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.28 (2026-08-02) — APX Attendance v0.9 pilot: Flask/Jinja2 routes only
+  (Build Order Step 2 of the v0.9 spec), against cls_db.py v2.38/2.39's
+  schema + data-access functions. SIBLING module — no leads/activity_log/
+  assignments route touched. No /api/attendance/* token-auth endpoints
+  yet (Step 4); no dashboard/calendar-with-colors/export screen yet
+  (Step 3).
+  - NEW GET /attendance: employee page — today's status, a
+    calendar.monthcalendar mini calendar for the current month (?year=/
+    ?month= to navigate), Login/Logout/Weekoff/Leave/Correction Request.
+    Login/Logout are feature-detected calls to window.AndroidBridge.
+    punchIn()/punchOut() (same onclick-feature-detect pattern as
+    settings.html v0.20's openDeviceSyncSettings()) — falls back to a
+    "use the mobile app" message since no native camera code exists yet.
+    NOTE: android_pilot's CURRENT AndroidBridge (v9) doesn't have
+    punchIn/punchOut either, so the fallback message is what shows even
+    inside the native app's WebView today — expected until a later
+    Android build-order step ships those two bridge methods.
+  - NEW POST /attendance/weekoff, /attendance/leave: plain form submits
+    to cls_db.set_self_service_attendance_status().
+  - NEW POST /attendance/correction-request: plain form submit to
+    cls_db.create_correction_request().
+  - NEW GET /settings/attendance: admin hub, same card-grid pattern as
+    settings.html.
+  - NEW GET/POST /settings/attendance/holidays (+ its /delete route),
+    /settings/attendance/corrections (approve/reject queue, one route
+    handling both actions via a hidden 'action' field, same idiom as
+    settings_users()'s toggle-active), /settings/attendance/projects
+    (lat/long/radius per project bucket, sourced from
+    cls_db.get_all_bucket_names()) — all @admin_required.
+  - NEW POST /settings/users/<id>/assign-project: sets
+    users.assigned_project from a small per-row addition to the
+    EXISTING settings_users.html (Team) screen, rather than a new "edit
+    user" screen — touches one existing template instead of adding one,
+    per the spec's explicit "fewer templates" call. settings_users()
+    now also passes projects=cls_db.get_all_bucket_names() for that
+    dropdown.
+  - Verified via a Flask-test-client script against a throwaway temp
+    SQLite DB with fake users/attendance rows (never CLS1.db/CLS2.db),
+    covering employee routes, all 3 admin sub-screens, admin-vs-
+    salesperson role gating, and the correction approve/reject flow.
+
 v0.27 (2026-08-01) — Five-item batch: Pipeline date-range tile, self-scoped
   Telephony access, Synced Recordings filter/UI polish.
 
@@ -1163,6 +1204,7 @@ v0.1  (July 2026) — first working version:
 """
 
 import base64
+import calendar
 import hmac
 import os
 import re
@@ -3594,9 +3636,15 @@ def settings_users():
     activate/deactivate toggle. Item 1 of Srikanth's testing-feedback
     batch. Reuses users.active, already enforced by verify_login()/
     get_user_by_id() since v0.1 — this is the first admin-facing UI
-    for a flag that already worked, not a new permission concept."""
+    for a flag that already worked, not a new permission concept.
+
+    v0.28 — also passes projects (cls_db.get_all_bucket_names()) for a
+    new per-row "assigned project" dropdown (APX Attendance geofencing,
+    cls_db.py v2.38's users.assigned_project column) rendered in
+    settings_users.html alongside the existing activate/deactivate form.
+    """
     users = cls_db.get_all_users_detailed()
-    return render_template("settings_users.html", users=users)
+    return render_template("settings_users.html", users=users, projects=cls_db.get_all_bucket_names())
 
 
 @app.route("/settings/users/new", methods=["GET", "POST"])
@@ -4194,6 +4242,237 @@ def serve_recording(lead_id, filename):
         os.path.join(RECORDINGS_DIR, secure_filename(lead_id)),
         filename
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# APX ATTENDANCE  —  v0.9 pilot, Build Order Step 2 (v0.28)
+# ─────────────────────────────────────────────────────────────
+# SIBLING module to the lead-management routes above — own prefix
+# (/attendance, /settings/attendance), own data (cls_db.py v2.38/2.39).
+# Nothing here reads or writes leads/activity_log/assignments.
+#
+# Login/Logout have NO native camera code yet (that's a later build-
+# order step) — both buttons feature-detect window.AndroidBridge and
+# call .punchIn()/.punchOut() if present, else show a "use the mobile
+# app" message. IMPORTANT: android_pilot's CURRENT AndroidBridge (v9,
+# openDeviceSyncSettings only) does NOT have punchIn/punchOut yet
+# either, so today this correctly falls back to the message even
+# inside the native app's WebView — that's expected until the Android
+# build-order step ships those two bridge methods, not a bug here.
+#
+# No /api/attendance/* token-auth endpoints in this step (Build Order
+# Step 4) — Weekoff/Leave/Correction Request below are plain
+# session-cookie form POSTs, same auth as every other route in this file.
+
+def _month_nav(year, month):
+    """Prev/next (year, month) pairs for the mini-calendar's < > links."""
+    first_of_month = datetime(year, month, 1)
+    prev_month_date = first_of_month - timedelta(days=1)
+    next_month_date = (first_of_month + timedelta(days=32)).replace(day=1)
+    return (prev_month_date.year, prev_month_date.month,
+            next_month_date.year, next_month_date.month)
+
+
+@app.route("/attendance")
+@login_required
+def attendance_home():
+    """
+    v0.28 — Employee-facing Attendance page: today's status, this
+    month's mini calendar (calendar.monthcalendar — Monday-start weeks,
+    0 = day outside the month), and the Login/Logout/Weekoff/Leave/
+    Correction Request buttons. ?year=&month= pick the calendar month
+    (defaults to the current month); invalid/missing values silently
+    fall back to today rather than erroring.
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    today_dt = datetime.now()
+    today = today_dt.strftime("%Y-%m-%d")
+    try:
+        year = int(request.args.get("year", today_dt.year))
+        month = int(request.args.get("month", today_dt.month))
+        if not (1 <= month <= 12):
+            raise ValueError
+    except ValueError:
+        year, month = today_dt.year, today_dt.month
+
+    today_status = cls_db.get_attendance_for_date(user["user_id"], today)
+    month_data = cls_db.get_attendance_month(user["user_id"], year, month)
+    weeks = calendar.monthcalendar(year, month)
+    holidays = {
+        h["holiday_date"] for h in cls_db.list_attendance_holidays()
+        if h["holiday_date"].startswith(f"{year:04d}-{month:02d}")
+    }
+    prev_year, prev_month, next_year, next_month = _month_nav(year, month)
+
+    return render_template(
+        "attendance.html",
+        today=today,
+        today_status=today_status,
+        year=year, month=month,
+        month_name=calendar.month_name[month],
+        weeks=weeks,
+        month_data=month_data,
+        holidays=holidays,
+        prev_year=prev_year, prev_month=prev_month,
+        next_year=next_year, next_month=next_month,
+        correction_fields=cls_db.ATTENDANCE_CORRECTION_FIELDS,
+        attendance_statuses=cls_db.ATTENDANCE_STATUSES,
+    )
+
+
+@app.route("/attendance/weekoff", methods=["POST"])
+@login_required
+def attendance_weekoff():
+    user = cls_db.get_user_by_id(session["user_id"])
+    date_str = (request.form.get("attendance_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    ok, message = cls_db.set_self_service_attendance_status(user["user_id"], date_str, "weekoff", _actor())
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("attendance_home"))
+
+
+@app.route("/attendance/leave", methods=["POST"])
+@login_required
+def attendance_leave():
+    user = cls_db.get_user_by_id(session["user_id"])
+    date_str = (request.form.get("attendance_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    ok, message = cls_db.set_self_service_attendance_status(user["user_id"], date_str, "leave", _actor())
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("attendance_home"))
+
+
+@app.route("/attendance/correction-request", methods=["POST"])
+@login_required
+def attendance_correction_request():
+    user = cls_db.get_user_by_id(session["user_id"])
+    date_str = (request.form.get("attendance_date") or "").strip()
+    field_changed = (request.form.get("field_changed") or "").strip()
+    new_value = (request.form.get("new_value") or "").strip()
+    note = (request.form.get("request_note") or "").strip()
+
+    if not date_str or not new_value:
+        flash("Date and new value are both required.", "error")
+        return redirect(url_for("attendance_home"))
+
+    ok, message = cls_db.create_correction_request(
+        user["user_id"], date_str, field_changed, new_value, note, _actor()
+    )
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("attendance_home"))
+
+
+@app.route("/settings/attendance")
+@login_required
+@admin_required
+def settings_attendance():
+    """v0.28 — Attendance admin hub. Same card-grid pattern as
+    settings.html. Dashboard/calendar-with-colors/export tile is
+    deliberately NOT here yet — that's Build Order Step 3."""
+    return render_template("settings_attendance.html")
+
+
+@app.route("/settings/attendance/holidays", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_attendance_holidays():
+    if request.method == "POST":
+        holiday_date = (request.form.get("holiday_date") or "").strip()
+        label = (request.form.get("label") or "").strip()
+        if not holiday_date:
+            flash("Date is required.", "error")
+        else:
+            cls_db.add_attendance_holiday(holiday_date, label)
+            flash(f"Holiday saved for {holiday_date}.", "success")
+        return redirect(url_for("settings_attendance_holidays"))
+
+    return render_template(
+        "settings_attendance_holidays.html",
+        holidays=cls_db.list_attendance_holidays(),
+    )
+
+
+@app.route("/settings/attendance/holidays/<holiday_date>/delete", methods=["POST"])
+@login_required
+@admin_required
+def settings_attendance_holiday_delete(holiday_date):
+    cls_db.delete_attendance_holiday(holiday_date)
+    flash(f"Holiday removed for {holiday_date}.", "success")
+    return redirect(url_for("settings_attendance_holidays"))
+
+
+@app.route("/settings/attendance/corrections", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_attendance_corrections():
+    """v0.28 — Approve/reject queue. POST handles both actions via a
+    single 'action' field ('approve'/'reject') on the same route,
+    mirroring settings_users()'s toggle-active pattern (one hidden
+    field deciding which of two outcomes a shared handler applies)."""
+    if request.method == "POST":
+        try:
+            correction_id = int(request.form.get("correction_id", ""))
+        except ValueError:
+            flash("Invalid request.", "error")
+            return redirect(url_for("settings_attendance_corrections"))
+
+        approve = request.form.get("action") == "approve"
+        ok, message = cls_db.resolve_attendance_correction(correction_id, approve, _actor())
+        flash(message, "success" if ok else "error")
+        return redirect(url_for("settings_attendance_corrections"))
+
+    all_corrections = cls_db.list_attendance_corrections()
+    return render_template(
+        "settings_attendance_corrections.html",
+        pending=[c for c in all_corrections if c["status"] == "pending"],
+        resolved=[c for c in all_corrections if c["status"] != "pending"],
+    )
+
+
+@app.route("/settings/attendance/projects", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_attendance_projects():
+    if request.method == "POST":
+        project_bucket = (request.form.get("project_bucket") or "").strip()
+        latitude = (request.form.get("latitude") or "").strip()
+        longitude = (request.form.get("longitude") or "").strip()
+        radius_meters = (request.form.get("radius_meters") or "").strip()
+
+        if not project_bucket:
+            flash("Choose a project.", "error")
+            return redirect(url_for("settings_attendance_projects"))
+        try:
+            lat_f = float(latitude) if latitude else None
+            lng_f = float(longitude) if longitude else None
+            radius_i = int(radius_meters) if radius_meters else 1500
+        except ValueError:
+            flash("Latitude/longitude must be numbers, radius must be a whole number of meters.", "error")
+            return redirect(url_for("settings_attendance_projects"))
+
+        cls_db.set_attendance_project_location(project_bucket, lat_f, lng_f, radius_i)
+        flash(f"Location saved for {project_bucket}.", "success")
+        return redirect(url_for("settings_attendance_projects"))
+
+    locations = {l["project_bucket"]: l for l in cls_db.list_attendance_project_locations()}
+    return render_template(
+        "settings_attendance_projects.html",
+        projects=cls_db.get_all_bucket_names(),
+        locations=locations,
+    )
+
+
+@app.route("/settings/users/<int:user_id>/assign-project", methods=["POST"])
+@login_required
+@admin_required
+def settings_user_assign_project(user_id):
+    """v0.28 — sets users.assigned_project (cls_db.py v2.38) from a
+    small per-row form on settings_users.html, rather than a separate
+    "edit user" screen — touches one existing template instead of
+    adding a new one, per the v0.9 spec's explicit "pick whichever
+    touches fewer templates" call."""
+    project_bucket = (request.form.get("assigned_project") or "").strip() or None
+    cls_db.set_user_assigned_project(user_id, project_bucket)
+    flash("Project assignment saved.", "success")
+    return redirect(url_for("settings_users"))
 
 
 # ─────────────────────────────────────────────────────────────

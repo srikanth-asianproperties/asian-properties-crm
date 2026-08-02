@@ -2,11 +2,30 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.38
+Version : 2.39
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.39 (2026-08-02) — APX Attendance v0.9 pilot: data-access functions
+  (Build Order Step 2 of the v0.9 spec), additions only, nothing
+  existing removed or modified except get_all_users_detailed()'s SELECT
+  list (additive column, same v2.25 idiom — see its own docstring).
+  New: get_attendance_for_date, get_attendance_month,
+  set_self_service_attendance_status (Weekoff/Leave, refuses to
+  overwrite punch data or a conflicting status), create_correction_request
+  + list_attendance_corrections + resolve_attendance_correction (the
+  employee correction-request queue, field_changed validated against the
+  new ATTENDANCE_CORRECTION_FIELDS allowlist both at request time and
+  apply time), list/add/delete_attendance_holiday, list_attendance_
+  project_locations + set_attendance_project_location, and
+  set_user_assigned_project. Also new config-not-code tuples
+  ATTENDANCE_STATUSES, SELF_SERVICE_ATTENDANCE_STATUSES,
+  ATTENDANCE_CORRECTION_FIELDS, same idiom as CRM_ROLES/OVERSIGHT_ROLES.
+  No schema changes this step — v2.38's tables covered everything Step 2
+  needed; no gap found. No route/API work here — that's app.py's v0.28
+  change, done and reported alongside this one.
+
 v2.38 (2026-08-02) — APX Attendance v0.9 pilot: schema only (Build Order
   step 1 of the v0.9 spec), additions only, nothing existing removed or
   modified. This is a SIBLING module — own tables, own API prefix (later
@@ -6277,12 +6296,16 @@ def get_all_users_detailed():
     lead_owner — full_name/email would silently mismatch it. Existing
     consumers (Settings > Team) are unaffected; they access dict keys
     by name and simply ignore the new one.
+
+    v2.39 — ADDITIVE: also returns assigned_project (APX Attendance),
+    for the Settings > Team per-row project-assignment dropdown. Same
+    "existing consumers ignore the new key" reasoning as v2.25 above.
     """
     conn = _connect()
     try:
         rows = conn.execute("""
             SELECT user_id, full_name, email, role, active, created_at,
-                   last_login_at, owner_match_name
+                   last_login_at, owner_match_name, assigned_project
             FROM users ORDER BY full_name COLLATE NOCASE
         """).fetchall()
         return [dict(r) for r in rows]
@@ -9198,6 +9221,345 @@ def write_job_result(job_name, success, summary):
     path = os.path.join(BASE_DIR, "job_results.txt")
     with open(path, "a", encoding="utf-8", errors="replace") as f:
         f.write(line)
+
+
+# ─────────────────────────────────────────────────────────────
+# APX ATTENDANCE  —  v0.9 pilot, Build Order Step 2 (v2.39)
+# ─────────────────────────────────────────────────────────────
+# Data-access functions only — schema was added in v2.38 (see that
+# changelog entry for the full table list). This is a SIBLING module:
+# nothing here reads or writes leads/activity_log/assignments, and
+# nothing in the lead-management code calls into this section.
+
+# Config-not-code, same idiom as CRM_ROLES/OVERSIGHT_ROLES above.
+ATTENDANCE_STATUSES = ("present", "late", "absent", "weekoff", "leave", "half_day")
+
+# The only two statuses an employee can self-service set via
+# set_self_service_attendance_status() below. present/late/absent are
+# punch-derived only (Step 4's API endpoints), never settable here.
+SELF_SERVICE_ATTENDANCE_STATUSES = ("weekoff", "leave")
+
+# The only attendance columns a correction request may target. Used
+# BOTH when a request is created (create_correction_request) and when
+# it's applied (resolve_attendance_correction) — the same allowlist in
+# both places means a crafted field_changed value can never reach raw
+# SQL as a column name, even though field_changed is text a
+# salesperson controls via a form.
+ATTENDANCE_CORRECTION_FIELDS = ("status", "login_ts", "logout_ts")
+
+
+def get_attendance_for_date(user_id, date_str):
+    """(v2.39) One user's attendance row for one date ('YYYY-MM-DD'),
+    or None if nothing recorded yet. Powers the employee /attendance
+    page's "today's status" tile."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM attendance WHERE user_id=? AND attendance_date=?",
+            (user_id, date_str)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_attendance_month(user_id, year, month):
+    """(v2.39) All of one user's attendance rows within one calendar
+    month, keyed by 'YYYY-MM-DD', for the /attendance mini calendar.
+    Days with no row simply aren't in the dict — the template renders
+    those as blank/no-status, not as "absent" (absence is a punch-
+    derived status computed elsewhere, not the mere lack of a row)."""
+    conn = _connect()
+    try:
+        prefix = f"{year:04d}-{month:02d}"
+        rows = conn.execute(
+            "SELECT * FROM attendance WHERE user_id=? AND attendance_date LIKE ? "
+            "ORDER BY attendance_date",
+            (user_id, f"{prefix}%")
+        ).fetchall()
+        return {r["attendance_date"]: dict(r) for r in rows}
+    finally:
+        conn.close()
+
+
+def _get_or_create_attendance_row(conn, user_id, date_str):
+    """(v2.39, internal) Returns an attendance_id for user_id+date_str,
+    creating a bare row (no status/punch data) if none exists yet.
+    Used by create_correction_request() so a correction can be
+    requested even for a day with no punch at all (e.g. a forgotten
+    punch-in) — takes an already-open conn/transaction, never opens
+    its own, so the INSERT and the correction row it enables land in
+    the SAME commit."""
+    row = conn.execute(
+        "SELECT attendance_id FROM attendance WHERE user_id=? AND attendance_date=?",
+        (user_id, date_str)
+    ).fetchone()
+    if row:
+        return row["attendance_id"]
+    now = _now()
+    cur = conn.execute(
+        "INSERT INTO attendance (user_id, attendance_date, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, date_str, now, now)
+    )
+    return cur.lastrowid
+
+
+def set_self_service_attendance_status(user_id, date_str, status, actor):
+    """
+    (v2.39) Employee self-service Weekoff/Leave marking. status must be
+    in SELF_SERVICE_ATTENDANCE_STATUSES — present/late/absent are
+    punch-derived only and never settable through this function.
+
+    Refuses to overwrite a day that already has punch data (login_ts
+    set) — same "never discard" posture as the rest of this file; a
+    mis-click can't silently erase a punched day's photo/geofence
+    record. A day with an existing DIFFERENT self-service status (e.g.
+    already marked leave, now trying weekoff) is also refused, so a
+    double-submit needs an explicit admin correction, not a silent
+    overwrite. Re-submitting the SAME status is a harmless no-op.
+
+    actor is accepted but not yet persisted anywhere on this table
+    (there's no actor/created_by column on attendance) — kept in the
+    signature now so app.py's call site doesn't need to change when a
+    future audit column is added.
+
+    Returns (ok: bool, message: str).
+    """
+    if status not in SELF_SERVICE_ATTENDANCE_STATUSES:
+        return False, "Invalid status."
+    conn = _connect()
+    try:
+        existing = conn.execute(
+            "SELECT * FROM attendance WHERE user_id=? AND attendance_date=?",
+            (user_id, date_str)
+        ).fetchone()
+        now = _now()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO attendance (user_id, attendance_date, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, date_str, status, now, now)
+            )
+        elif existing["login_ts"]:
+            return False, ("That day already has a punch-in recorded — "
+                            "submit a Correction Request instead.")
+        elif existing["status"] and existing["status"] != status:
+            return False, (f"That day is already marked '{existing['status']}' — "
+                            "submit a Correction Request instead.")
+        else:
+            conn.execute(
+                "UPDATE attendance SET status=?, updated_at=? WHERE attendance_id=?",
+                (status, now, existing["attendance_id"])
+            )
+        conn.commit()
+        return True, f"Marked {date_str} as {status}."
+    finally:
+        conn.close()
+
+
+def create_correction_request(user_id, date_str, field_changed, new_value, note, actor):
+    """
+    (v2.39) Employee-initiated attendance_corrections row, status=
+    'pending'. field_changed is validated against
+    ATTENDANCE_CORRECTION_FIELDS; new_value is additionally validated
+    against ATTENDANCE_STATUSES when field_changed=='status', or
+    parsed as 'YYYY-MM-DD HH:MM:SS' when correcting login_ts/logout_ts
+    — rejected up front with a friendly message rather than stored as
+    unusable text that only surfaces as a problem when an admin later
+    tries to approve it.
+
+    Auto-creates the day's attendance row if none exists yet (e.g. a
+    forgotten punch-in) via _get_or_create_attendance_row(), on the
+    SAME connection/transaction as the correction insert.
+
+    Returns (ok: bool, message: str).
+    """
+    if field_changed not in ATTENDANCE_CORRECTION_FIELDS:
+        return False, "Invalid field selected."
+    if field_changed == "status":
+        if new_value not in ATTENDANCE_STATUSES:
+            return False, "Invalid status value."
+    else:  # login_ts / logout_ts
+        try:
+            datetime.strptime(new_value, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return False, "Time must be in YYYY-MM-DD HH:MM:SS format."
+
+    conn = _connect()
+    try:
+        attendance_id = _get_or_create_attendance_row(conn, user_id, date_str)
+        old_row = conn.execute(
+            "SELECT * FROM attendance WHERE attendance_id=?", (attendance_id,)
+        ).fetchone()
+        old_value = old_row[field_changed] if old_row else None
+        now = _now()
+        conn.execute(
+            "INSERT INTO attendance_corrections "
+            "(attendance_id, requested_by, request_note, field_changed, old_value, "
+            " new_value, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+            (attendance_id, actor, note, field_changed, old_value, new_value, now)
+        )
+        conn.commit()
+        return True, "Correction request submitted."
+    finally:
+        conn.close()
+
+
+def list_attendance_corrections(status=None):
+    """(v2.39) Admin Settings > Attendance > Corrections queue. Joins
+    attendance + users for display context (who, which day). status=
+    None returns every request regardless of status (for a combined
+    pending+history view); pass 'pending' to scope to the actionable
+    queue only."""
+    conn = _connect()
+    try:
+        query = (
+            "SELECT c.*, a.user_id, a.attendance_date, u.full_name, u.email "
+            "FROM attendance_corrections c "
+            "JOIN attendance a ON a.attendance_id = c.attendance_id "
+            "JOIN users u ON u.user_id = a.user_id"
+        )
+        params = ()
+        if status:
+            query += " WHERE c.status = ?"
+            params = (status,)
+        query += " ORDER BY c.created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def resolve_attendance_correction(correction_id, approve, actor):
+    """
+    (v2.39) Approve or reject one pending attendance_corrections row.
+    Approving applies new_value to the linked attendance row's
+    field_changed column — field_changed is re-checked against
+    ATTENDANCE_CORRECTION_FIELDS here too (belt-and-suspenders with the
+    check already done at request-creation time in
+    create_correction_request(), since this is the function that
+    actually interpolates a column name into SQL). Rejecting just
+    marks the row resolved with no attendance change. Refuses to
+    re-resolve a request that's already been approved/rejected.
+
+    Returns (ok: bool, message: str).
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM attendance_corrections WHERE correction_id=?",
+            (correction_id,)
+        ).fetchone()
+        if not row:
+            return False, "Correction request not found."
+        if row["status"] != "pending":
+            return False, "This request has already been resolved."
+
+        now = _now()
+        if approve:
+            field = row["field_changed"]
+            if field not in ATTENDANCE_CORRECTION_FIELDS:
+                return False, "Unrecognized field — cannot apply."
+            conn.execute(
+                f"UPDATE attendance SET {field}=?, updated_at=? WHERE attendance_id=?",
+                (row["new_value"], now, row["attendance_id"])
+            )
+        conn.execute(
+            "UPDATE attendance_corrections SET status=?, actor=?, resolved_at=? "
+            "WHERE correction_id=?",
+            ("approved" if approve else "rejected", actor, now, correction_id)
+        )
+        conn.commit()
+        return True, ("Correction approved." if approve else "Correction rejected.")
+    finally:
+        conn.close()
+
+
+def list_attendance_holidays():
+    """(v2.39) Full holiday calendar, date-ascending, for the admin
+    Settings > Attendance > Holidays screen."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM attendance_holidays ORDER BY holiday_date"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def add_attendance_holiday(holiday_date, label):
+    """(v2.39) Add/overwrite one holiday. INSERT OR REPLACE keyed on
+    holiday_date (the table's PK) — re-saving the same date just
+    updates its label, same idiom as project_aliases elsewhere."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO attendance_holidays (holiday_date, label, created_at) "
+            "VALUES (?, ?, ?)",
+            (holiday_date, label, _now())
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_attendance_holiday(holiday_date):
+    """(v2.39) Remove one holiday. No blocking logic, same "deletes are
+    safe" reasoning as delete_project_alias()."""
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM attendance_holidays WHERE holiday_date=?", (holiday_date,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_attendance_project_locations():
+    """(v2.39) All configured project GPS locations, for the admin
+    Settings > Attendance > Projects screen."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM attendance_project_locations ORDER BY project_bucket"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def set_attendance_project_location(project_bucket, latitude, longitude, radius_meters):
+    """(v2.39) Add/overwrite one project's GPS location + geofence
+    radius. INSERT OR REPLACE keyed on project_bucket (the table's PK),
+    same idiom as add_attendance_holiday() above."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO attendance_project_locations "
+            "(project_bucket, latitude, longitude, radius_meters, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (project_bucket, latitude, longitude, radius_meters, _now())
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_user_assigned_project(user_id, project_bucket):
+    """(v2.39) Admin-set link from a user to their attendance geofence
+    project (users.assigned_project, the v2.38 self-healing column).
+    project_bucket='' from a form is normalized to NULL (not yet
+    assigned), not stored as an empty string."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE users SET assigned_project=? WHERE user_id=?",
+            (project_bucket or None, user_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ─────────────────────────────────────────────────────────────

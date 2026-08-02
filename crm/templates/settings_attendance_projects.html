@@ -1,0 +1,40 @@
+{# settings_attendance_projects.html (v0.28) — admin Settings >
+   Attendance > Project GPS & Geofence. One form per project bucket
+   (sourced from cls_db.get_all_bucket_names(), same source as every
+   other project dropdown in this app), each pre-filled with its
+   current lat/long/radius if already configured. #}
+{% extends "base.html" %}
+{% block title %}Project GPS &amp; Geofence{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_attendance') }}" style="font-size:14px;">&larr; Back to Attendance</a>
+<h2 style="margin-top:10px;">Project GPS &amp; Geofence</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  Punches aren't blocked outside the radius — a breach is only flagged (red marker) for review.
+</p>
+
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin-top:16px;">
+  {% for p in projects %}
+  {% set loc = locations.get(p) %}
+  <div class="card">
+    <strong style="font-size:15px;">{{ p }}</strong>
+    <form method="post" style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+      <input type="hidden" name="project_bucket" value="{{ p }}">
+      <label style="font-size:12px; color:var(--ink-soft);">Latitude</label>
+      <input type="number" step="any" name="latitude" value="{{ loc.latitude if loc else '' }}" style="width:100%;">
+      <label style="font-size:12px; color:var(--ink-soft);">Longitude</label>
+      <input type="number" step="any" name="longitude" value="{{ loc.longitude if loc else '' }}" style="width:100%;">
+      <label style="font-size:12px; color:var(--ink-soft);">Radius (meters)</label>
+      <input type="number" step="1" name="radius_meters" value="{{ loc.radius_meters if loc else 1500 }}" style="width:100%;">
+      <button type="submit" class="btn btn-primary" style="align-self:flex-start; margin-top:4px;">Save</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+
+{% if not projects %}
+<div class="card empty-state" style="margin-top:16px;">
+  <p>No projects configured yet — add one from Settings &gt; Projects first.</p>
+</div>
+{% endif %}
+{% endblock %}

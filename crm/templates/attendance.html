@@ -1,0 +1,171 @@
+{# attendance.html (v0.28) — Employee-facing Attendance page. APX
+   Attendance v0.9 pilot, Build Order Step 2.
+
+   Login/Logout have NO native camera code yet (a later build-order
+   step) — both buttons feature-detect window.AndroidBridge and call
+   .punchIn()/.punchOut() if present, else show a "use the mobile app"
+   message. android_pilot's CURRENT AndroidBridge (v9) doesn't have
+   these two methods either, so the fallback message is what shows
+   even inside the native app's WebView today — expected, not a bug.
+
+   Weekoff/Leave/Correction Request are plain form POSTs, no native
+   code involved. The mini calendar below is a personal, single-user
+   view only — the admin-wide dashboard with totals/export is a later
+   step (Step 3), not built here. #}
+{% extends "base.html" %}
+{% block title %}Attendance{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:0;">Attendance</h2>
+
+<div class="card" style="margin-bottom:16px;">
+  <strong style="font-size:15px;">Today — {{ today }}</strong>
+  {% if today_status %}
+    <div style="font-size:13px; color:var(--ink-soft); margin-top:4px;">
+      Status:
+      <span class="badge" style="background:
+        {% if today_status.status == 'present' %}var(--green)
+        {% elif today_status.status == 'late' %}var(--amber)
+        {% elif today_status.status == 'absent' %}var(--red)
+        {% elif today_status.status == 'leave' %}#7C5CBF
+        {% else %}var(--ink-soft){% endif %};">{{ today_status.status or 'not marked' }}</span>
+      {% if today_status.login_ts %}
+        &middot; In: {{ today_status.login_ts|ampm }}
+        {% if today_status.login_geofence_breach %}<span class="badge" style="background:var(--red); margin-left:4px;">Outside geofence</span>{% endif %}
+      {% endif %}
+      {% if today_status.logout_ts %}
+        &middot; Out: {{ today_status.logout_ts|ampm }}
+        {% if today_status.logout_geofence_breach %}<span class="badge" style="background:var(--red); margin-left:4px;">Outside geofence</span>{% endif %}
+      {% endif %}
+      {% if today_status.late_minutes %}
+        &middot; {{ today_status.late_minutes }} min late
+      {% endif %}
+    </div>
+  {% else %}
+    <div style="font-size:13px; color:var(--ink-soft); margin-top:4px;">Not marked yet.</div>
+  {% endif %}
+
+  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
+    <button type="button" class="btn btn-primary" onclick="punchIn()">Login</button>
+    <button type="button" class="btn" onclick="punchOut()">Logout</button>
+  </div>
+  <p id="punchFallback" style="display:none; font-size:12px; color:var(--ink-soft); margin-top:8px;">
+    Login/Logout with photo verification is only available in the Asian Properties CRM mobile app.
+  </p>
+</div>
+
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin-bottom:16px;">
+
+  <div class="card">
+    <strong style="font-size:15px;">Weekoff / Leave</strong>
+    <p style="font-size:13px; color:var(--ink-soft); margin:8px 0 12px;">
+      Mark a day you're not working — defaults to today. Won't overwrite a day
+      that already has a punch-in or a different status recorded.
+    </p>
+    <form method="post" action="{{ url_for('attendance_weekoff') }}" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+      <input type="date" name="attendance_date" value="{{ today }}">
+      <button type="submit" class="btn">Weekoff</button>
+    </form>
+    <form method="post" action="{{ url_for('attendance_leave') }}" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <input type="date" name="attendance_date" value="{{ today }}">
+      <button type="submit" class="btn">Leave</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <strong style="font-size:15px;">Correction Request</strong>
+    <p style="font-size:13px; color:var(--ink-soft); margin:8px 0 12px;">
+      Ask an admin to fix a wrong or missing entry for a specific day.
+    </p>
+    <form method="post" action="{{ url_for('attendance_correction_request') }}" style="display:flex; flex-direction:column; gap:8px;">
+      <input type="date" name="attendance_date" required>
+      <select name="field_changed" required>
+        {% for f in correction_fields %}
+        <option value="{{ f }}">{{ f.replace('_', ' ')|title }}</option>
+        {% endfor %}
+      </select>
+      <input type="text" name="new_value" placeholder="New value (status: {{ attendance_statuses|join(', ') }}; times: YYYY-MM-DD HH:MM:SS)" required>
+      <textarea name="request_note" placeholder="Why? (optional)" rows="2"
+        style="width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px; font-size:14px; font-family:inherit; resize:vertical; min-height:60px; box-sizing:border-box;"></textarea>
+      <button type="submit" class="btn btn-primary" style="align-self:flex-start;">Submit Request</button>
+    </form>
+  </div>
+
+</div>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+    <a href="{{ url_for('attendance_home', year=prev_year, month=prev_month) }}" class="btn" style="padding:5px 14px; font-size:13px;">&larr;</a>
+    <strong style="font-size:15px;">{{ month_name }} {{ year }}</strong>
+    <a href="{{ url_for('attendance_home', year=next_year, month=next_month) }}" class="btn" style="padding:5px 14px; font-size:13px;">&rarr;</a>
+  </div>
+
+  <table style="width:100%; border-collapse:collapse; margin-top:14px; font-size:13px;">
+    <thead>
+      <tr>
+        {% for wd in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}
+        <th style="padding:6px; text-align:center; color:var(--ink-soft); font-weight:600; font-size:12px;">{{ wd }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for week in weeks %}
+      <tr>
+        {% for day in week %}
+        {% if day == 0 %}
+        <td style="padding:6px;"></td>
+        {% else %}
+        {% set date_str = '%04d-%02d-%02d'|format(year, month, day) %}
+        {% set row = month_data[date_str] if date_str in month_data else none %}
+        <td style="padding:6px; text-align:center; border-radius:6px;
+          {% if row and row.status == 'present' %}background:#E3F5E9;
+          {% elif row and row.status == 'late' %}background:#FCEFD8;
+          {% elif row and row.status == 'absent' %}background:#FBE3E3;
+          {% elif row and row.status == 'weekoff' %}background:#EDEDED;
+          {% elif row and row.status == 'leave' %}background:#E9E3F7;
+          {% elif date_str in holidays %}background:#FDE9D9;
+          {% endif %}
+          {% if row and (row.login_geofence_breach or row.logout_geofence_breach) %}border:1.5px solid var(--red);{% endif %}">
+          {{ day }}
+          {% if date_str == today %}<div style="font-size:9px; color:var(--blue); font-weight:700;">TODAY</div>{% endif %}
+        </td>
+        {% endif %}
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:12px; font-size:12px; color:var(--ink-soft);">
+    <span><span style="display:inline-block; width:10px; height:10px; background:#E3F5E9; border-radius:2px; vertical-align:middle;"></span> Present</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#FCEFD8; border-radius:2px; vertical-align:middle;"></span> Late</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#FBE3E3; border-radius:2px; vertical-align:middle;"></span> Absent</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#EDEDED; border-radius:2px; vertical-align:middle;"></span> Weekoff</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#E9E3F7; border-radius:2px; vertical-align:middle;"></span> Leave</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#FDE9D9; border-radius:2px; vertical-align:middle;"></span> Holiday</span>
+    <span><span style="display:inline-block; width:10px; height:10px; border:1.5px solid var(--red); border-radius:2px; vertical-align:middle;"></span> Geofence breach</span>
+  </div>
+</div>
+
+<script>
+// v0.28 — same feature-detect pattern as settings.html v0.20's
+// openDeviceSyncSettings(): calls the native bridge if present, else
+// shows an inline fallback message. punchIn()/punchOut() don't exist
+// on android_pilot's AndroidBridge yet (a later build-order step), so
+// the fallback is expected everywhere today, including inside the app.
+function punchIn() {
+  if (window.AndroidBridge && typeof AndroidBridge.punchIn === 'function') {
+    AndroidBridge.punchIn();
+  } else {
+    document.getElementById('punchFallback').style.display = 'block';
+  }
+}
+function punchOut() {
+  if (window.AndroidBridge && typeof AndroidBridge.punchOut === 'function') {
+    AndroidBridge.punchOut();
+  } else {
+    document.getElementById('punchFallback').style.display = 'block';
+  }
+}
+</script>
+{% endblock %}

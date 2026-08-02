@@ -1,4 +1,8 @@
-<!-- base.html v0.16 — Settings drawer link un-admin-gated (see the
+<!-- base.html v0.17 — NEW "Attendance" drawer link (between Reminders and
+     Reports), role-agnostic — every logged-in user gets the same
+     employee /attendance page (app.py v0.28, APX Attendance v0.9 pilot,
+     Build Order Step 2). No badge/count, unlike Reminders.
+     v0.16 — Settings drawer link un-admin-gated (see the
      inline comment right at that link, further down this file, for the
      full reasoning) — /settings itself is now reachable by any
      logged-in user (app.py v0.26), and this link is how they'd actually
@@ -489,6 +493,7 @@
     <span class="badge" style="background:var(--red); padding:1px 8px; font-size:11px; margin-left:4px;">{{ pending_reminder_count }}</span>
     {% endif %}
   </a>
+  <a href="{{ url_for('attendance_home') }}" class="drawer-link {{ 'active' if request.endpoint == 'attendance_home' }}">Attendance</a>
   <a href="{{ url_for('reports_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['reports_home', 'report_view'] }}">Reports</a>
   <!-- v0.16 — Settings link is no longer admin-only: /settings itself
        is now @login_required (app.py v0.26), and every logged-in user

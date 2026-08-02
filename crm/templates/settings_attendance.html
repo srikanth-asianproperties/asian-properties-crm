@@ -1,0 +1,57 @@
+{# settings_attendance.html (v0.28) — Attendance admin hub. Same
+   card-grid pattern as settings.html. Dashboard/calendar-with-colors/
+   export tile is deliberately NOT here yet — that's Build Order Step 3. #}
+{% extends "base.html" %}
+{% block title %}Attendance Settings{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_home') }}" style="font-size:14px;">&larr; Back to Settings</a>
+<h2 style="margin-top:10px;">Attendance</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:-6px;">
+  Admin configuration for the APX Attendance pilot.
+</p>
+
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-top:16px;">
+
+  <a href="{{ url_for('settings_attendance_corrections') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--amber)" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      <span style="font-weight:700; font-size:16px;">Corrections</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Approve or reject employee-submitted attendance correction requests.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_attendance_holidays') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+      <span style="font-weight:700; font-size:16px;">Holidays</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Manage the company holiday calendar.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_attendance_projects') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+      <span style="font-weight:700; font-size:16px;">Project GPS &amp; Geofence</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Set the latitude/longitude/radius each project's punches are checked against.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_users') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#7C5CBF" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+      <span style="font-weight:700; font-size:16px;">Assign Projects</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Set which project each teammate's punches are geofenced against, from Settings &gt; Team.
+    </p>
+  </a>
+
+</div>
+{% endblock %}

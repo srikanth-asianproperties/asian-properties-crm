@@ -13,7 +13,15 @@
 
    v0.12 — NEW "+ Add User" link at the top, pointing at
    settings_user_new() (app.py) — the first in-app way to create a CRM
-   login. #}
+   login.
+
+   v0.28 — NEW per-row "Attendance project" dropdown (APX Attendance
+   geofencing, cls_db.py v2.38's users.assigned_project column). A
+   small addition to this EXISTING screen rather than a new "edit
+   user" screen — deliberately, per the v0.9 spec's "fewer templates"
+   call. Posts to its own small route (settings_user_assign_project),
+   separate from the activate/deactivate form so saving one can never
+   accidentally affect the other. #}
 {% extends "base.html" %}
 {% block title %}Team{% endblock %}
 
@@ -74,6 +82,19 @@
       </div>
       {% endif %}
     </div>
+    {# v0.28 — Attendance project assignment (geofencing). Separate
+       small form so saving it can never affect activate/deactivate. #}
+    <form method="post" action="{{ url_for('settings_user_assign_project', user_id=u.user_id) }}"
+          style="display:flex; align-items:center; gap:8px; margin-top:10px; padding-top:10px; border-top:1px solid var(--line);">
+      <label style="font-size:12px; color:var(--ink-soft); white-space:nowrap;">Attendance project</label>
+      <select name="assigned_project" style="max-width:220px;">
+        <option value="">(not assigned)</option>
+        {% for p in projects %}
+        <option value="{{ p }}" {% if u.assigned_project == p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">Save</button>
+    </form>
   </div>
   {% endfor %}
 </div>
