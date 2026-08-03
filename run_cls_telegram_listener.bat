@@ -1,4 +1,4 @@
 @echo off
-set CLS_DB_PATH=C:\CLS\CLS2.db
-cd /d C:\CLS
+set CLS_DB_PATH=D:\CLS\CLS2.db
+cd /d D:\CLS
 python cls_telegram_listener.py
