@@ -1,5 +1,10 @@
-{# attendance.html (v0.28) — Employee-facing Attendance page. APX
-   Attendance v0.9 pilot, Build Order Step 2.
+{# attendance.html (v0.30) — Employee-facing Attendance page. APX
+   Attendance v0.9 pilot, Build Order Step 2 (+ a Step 3 nav hook).
+
+   v0.30 — geofence-breach color backport: the mini-calendar's breach
+   border is now ORANGE (#FF8C00, 2px), matching the Step 3 Dashboard
+   exactly (was RED in Step 2's original build) — same fix in both the
+   cell style and the legend swatch. No other change in this pass.
 
    Login/Logout have NO native camera code yet (a later build-order
    step) — both buttons feature-detect window.AndroidBridge and call
@@ -9,14 +14,22 @@
    even inside the native app's WebView today — expected, not a bug.
 
    Weekoff/Leave/Correction Request are plain form POSTs, no native
-   code involved. The mini calendar below is a personal, single-user
-   view only — the admin-wide dashboard with totals/export is a later
-   step (Step 3), not built here. #}
+   code involved. The mini calendar below stays a personal, single-user
+   view (unchanged from Step 2) — v0.29 just adds a link to the new
+   Step 3 Dashboard (settings_attendance_dashboard(), force-scoped
+   server-side to this user's own records; the route isn't
+   @admin_required, but nothing linked to it for a non-admin before now). #}
 {% extends "base.html" %}
 {% block title %}Attendance{% endblock %}
 
 {% block content %}
-<h2 style="margin-top:0;">Attendance</h2>
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+  <h2 style="margin:0;">Attendance</h2>
+  {# v0.29 — Build Order Step 3: this page's own admin_required-free
+     dashboard route, force-scoped server-side to this user's own
+     records (see app.py's _resolve_attendance_dashboard_scope()). #}
+  <a href="{{ url_for('settings_attendance_dashboard') }}" class="btn" style="font-size:13px; padding:6px 14px;">View My Calendar &amp; Export</a>
+</div>
 
 <div class="card" style="margin-bottom:16px;">
   <strong style="font-size:15px;">Today — {{ today }}</strong>
@@ -125,7 +138,7 @@
           {% elif row and row.status == 'leave' %}background:#E9E3F7;
           {% elif date_str in holidays %}background:#FDE9D9;
           {% endif %}
-          {% if row and (row.login_geofence_breach or row.logout_geofence_breach) %}border:1.5px solid var(--red);{% endif %}">
+          {% if row and (row.login_geofence_breach or row.logout_geofence_breach) %}border:2px solid #FF8C00;{% endif %}">
           {{ day }}
           {% if date_str == today %}<div style="font-size:9px; color:var(--blue); font-weight:700;">TODAY</div>{% endif %}
         </td>
@@ -143,7 +156,7 @@
     <span><span style="display:inline-block; width:10px; height:10px; background:#EDEDED; border-radius:2px; vertical-align:middle;"></span> Weekoff</span>
     <span><span style="display:inline-block; width:10px; height:10px; background:#E9E3F7; border-radius:2px; vertical-align:middle;"></span> Leave</span>
     <span><span style="display:inline-block; width:10px; height:10px; background:#FDE9D9; border-radius:2px; vertical-align:middle;"></span> Holiday</span>
-    <span><span style="display:inline-block; width:10px; height:10px; border:1.5px solid var(--red); border-radius:2px; vertical-align:middle;"></span> Geofence breach</span>
+    <span><span style="display:inline-block; width:10px; height:10px; border:2px solid #FF8C00; border-radius:2px; vertical-align:middle;"></span> Geofence breach</span>
   </div>
 </div>
 

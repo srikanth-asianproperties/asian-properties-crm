@@ -9,6 +9,67 @@ CHANGELOG
 ---------
 v2.43 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
+v2.42 (2026-08-02) — APX Attendance v0.9 pilot: token-auth API business
+  logic (Build Order Step 4 of the v0.9 spec), additions only, plus one
+  stale comment corrected (see below — not a schema/behavior change).
+  New import: math (stdlib, for check_geofence_breach()'s haversine
+  distance — no new dependency).
+  - get_attendance_project_location(project_bucket) / check_geofence_
+    breach(project_bucket, lat, lng): haversine distance vs the
+    configured radius. Returns False (no breach) whenever there's
+    nothing to compare against — no assigned project, no configured
+    location, missing lat/lng — NEVER blocks; a breach is a flag for
+    admin review only, per the v0.9 spec's explicit rule.
+  - compute_punch_in_timing(punch_dt): status ('present'/'late') +
+    late_minutes vs app_settings['attendance_late_after_time'] (v2.38
+    seed '10:00'). Falls back to 10:00 if the setting is missing/
+    malformed rather than failing the punch.
+  - record_punch(user_id, direction, date_str, ts, lat, lng, breach,
+    photo_path, status, late_minutes): upserts the attendance row for
+    (user_id, date_str) — same-day re-punch is an UPDATE (the v2.38
+    schema's documented UNIQUE constraint, now actually wired up). A
+    punch-out with no existing row still creates one (status stays
+    NULL) rather than being rejected.
+  - record_location_ping(user_id, lat, lng, ts): accepted ONLY when
+    that user has an OPEN attendance row today (login_ts set, logout_ts
+    NULL) — silently no-ops (returns False) otherwise, per spec.
+  - set_fcm_token(user_id, fcm_token): stores/replaces a push token.
+    Does NOT send anything — send_fcm_push() itself is the separate,
+    later FCM-wiring build-order step (needs Srikanth's one-time
+    Firebase project setup first).
+  - Corrected user_api_tokens' schema comment in init_db() (v2.33
+    Telephony block): it said "2 telephony API endpoints"; as of this
+    version the SAME token also gates the 4 new attendance endpoints —
+    comment-only, no schema or behavior change.
+  No route work here — that's app.py's v0.30 change, done and reported
+  alongside this one.
+
+v2.41 (2026-08-02) — APX Attendance v0.9 pilot: admin Dashboard data
+  function (Build Order Step 3 of the v0.9 spec), additions only.
+  New get_attendance_totals_for_month(year, month, owner_scope=None) —
+  per-user present/late/absent/weekoff/leave/half_day counts + a
+  geofence-breach count, for the Dashboard's totals row/table.
+  owner_scope=None returns every active user including zero-attendance
+  ones (never silently omitted); owner_scope=<user_id> scopes to one
+  user regardless of active flag. Per-employee calendar detail reuses
+  the EXISTING get_attendance_month() (v2.39) unchanged — no new
+  function needed for that half of the Dashboard. No schema change
+  this step. No route/export work here — that's app.py's v0.29 change,
+  done and reported alongside this one.
+
+v2.40 (2026-08-02) — APX Attendance audit column, additions only,
+  nothing existing removed or modified beyond the two write paths
+  named below. Self-healing ALTER TABLE attendance ADD COLUMN
+  last_modified_by TEXT (same PRAGMA table_info-check pattern as
+  v2.38's users.assigned_project). Wired into the two functions that
+  can change a day's status/times outside the Step 4 punch-in/out API:
+  set_self_service_attendance_status() (Weekoff/Leave — writes actor
+  on both the insert and update paths) and resolve_attendance_
+  correction() (writes actor on the attendance row when a correction
+  is approved; rejecting still writes no attendance change, unchanged).
+  Flagged after Step 2 as a minor gap, addressed now before Step 3 per
+  Srikanth's explicit request. No other functions/tables touched.
+
 v2.39 (2026-08-02) — APX Attendance v0.9 pilot: data-access functions
   (Build Order Step 2 of the v0.9 spec), additions only, nothing
   existing removed or modified except get_all_users_detailed()'s SELECT
@@ -1515,6 +1576,7 @@ ONE-TIME SETUP
 =============================================================
 """
 
+import math
 import os
 import re
 import uuid
@@ -2624,12 +2686,15 @@ def init_db():
         );
     """)
 
-    # Per-user bearer token for the 2 telephony API endpoints — entirely
-    # separate from the session-cookie login used by every other route.
-    # Only the SHA-256 hash is ever stored; the raw token is shown once
-    # at generation time (Settings > Telephony) and never logged.
-    # Regenerating deactivates the old row (active=0) rather than
-    # deleting it, matching the codebase's "never discard" posture.
+    # Per-user bearer token — entirely separate from the session-cookie
+    # login used by every other route. Originally issued for the 2
+    # Telephony API endpoints only; as of v2.42 the SAME token also
+    # gates the 4 /api/attendance/* endpoints (Build Order Step 4) —
+    # deliberately one mobile-app token per user, not a second scheme
+    # per feature. Only the SHA-256 hash is ever stored; the raw token
+    # is shown once at generation time (Settings > Telephony) and never
+    # logged. Regenerating deactivates the old row (active=0) rather
+    # than deleting it, matching the codebase's "never discard" posture.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS user_api_tokens (
             token_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2708,6 +2773,18 @@ def init_db():
         );
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, attendance_date);")
+
+    # ── Self-healing migration: last_modified_by (v2.40, APX Attendance audit) ──
+    # Same PRAGMA table_info-check pattern as users.assigned_project (v2.38)
+    # above. Written by set_self_service_attendance_status() (Weekoff/Leave)
+    # and resolve_attendance_correction() (an approved correction being
+    # applied) — the two functions that change an attendance row's status/
+    # times outside the punch-in/out API (Step 4, not built yet). Existing
+    # rows get NULL, treated as "no record of who last touched this."
+    attendance_cols = [r["name"] for r in
+                       conn.execute("PRAGMA table_info(attendance)").fetchall()]
+    if "last_modified_by" not in attendance_cols:
+        conn.execute("ALTER TABLE attendance ADD COLUMN last_modified_by TEXT;")
 
     # Employee-initiated change requests against an existing attendance
     # row. Approving one (later build-order step, Settings > Attendance >
@@ -9284,6 +9361,79 @@ def get_attendance_month(user_id, year, month):
         conn.close()
 
 
+def get_attendance_totals_for_month(year, month, owner_scope=None):
+    """
+    (v2.41) Per-user status counts + a geofence-breach count for one
+    calendar month — powers the admin Attendance Dashboard's totals
+    row/table (Build Order Step 3).
+
+    owner_scope=None returns every ACTIVE user (the oversight-role
+    "All employees" view), including a user with ZERO attendance rows
+    that month — shown as all-zero counts, not silently omitted, so a
+    forgotten/never-punched teammate is visible rather than invisible.
+    owner_scope=<user_id> scopes to exactly that one user (a
+    salesperson's own view, or an admin/manager drilling into one
+    employee), regardless of active flag — an admin reviewing a
+    recently-deactivated employee's last month should still see them.
+
+    One query for the user list, one query for every attendance row in
+    the month, merged in Python — deliberately not a single GROUP BY
+    (this codebase's small team size, ~4 sales executives per the
+    handoff brief, doesn't need it; see cls_db.py's own "don't
+    pre-optimise" precedent re: SQLite/WAL and small concurrency).
+
+    Returns a list of dicts: {user_id, full_name, email, <one key per
+    ATTENDANCE_STATUSES value>, geofence_breaches}, ordered by
+    full_name.
+    """
+    conn = _connect()
+    try:
+        if owner_scope is not None:
+            users = conn.execute(
+                "SELECT user_id, full_name, email FROM users WHERE user_id=?",
+                (owner_scope,)
+            ).fetchall()
+        else:
+            users = conn.execute(
+                "SELECT user_id, full_name, email FROM users WHERE active=1 "
+                "ORDER BY full_name COLLATE NOCASE"
+            ).fetchall()
+
+        prefix = f"{year:04d}-{month:02d}"
+        if owner_scope is not None:
+            rows = conn.execute(
+                "SELECT user_id, status, login_geofence_breach, logout_geofence_breach "
+                "FROM attendance WHERE user_id=? AND attendance_date LIKE ?",
+                (owner_scope, f"{prefix}%")
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT user_id, status, login_geofence_breach, logout_geofence_breach "
+                "FROM attendance WHERE attendance_date LIKE ?",
+                (f"{prefix}%",)
+            ).fetchall()
+
+        by_user = {}
+        for r in rows:
+            entry = by_user.setdefault(r["user_id"], {s: 0 for s in ATTENDANCE_STATUSES})
+            if r["status"] in entry:
+                entry[r["status"]] += 1
+            if r["login_geofence_breach"] or r["logout_geofence_breach"]:
+                entry["_breaches"] = entry.get("_breaches", 0) + 1
+
+        totals = []
+        for u in users:
+            counts = by_user.get(u["user_id"], {})
+            totals.append({
+                "user_id": u["user_id"], "full_name": u["full_name"], "email": u["email"],
+                **{s: counts.get(s, 0) for s in ATTENDANCE_STATUSES},
+                "geofence_breaches": counts.get("_breaches", 0),
+            })
+        return totals
+    finally:
+        conn.close()
+
+
 def _get_or_create_attendance_row(conn, user_id, date_str):
     """(v2.39, internal) Returns an attendance_id for user_id+date_str,
     creating a bare row (no status/punch data) if none exists yet.
@@ -9321,10 +9471,10 @@ def set_self_service_attendance_status(user_id, date_str, status, actor):
     double-submit needs an explicit admin correction, not a silent
     overwrite. Re-submitting the SAME status is a harmless no-op.
 
-    actor is accepted but not yet persisted anywhere on this table
-    (there's no actor/created_by column on attendance) — kept in the
-    signature now so app.py's call site doesn't need to change when a
-    future audit column is added.
+    actor (v2.40) is written to attendance.last_modified_by on both the
+    insert and update paths below — the "who last touched this row"
+    audit trail flagged after Step 2 and added in v2.40's self-healing
+    column.
 
     Returns (ok: bool, message: str).
     """
@@ -9339,9 +9489,9 @@ def set_self_service_attendance_status(user_id, date_str, status, actor):
         now = _now()
         if existing is None:
             conn.execute(
-                "INSERT INTO attendance (user_id, attendance_date, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (user_id, date_str, status, now, now)
+                "INSERT INTO attendance (user_id, attendance_date, status, created_at, "
+                "updated_at, last_modified_by) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, date_str, status, now, now, actor)
             )
         elif existing["login_ts"]:
             return False, ("That day already has a punch-in recorded — "
@@ -9351,8 +9501,8 @@ def set_self_service_attendance_status(user_id, date_str, status, actor):
                             "submit a Correction Request instead.")
         else:
             conn.execute(
-                "UPDATE attendance SET status=?, updated_at=? WHERE attendance_id=?",
-                (status, now, existing["attendance_id"])
+                "UPDATE attendance SET status=?, updated_at=?, last_modified_by=? WHERE attendance_id=?",
+                (status, now, actor, existing["attendance_id"])
             )
         conn.commit()
         return True, f"Marked {date_str} as {status}."
@@ -9445,6 +9595,11 @@ def resolve_attendance_correction(correction_id, approve, actor):
     marks the row resolved with no attendance change. Refuses to
     re-resolve a request that's already been approved/rejected.
 
+    actor (v2.40) is written to the attendance row's last_modified_by
+    when approving — same audit column set_self_service_attendance_
+    status() writes, so "who last touched this row" covers both paths
+    that can change a day's status/times outside the Step 4 punch API.
+
     Returns (ok: bool, message: str).
     """
     conn = _connect()
@@ -9464,8 +9619,8 @@ def resolve_attendance_correction(correction_id, approve, actor):
             if field not in ATTENDANCE_CORRECTION_FIELDS:
                 return False, "Unrecognized field — cannot apply."
             conn.execute(
-                f"UPDATE attendance SET {field}=?, updated_at=? WHERE attendance_id=?",
-                (row["new_value"], now, row["attendance_id"])
+                f"UPDATE attendance SET {field}=?, updated_at=?, last_modified_by=? WHERE attendance_id=?",
+                (row["new_value"], now, actor, row["attendance_id"])
             )
         conn.execute(
             "UPDATE attendance_corrections SET status=?, actor=?, resolved_at=? "
@@ -9558,6 +9713,211 @@ def set_user_assigned_project(user_id, project_bucket):
         conn.execute(
             "UPDATE users SET assigned_project=? WHERE user_id=?",
             (project_bucket or None, user_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ── APX Attendance v0.9 pilot — token-auth API business logic (v2.42, Build Order Step 4) ──
+# Reuses the EXISTING user_api_tokens/verify_api_token() mechanism
+# (see the v2.42 changelog note on user_api_tokens above) — no second
+# auth scheme. These functions are called by app.py's 4 new
+# /api/attendance/* routes, never directly by a template.
+
+def get_attendance_project_location(project_bucket):
+    """(v2.42) One project's configured GPS location, or None if
+    project_bucket is falsy or has no attendance_project_locations row
+    yet — the caller (check_geofence_breach) treats "no config" as
+    "can't check, so no breach", never an error."""
+    if not project_bucket:
+        return None
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM attendance_project_locations WHERE project_bucket=?",
+            (project_bucket,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def check_geofence_breach(project_bucket, lat, lng):
+    """
+    (v2.42) True if (lat, lng) is outside the configured radius for
+    project_bucket's attendance_project_locations row, via the
+    haversine great-circle distance formula (stdlib math only, no new
+    dependency). False whenever there's nothing to compare against —
+    no assigned_project, no configured lat/long/radius for it, or a
+    missing lat/lng reading — "can't determine" defaults to "no
+    breach", NEVER to "breach"/block. Per the v0.9 spec: a geofence
+    breach is a flag for admin review, never a reason to refuse a
+    punch — this function only ever adds information, never gates one.
+    """
+    if lat is None or lng is None:
+        return False
+    loc = get_attendance_project_location(project_bucket)
+    if not loc or loc["latitude"] is None or loc["longitude"] is None or not loc["radius_meters"]:
+        return False
+
+    R = 6371000  # Earth radius, meters
+    lat1, lng1, lat2, lng2 = map(math.radians, [lat, lng, loc["latitude"], loc["longitude"]])
+    dlat = lat2 - lat1
+    dlng = lng2 - lng1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2) ** 2
+    distance_m = 2 * R * math.asin(math.sqrt(a))
+    return distance_m > loc["radius_meters"]
+
+
+def compute_punch_in_timing(punch_dt):
+    """
+    (v2.42) Given a punch-in datetime, compares its time-of-day against
+    app_settings['attendance_late_after_time'] ('HH:MM', seeded '10:00'
+    in v2.38) and returns (status, late_minutes): status is 'late' with
+    the exact number of minutes past the threshold, or 'present' with
+    late_minutes=0. Falls back to '10:00' if the setting is somehow
+    missing/malformed rather than raising — a punch must never fail
+    because of a bad config value.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT setting_value FROM app_settings WHERE setting_key='attendance_late_after_time'"
+        ).fetchone()
+    finally:
+        conn.close()
+    raw = (row["setting_value"] if row else None) or "10:00"
+    try:
+        threshold_h, threshold_m = (int(p) for p in raw.split(":")[:2])
+    except (ValueError, AttributeError):
+        threshold_h, threshold_m = 10, 0
+
+    threshold_minutes = threshold_h * 60 + threshold_m
+    punch_minutes = punch_dt.hour * 60 + punch_dt.minute
+    if punch_minutes > threshold_minutes:
+        return "late", punch_minutes - threshold_minutes
+    return "present", 0
+
+
+def record_punch(user_id, direction, date_str, ts, lat, lng, geofence_breach, photo_path,
+                  status=None, late_minutes=0):
+    """
+    (v2.42) Records one punch-in or punch-out into the attendance row
+    for (user_id, date_str) — UNIQUE(user_id, attendance_date) means a
+    same-day re-punch is an UPDATE of the same row, not a duplicate
+    (the v2.38 schema's documented intent, now actually wired up).
+    direction: 'in' or 'out'. For 'in', status/late_minutes are
+    written (from compute_punch_in_timing()); for 'out', only the
+    logout_* columns change — status/late_minutes are never touched by
+    a logout. A punch-out with no existing row for that date (e.g. a
+    missed punch-in) still creates one rather than being rejected, same
+    "never discard" posture as the rest of this file — status stays
+    NULL, left for a human/correction to resolve later, not silently
+    invented.
+
+    Returns the attendance_id of the affected row.
+    """
+    if direction not in ("in", "out"):
+        raise ValueError("direction must be 'in' or 'out'")
+    conn = _connect()
+    try:
+        existing = conn.execute(
+            "SELECT attendance_id FROM attendance WHERE user_id=? AND attendance_date=?",
+            (user_id, date_str)
+        ).fetchone()
+        now = _now()
+        actor = f"api:punch-{direction}"
+
+        if direction == "in":
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO attendance (user_id, attendance_date, status, login_ts, "
+                    "login_lat, login_lng, login_geofence_breach, login_photo_path, "
+                    "late_minutes, created_at, updated_at, last_modified_by) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (user_id, date_str, status, ts, lat, lng, int(geofence_breach), photo_path,
+                     late_minutes, now, now, actor)
+                )
+            else:
+                conn.execute(
+                    "UPDATE attendance SET status=?, login_ts=?, login_lat=?, login_lng=?, "
+                    "login_geofence_breach=?, login_photo_path=?, late_minutes=?, updated_at=?, "
+                    "last_modified_by=? WHERE attendance_id=?",
+                    (status, ts, lat, lng, int(geofence_breach), photo_path, late_minutes, now,
+                     actor, existing["attendance_id"])
+                )
+        else:  # 'out'
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO attendance (user_id, attendance_date, logout_ts, logout_lat, "
+                    "logout_lng, logout_geofence_breach, logout_photo_path, created_at, "
+                    "updated_at, last_modified_by) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (user_id, date_str, ts, lat, lng, int(geofence_breach), photo_path,
+                     now, now, actor)
+                )
+            else:
+                conn.execute(
+                    "UPDATE attendance SET logout_ts=?, logout_lat=?, logout_lng=?, "
+                    "logout_geofence_breach=?, logout_photo_path=?, updated_at=?, "
+                    "last_modified_by=? WHERE attendance_id=?",
+                    (ts, lat, lng, int(geofence_breach), photo_path, now,
+                     actor, existing["attendance_id"])
+                )
+        conn.commit()
+
+        result = conn.execute(
+            "SELECT attendance_id FROM attendance WHERE user_id=? AND attendance_date=?",
+            (user_id, date_str)
+        ).fetchone()
+        return result["attendance_id"]
+    finally:
+        conn.close()
+
+
+def record_location_ping(user_id, lat, lng, ts):
+    """
+    (v2.42) Hourly WorkManager location ping (Step 6, not built yet —
+    this is the server side only). Accepted ONLY if user_id has an
+    OPEN attendance row for today (login_ts set, logout_ts still NULL)
+    — silently no-ops otherwise (returns False), per the v0.9 spec:
+    "a stray ping after logout or a killed WorkManager job can never
+    corrupt data." Returns True if the ping was recorded.
+    """
+    today = ts[:10] if ts else _now()[:10]
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT attendance_id, login_ts, logout_ts FROM attendance "
+            "WHERE user_id=? AND attendance_date=?",
+            (user_id, today)
+        ).fetchone()
+        if not row or not row["login_ts"] or row["logout_ts"]:
+            return False
+        conn.execute(
+            "INSERT INTO attendance_location_pings (user_id, attendance_id, ts, lat, lng, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, row["attendance_id"], ts, lat, lng, _now())
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def set_fcm_token(user_id, fcm_token):
+    """(v2.42) Store/replace this user's FCM push token. INSERT OR
+    REPLACE keyed on user_id (the table's PK), same idiom as
+    user_recording_paths. Actually SENDING a push (send_fcm_push(), on
+    login/logout) is deferred to the FCM wiring build-order step, which
+    needs Srikanth's one-time Firebase project setup first — this
+    function only stores the token so that step has something to send
+    to once it exists."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO user_fcm_tokens (user_id, fcm_token, updated_at) VALUES (?, ?, ?)",
+            (user_id, fcm_token, _now())
         )
         conn.commit()
     finally:

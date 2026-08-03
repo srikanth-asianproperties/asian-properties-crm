@@ -16,7 +16,16 @@
    template just iterates whatever list the route hands it (a
    salesperson's `users` list has exactly one row: their own) — so no
    structural change was needed here, only this conditional intro line
-   so the page doesn't read like a stray admin page to a salesperson. #}
+   so the page doesn't read like a stray admin page to a salesperson.
+
+   v4 — label-only fix: this token was originally issued for the 2
+   Telephony endpoints only, but as of cls_db.py v2.42 the SAME token
+   also authorizes the 4 /api/attendance/* endpoints (Build Order Step
+   4) — "API tokens" was no longer accurate. Renamed to "Mobile App API
+   Token" and reworded the description + regenerate-confirm text below
+   to say what it actually gates today. No functional change — same
+   route, same generate_api_token()/verify_api_token(), same one
+   token per user. #}
 {% extends "base.html" %}
 {% block title %}Telephony{% endblock %}
 
@@ -65,17 +74,19 @@
 </form>
 
 <div class="card" style="margin-top:16px;">
-  <h3 style="margin-top:0; font-size:16px;">API tokens</h3>
+  <h3 style="margin-top:0; font-size:16px;">Mobile App API Token</h3>
   <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">
-    Generating a new token immediately deactivates that user's previous one — they'll need
-    to re-enter the new token in the app. Shown once, right after you generate it.
+    One token per person, used by the Asian Properties CRM mobile app for BOTH
+    call-recording sync and Attendance punch-in/out. Generating a new token immediately
+    deactivates that user's previous one — they'll need to re-enter the new token in the
+    app before either feature works again. Shown once, right after you generate it.
   </p>
   <div style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">
     {% for u in users %}
     <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:10px;">
       <span style="font-size:14px;">{{ u.full_name or u.email }}</span>
       <form method="post" action="{{ url_for('settings_telephony_generate_token', user_id=u.user_id) }}"
-            onsubmit="return confirm('Generate a new telephony token for {{ u.full_name or u.email }}? Their current token will stop working immediately.');">
+            onsubmit="return confirm('Generate a new app API token for {{ u.full_name or u.email }}? Their current token will stop working immediately, for BOTH Telephony sync and Attendance punch-in/out.');">
         <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">Generate Token</button>
       </form>
     </div>

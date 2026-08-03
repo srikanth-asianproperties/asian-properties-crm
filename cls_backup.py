@@ -9,15 +9,44 @@ CHANGELOG
 ---------
 v1.4  (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
+v1.3  (2026-08-03) — Fixed timeout failure from 2026-08-02.
+  ROOT CAUSE: Step 1 (daily dated copy) did a full local->Drive
+  upload of the entire C:\\CLS\\ folder (269 MB) into a brand-new
+  empty dated folder every single day. On 2026-08-02, Google Drive's
+  API throttled the upload (visible in the log as transfer speed
+  decaying from ~4 MiB/s down to single-digit bytes/sec and back,
+  repeatedly — classic rclone exponential backoff against a Drive
+  rate limit). Step 2 (sync to "latest") only had 39.8 MB of actual
+  changes to push and still took ~4 minutes fighting the same
+  throttle; Step 1 had to push the full 269 MB fresh and ran out of
+  the 1800s timeout window. cls.db and everything else DID reach
+  Drive successfully via Step 2 — only the dated archive copy for
+  that day was missing.
+
+  FIX — Reordered + changed Step 1's transport:
+    1. Step 1 is now "sync to latest" (runs FIRST). This is exactly
+       what old Step 2 did — pushes only the delta since last run.
+    2. Step 2 is now "server-side copy" of gdrive:CLS_Backup/latest
+       -> gdrive:CLS_Backup/daily/YYYY-MM-DD. Because both sides of
+       this copy are already on Google Drive, rclone performs it
+       server-side — no bytes move through this PC's upload link at
+       all, so it's fast and immune to local/upload-side throttling.
+    3. Safety net: if the server-side copy fails for any reason, the
+       script automatically falls back to the old behavior (a full
+       local->Drive copy straight into the dated folder) so the
+       daily archive still gets created, just slower that one day.
+  Nothing else changed — retention, pruning, exclude filters,
+  Telegram reporting, and selftest are all unchanged.
+
 v1.2  (2026-07-31) — Exclude call_recordings/ (Phase B Telephony) from
-  both Step 1 (daily copy) and Step 2 (latest sync) via a new
-  --exclude "call_recordings/**" flag on each rclone call. Nothing else
-  changed — every other file/folder under C:\\CLS\\ is still backed up
-  exactly as before. See RCLONE_EXCLUDE_CALL_RECORDINGS above for why.
+  both backup steps via a new --exclude "call_recordings/**" flag on
+  each rclone call. Nothing else changed — every other file/folder
+  under C:\\CLS\\ is still backed up exactly as before. See
+  RCLONE_EXCLUDE_CALL_RECORDINGS below for why.
 
 v1.1  (June 2026) — Three fixes after first live run:
   FIX 1 — RCLONE_TIMEOUT increased from 300s to 1800s (30 min).
-    C:\CLS\ is 262 MB, not the estimated 15 MB. At typical Indian
+    C:\\CLS\\ is 262 MB, not the estimated 15 MB. At typical Indian
     broadband upload speeds (1-4 MB/s), the first daily copy takes
     4-10 minutes. The 300s timeout caused Step 1 (daily copy) to
     abort every run. Step 2 (latest sync) has no per-step timeout
@@ -33,8 +62,8 @@ v1.1  (June 2026) — Three fixes after first live run:
     as the last token on each line, which is what the parser reads.
 
   FIX 3 — SyntaxWarning on Windows paths in docstring.
-    Two docstring lines contained bare C:\CLS\ sequences which Python
-    interpreted as invalid escape sequences (\C, \C). Escaped to C:\\CLS\\
+    Two docstring lines contained bare C:\\CLS\\ sequences which Python
+    interpreted as invalid escape sequences (\\C, \\C). Escaped to C:\\\\CLS\\\\
     in docstrings. No functional impact — warnings suppressed cleanly.
 
 WHAT THIS DOES
@@ -49,7 +78,7 @@ works even if the database itself is the thing being recovered.
 
 WHAT GETS BACKED UP
 --------------------
-Everything in C:\CLS\ :
+Everything in C:\\CLS\\ :
   - cls.db                  (the lead database — most critical)
   - *.py scripts            (all automation logic)
   - .env                    (all API keys and credentials)
@@ -59,8 +88,9 @@ Everything in C:\CLS\ :
   - rclone.exe              (the backup tool itself)
 
 Google Drive destination:
-  gdrive:CLS_Backup/daily/YYYY-MM-DD/   (7 copies retained)
   gdrive:CLS_Backup/latest/             (always the most recent copy)
+  gdrive:CLS_Backup/daily/YYYY-MM-DD/   (7 copies retained, server-side
+                                          copy of "latest" — see v1.3)
 
 REAL ESTATE ANALOGY
 --------------------
@@ -69,7 +99,10 @@ in both your office drawer AND a bank locker. The daily backup
 is the bank locker — if the office burns down, the originals
 (deeds / cls.db) are safe and you can restart from where you
 left off. "latest/" is the locker you check first; "daily/" is
-the 7-day archive in case today's copy is itself corrupted.
+the 7-day archive in case today's copy is itself corrupted. As of
+v1.3, the bank makes the dated archive copy internally from what's
+already in the locker, instead of you re-driving the originals
+over from the office every single day.
 
 SCHEDULE (Task Scheduler)
 --------------------------
@@ -77,37 +110,37 @@ Run once daily at 09:30 — before the main CLS cycle starts at 10:00.
 This ensures the backup captures yesterday's end-of-day state cleanly,
 before any new data arrives in the 10:00 cycle.
 
-  Program : C:\Python312\python.exe   (adjust to your Python path)
-  Args    : C:\CLS\cls_backup.py
-  Start in: C:\CLS\
+  Program : C:\\Python312\\python.exe   (adjust to your Python path)
+  Args    : C:\\CLS\\cls_backup.py
+  Start in: C:\\CLS\\
 
 ONE-TIME SETUP
 --------------
   1. Install rclone:
        - Download rclone.exe from https://rclone.org/downloads/
          (Windows AMD64, single .exe file)
-       - Place rclone.exe in C:\CLS\
+       - Place rclone.exe in C:\\CLS\\
 
   2. Connect rclone to Google Drive (run once in Command Prompt):
-       C:\CLS\rclone.exe config
+       C:\\CLS\\rclone.exe config
        Follow the prompts — choose "n" (new remote), name it "gdrive",
        storage type "drive", leave client_id/secret blank, scope 1,
        auto config "y" (opens browser to log in with your Google account).
 
   3. Test the connection:
-       C:\CLS\rclone.exe lsd gdrive:
+       C:\\CLS\\rclone.exe lsd gdrive:
        You should see your Google Drive folders listed.
 
   4. No new pip installs needed — uses requests (already installed)
      and subprocess (stdlib).
 
   5. Run a manual test before scheduling:
-       python C:\CLS\cls_backup.py --selftest   (checks rclone + Telegram)
-       python C:\CLS\cls_backup.py              (does a real backup now)
+       python C:\\CLS\\cls_backup.py --selftest   (checks rclone + Telegram)
+       python C:\\CLS\\cls_backup.py              (does a real backup now)
 
 CREDENTIALS
 -----------
-Reads from C:\CLS\.env (same file as all other CLS scripts):
+Reads from C:\\CLS\\.env (same file as all other CLS scripts):
   TELEGRAM_BOT_TOKEN=...
   TELEGRAM_CHAT_ID=...
   (No new credentials needed — reuses existing Telegram bot)
@@ -150,10 +183,18 @@ GDRIVE_DAILY  = f"{GDRIVE_BASE}/daily"           # dated archives
 # How many daily copies to keep before deleting the oldest
 RETAIN_DAYS = 7
 
-# Timeout for rclone operations (seconds).
+# Timeout for the local->Drive sync (seconds). This is the one step that
+# actually uploads bytes from this PC, so it needs the generous window.
 # C:\CLS\ is ~262 MB. At 1 MB/s upload (conservative Indian broadband),
-# transfer takes ~4-5 min. 30 minutes gives ample headroom.
+# a full transfer takes ~4-5 min; a delta-only sync is normally much
+# faster. 30 minutes gives ample headroom even if Drive throttles.
 RCLONE_TIMEOUT = 1800
+
+# v1.3 — Timeout for the Drive-to-Drive server-side copy (Step 2). No
+# data leaves this PC for this step, so it should be quick — but it's
+# still one API call per file, so give it real headroom rather than
+# assuming instant.
+SERVERSIDE_COPY_TIMEOUT = 600
 
 # v1.2 — call_recordings/ (Phase B Telephony, app.py v0.21) is
 # deliberately excluded from this backup. Call-recording audio is more
@@ -231,12 +272,16 @@ def send_telegram(message, env):
 # RCLONE RUNNER
 # ─────────────────────────────────────────────────────────────
 
-def run_rclone(args, description):
+def run_rclone(args, description, timeout=None):
     """
     Run rclone with the given argument list.
     Returns (success: bool, output: str).
+    v1.3: accepts an optional per-call timeout override (falls back to
+    RCLONE_TIMEOUT) so the fast server-side copy doesn't have to share
+    the same 30-minute window as the full local upload.
     """
     cmd = [RCLONE_EXE] + args
+    effective_timeout = timeout if timeout is not None else RCLONE_TIMEOUT
     log(f"Running: {description}")
     log(f"Command: {' '.join(cmd)}")
     try:
@@ -244,7 +289,7 @@ def run_rclone(args, description):
             cmd,
             capture_output=True,
             text=True,
-            timeout=RCLONE_TIMEOUT,
+            timeout=effective_timeout,
             encoding="utf-8",
             errors="replace"
         )
@@ -259,7 +304,7 @@ def run_rclone(args, description):
             log(f"{description} — FAILED (exit code {result.returncode})", "ERROR")
             return False, result.stdout + result.stderr
     except subprocess.TimeoutExpired:
-        log(f"{description} — TIMED OUT after {RCLONE_TIMEOUT}s", "ERROR")
+        log(f"{description} — TIMED OUT after {effective_timeout}s", "ERROR")
         return False, "TIMEOUT"
     except FileNotFoundError:
         log(f"rclone.exe not found at {RCLONE_EXE}", "ERROR")
@@ -343,9 +388,15 @@ def prune_old_backups():
 
 def run_backup():
     """
-    Full backup sequence:
-      1. Copy C:\\CLS\\ to gdrive:CLS_Backup/daily/YYYY-MM-DD/
-      2. Copy C:\\CLS\\ to gdrive:CLS_Backup/latest/  (overwrites)
+    Full backup sequence (reordered in v1.3):
+      1. Sync C:\\CLS\\ -> gdrive:CLS_Backup/latest/  (the only step
+         that uploads bytes from this PC — delta-only, so it's the
+         fastest and least throttling-exposed way to get a full
+         current snapshot onto Drive)
+      2. Server-side copy gdrive:CLS_Backup/latest/ ->
+         gdrive:CLS_Backup/daily/YYYY-MM-DD/  (Drive-to-Drive, no
+         local upload at all). Falls back to a full local copy into
+         the dated folder if the server-side copy fails for any reason.
       3. Prune backups older than 7 days
       4. Send Telegram report
     """
@@ -383,26 +434,10 @@ def run_backup():
     folder_size = get_folder_size_mb(BASE_DIR)
     log(f"C:\\CLS\\ folder size: {folder_size} MB")
 
-    # ── Step 1: Daily dated copy ──
-    daily_dest = f"{GDRIVE_DAILY}/{today_str}"
-    log(f"Step 1: Copying to {daily_dest} ...")
+    # ── Step 1: Sync to "latest" (the only step that uploads from this PC) ──
+    log(f"Step 1: Syncing to {GDRIVE_LATEST} (latest) ...")
 
     ok1, output1 = run_rclone(
-        [
-            "copy",
-            BASE_DIR,
-            daily_dest,
-            "--progress",
-            "--stats-one-line",
-            "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
-        ],
-        f"Daily backup → {daily_dest}"
-    )
-
-    # ── Step 2: Latest copy (always current) ──
-    log(f"Step 2: Copying to {GDRIVE_LATEST} (latest) ...")
-
-    ok2, output2 = run_rclone(
         [
             "sync",          # sync (not copy) so deleted files don't accumulate
             BASE_DIR,
@@ -413,6 +448,59 @@ def run_backup():
         ],
         f"Latest backup → {GDRIVE_LATEST}"
     )
+
+    # ── Step 2: Dated daily archive — server-side copy from "latest" ──
+    daily_dest = f"{GDRIVE_DAILY}/{today_str}"
+
+    if ok1:
+        log(f"Step 2: Server-side copy {GDRIVE_LATEST} -> {daily_dest} ...")
+        ok2, output2 = run_rclone(
+            [
+                "copy",
+                GDRIVE_LATEST,
+                daily_dest,
+                "--progress",
+                "--stats-one-line",
+            ],
+            f"Daily archive (server-side copy) → {daily_dest}",
+            timeout=SERVERSIDE_COPY_TIMEOUT
+        )
+
+        # v1.3 fallback: if the Drive-to-Drive copy itself fails, don't
+        # give up on the dated archive — fall back to the old full
+        # local upload straight into the dated folder. Slower, but the
+        # existing safety net is preserved rather than silently dropped.
+        if not ok2:
+            log("Server-side copy failed — falling back to full local copy for daily archive.", "WARNING")
+            ok2, output2 = run_rclone(
+                [
+                    "copy",
+                    BASE_DIR,
+                    daily_dest,
+                    "--progress",
+                    "--stats-one-line",
+                    "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
+                ],
+                f"Daily backup fallback (local copy) → {daily_dest}"
+            )
+    else:
+        # If Step 1 itself failed, "latest" may be stale/incomplete —
+        # don't server-side copy a possibly-broken snapshot. Fall back
+        # straight to a full local copy so the dated archive still has
+        # a shot at succeeding independently.
+        log("Step 1 (sync to latest) failed — skipping server-side copy, "
+            "attempting daily archive via direct local copy instead.", "WARNING")
+        ok2, output2 = run_rclone(
+            [
+                "copy",
+                BASE_DIR,
+                daily_dest,
+                "--progress",
+                "--stats-one-line",
+                "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
+            ],
+            f"Daily backup fallback (local copy) → {daily_dest}"
+        )
 
     # ── Step 3: Prune old daily backups ──
     prune_old_backups()
@@ -428,8 +516,8 @@ def run_backup():
             f"📁 Size: {folder_size} MB\n"
             f"⏱ Duration: {duration}s\n\n"
             f"<b>Destinations:</b>\n"
-            f"• <code>CLS_Backup/daily/{today_str}/</code> ✅\n"
-            f"• <code>CLS_Backup/latest/</code> ✅\n\n"
+            f"• <code>CLS_Backup/latest/</code> ✅\n"
+            f"• <code>CLS_Backup/daily/{today_str}/</code> ✅\n\n"
             f"🗂 Keeping last {RETAIN_DAYS} daily copies.\n"
             f"Restore command:\n"
             f"<code>rclone copy gdrive:CLS_Backup/latest C:\\CLS\\</code>"
@@ -438,9 +526,9 @@ def run_backup():
     else:
         failed_steps = []
         if not ok1:
-            failed_steps.append(f"Daily copy → {daily_dest}")
-        if not ok2:
             failed_steps.append(f"Latest sync → {GDRIVE_LATEST}")
+        if not ok2:
+            failed_steps.append(f"Daily archive → {daily_dest}")
 
         msg = (
             f"🚨 <b>CLS Backup FAILED</b>\n"

@@ -113,6 +113,84 @@ CHANGELOG
 ---------
 v0.32 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
+v0.31 (2026-08-02) — Pre-Step-6 fix: ATTENDANCE_PHOTOS_DIR parameterized
+  via CLS_ATTENDANCE_PHOTOS_DIR (a real OS env var, same convention as
+  cls_db.py's CLS_DB_PATH), defaulting to the same C:\\CLS\\
+  attendance_photos path as before if unset. Closes a real test-
+  isolation gap: last session's Step 4 test script had no way to
+  redirect photo writes the way CLS_DB_PATH already redirects the
+  database, and leaked 6 fake test photos into the live directory
+  (caught and cleaned up, not left in place). Also corrected
+  RECORDINGS_DIR's now-stale comment (said "excluded from cls_backup.py
+  sync" — that exclusion was reversed in cls_backup.py v1.3). No route
+  or behavior change — same default path, same directory structure.
+
+v0.30 (2026-08-02) — APX Attendance v0.9 pilot: two items.
+
+  1. Geofence-breach color backport (template-only, no schema/route
+     change): attendance.html's personal mini-calendar (Step 2) used a
+     RED border for a geofence breach; the Step 3 Dashboard specified
+     ORANGE (#FF8C00). Backported so both calendar views match — same
+     color, same 2px border width, in both the cell style and the
+     legend swatch.
+
+  2. Build Order Step 4 — token-auth /api/attendance/* endpoints,
+     against cls_db.py v2.42. NEW ATTENDANCE_PHOTOS_DIR (C:\\CLS\\
+     attendance_photos), same reasoning/DPDP flag as RECORDINGS_DIR.
+     @token_required / g.telephony_user REUSED EXACTLY — one bearer
+     token per user already gates Telephony, now also gates these 4
+     (see cls_db.py v2.42's corrected user_api_tokens comment) — no
+     second auth scheme.
+     - POST /api/attendance/punch-in: multipart photo+lat+lng+
+       client_ts. Computes geofence breach (flagged, NEVER blocks —
+       see cls_db.check_geofence_breach()) and late/present status +
+       minutes (cls_db.compute_punch_in_timing()), saves the photo,
+       upserts the attendance row (cls_db.record_punch()).
+     - POST /api/attendance/punch-out: same request shape, writes only
+       logout_* columns.
+     - POST /api/attendance/location-ping: JSON {lat,lng,ts}. Silently
+       no-ops unless the user has an OPEN attendance row today
+       (cls_db.record_location_ping()).
+     - POST /api/attendance/register-fcm-token: JSON {fcm_token},
+       stores via cls_db.set_fcm_token(). Does NOT send any push —
+       that's the separate, later FCM-wiring step.
+     No native Android code yet (PunchActivity.kt/AttendanceWorker.kt
+     are Steps 5/6) — verified with a Flask-test-client script standing
+     in for curl/Postman, against a throwaway copy of CLS1.db.
+
+v0.29 (2026-08-02) — APX Attendance v0.9 pilot: admin Dashboard (Build
+  Order Step 3 of the v0.9 spec), against cls_db.py v2.40 (audit
+  column)/v2.41 (dashboard data function).
+  - NEW GET /settings/attendance/dashboard: monthly calendar (green=
+    present, amber=late, red=absent, grey=weekoff, blue=leave, ORANGE
+    border=geofence breach) + totals row, month/year picker, employee
+    filter. NOT @admin_required — gated the same way every other
+    dashboard/report in this app is (cls_db.can_view_all_leads), since
+    a salesperson needs their own-scoped view here too; their ?user_id
+    is always ignored server-side and force-replaced with their own id
+    (_resolve_attendance_dashboard_scope()), never trusted from the
+    query string.
+  - NEW GET /settings/attendance/dashboard/export.xlsx: reuses
+    cls_reports.export_to_excel() (the EXISTING Reports export engine)
+    against a report-shaped dict built by the new
+    _attendance_dashboard_report() helper — no new export engine
+    written. PDF is the same browser-print-to-PDF convention
+    report_view.html already uses (a <style media="print"> block +
+    window.print()) — no PDF library, matching cls_reports.py's own
+    documented "PDF export is still NOT implemented here" call.
+  - View and export share _parse_dashboard_month_args()/
+    _resolve_attendance_dashboard_scope() so the exported file can
+    never drift from what's on screen.
+  - Linked from settings_attendance.html (admin hub tile) and from
+    attendance.html (a new "View My Calendar & Export" link, so a
+    salesperson can actually reach their own-scoped dashboard — it
+    isn't @admin_required, but there was previously no navigable link
+    to it for a non-admin).
+  - Verified via a Flask-test-client script against a throwaway copy
+    of CLS1.db with several fake users and multiple weeks of varied
+    attendance data (present/late/absent/weekoff/leave, some with
+    geofence breaches) — never CLS1.db/CLS2.db directly.
+
 v0.28 (2026-08-02) — APX Attendance v0.9 pilot: Flask/Jinja2 routes only
   (Build Order Step 2 of the v0.9 spec), against cls_db.py v2.38/2.39's
   schema + data-access functions. SIBLING module — no leads/activity_log/
@@ -1231,9 +1309,33 @@ import cls_reports  # v0.6 — Reports section; lives in crm/ alongside app.py, 
 # v0.21 — Phase B Telephony: where uploaded call recordings land.
 # Deliberately outside cls_db.py's DB file (this is plain files, not
 # rows) but still under C:\CLS\ for a single-drive backup story.
-# Intentionally EXCLUDED from cls_backup.py's rclone sync (see that
-# file's v1.2 changelog) pending DPDP consent-notice design.
+# v0.31 — comment corrected: this WAS "intentionally excluded from
+# cls_backup.py's rclone sync pending DPDP consent-notice design," but
+# that exclusion was reversed in cls_backup.py v1.3 (Srikanth's explicit
+# confirmation the consent-notice design is resolved) — RECORDINGS_DIR
+# is backed up like everything else now.
 RECORDINGS_DIR = os.path.join(BASE_DIR, "call_recordings")
+
+# v0.30 — APX Attendance Build Order Step 4: where punch-in/out selfies
+# land. Same reasoning as RECORDINGS_DIR above — plain files, not DB
+# rows, still under C:\CLS\ for single-drive backup. Same DPDP
+# consent-notice question RECORDINGS_DIR had — resolved per Srikanth's
+# confirmation (cls_backup.py v1.3), so this is backed up too.
+#
+# v0.31 — parameterized via CLS_ATTENDANCE_PHOTOS_DIR (a real OS
+# environment variable, same "never hardcoded, never in .env" convention
+# as cls_db.py's CLS_DB_PATH and this file's own CLS_APK_UPLOAD_SECRET/
+# CLS_APK_DOWNLOAD_SECRET above), defaulting to the same path as before
+# if unset. Closes a real gap from last session: a test script had no
+# way to redirect photo writes away from the live directory the way
+# CLS_DB_PATH already lets every test redirect the database — it
+# leaked 6 fake test photos into C:\CLS\attendance_photos\ before this
+# was caught and cleaned up. A throwaway-DB test from now on should ALSO
+# set CLS_ATTENDANCE_PHOTOS_DIR before importing this module (env vars
+# are read at import time, same caveat as CLS_DB_PATH).
+ATTENDANCE_PHOTOS_DIR = os.environ.get(
+    "CLS_ATTENDANCE_PHOTOS_DIR", os.path.join(BASE_DIR, "attendance_photos")
+)
 
 # v0.25 — android_pilot APK distribution. GitHub Actions pushes each new
 # build here (POST /api/apk/upload) instead of relying on GitHub's
@@ -4475,6 +4577,290 @@ def settings_user_assign_project(user_id):
     cls_db.set_user_assigned_project(user_id, project_bucket)
     flash("Project assignment saved.", "success")
     return redirect(url_for("settings_users"))
+
+
+# ── Attendance Dashboard (v0.29, Build Order Step 3) ──
+# NOT @admin_required — visibility follows the SAME OVERSIGHT_ROLES
+# convention as every other dashboard/report in this app
+# (cls_db.can_view_all_leads), because a salesperson must reach their
+# own scoped view here too (linked from attendance.html, not just from
+# the admin-only Settings > Attendance hub). The view route and its
+# Excel export share these two helpers so the exported file can never
+# drift from what's on screen.
+
+def _parse_dashboard_month_args():
+    today_dt = datetime.now()
+    try:
+        year = int(request.args.get("year", today_dt.year))
+        month = int(request.args.get("month", today_dt.month))
+        if not (1 <= month <= 12):
+            raise ValueError
+    except ValueError:
+        year, month = today_dt.year, today_dt.month
+    return year, month
+
+
+def _resolve_attendance_dashboard_scope(user, is_oversight):
+    """A salesperson's ?user_id is ALWAYS ignored and force-replaced
+    with their own id — never trust the query string for scope, same
+    fails-closed posture as every other owner-scoped route in this
+    file. Only an oversight role (admin/manager) may pick a specific
+    employee, or leave it blank for the company-wide "All employees"
+    totals table."""
+    if not is_oversight:
+        return user["user_id"]
+    raw = (request.args.get("user_id") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+@app.route("/settings/attendance/dashboard")
+@login_required
+def settings_attendance_dashboard():
+    """
+    v0.29 — Build Order Step 3. Monthly calendar (color-coded: green=
+    present, amber=late, red=absent, grey=weekoff, blue=leave, ORANGE
+    border=geofence breach — Srikanth's specified palette) + totals
+    row, month/year picker, an employee filter (oversight roles only),
+    and Export Excel / Print-Save-as-PDF buttons. The calendar only
+    renders when exactly one employee is in scope (a company-wide
+    "All employees" calendar grid doesn't make sense) — the totals
+    table always renders, scoped to that one employee's row or every
+    active employee.
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    is_oversight = cls_db.can_view_all_leads(user["role"])
+    year, month = _parse_dashboard_month_args()
+    selected_user_id = _resolve_attendance_dashboard_scope(user, is_oversight)
+
+    totals = cls_db.get_attendance_totals_for_month(year, month, owner_scope=selected_user_id)
+
+    calendar_weeks = None
+    calendar_month_data = {}
+    calendar_user_name = None
+    holidays = set()
+    if selected_user_id is not None:
+        calendar_weeks = calendar.monthcalendar(year, month)
+        calendar_month_data = cls_db.get_attendance_month(selected_user_id, year, month)
+        target_user = cls_db.get_user_by_id(selected_user_id)
+        calendar_user_name = target_user["full_name"] if target_user else "(unknown)"
+        holidays = {
+            h["holiday_date"] for h in cls_db.list_attendance_holidays()
+            if h["holiday_date"].startswith(f"{year:04d}-{month:02d}")
+        }
+
+    employees = [u for u in cls_db.get_all_users_detailed() if u["active"]] if is_oversight else []
+    current_year = datetime.now().year
+
+    return render_template(
+        "settings_attendance_dashboard.html",
+        year=year, month=month,
+        month_names=calendar.month_name,
+        year_options=list(range(current_year - 2, current_year + 1)),
+        is_oversight=is_oversight,
+        employees=employees,
+        selected_user_id=selected_user_id,
+        totals=totals,
+        attendance_statuses=cls_db.ATTENDANCE_STATUSES,
+        calendar_weeks=calendar_weeks,
+        calendar_month_data=calendar_month_data,
+        calendar_user_name=calendar_user_name,
+        holidays=holidays,
+    )
+
+
+def _attendance_dashboard_report(year, month, selected_user_id):
+    """Shared by settings_attendance_dashboard() and its Excel export
+    below — builds the exact cls_reports.build_report()-shaped dict
+    export_to_excel() expects (title, date_from/date_to, caveat,
+    columns, rows), reusing that EXISTING export engine rather than
+    writing a new one, per the spec's explicit instruction."""
+    totals = cls_db.get_attendance_totals_for_month(year, month, owner_scope=selected_user_id)
+    columns = (
+        [("full_name", "Name")]
+        + [(s, s.replace("_", " ").title()) for s in cls_db.ATTENDANCE_STATUSES]
+        + [("geofence_breaches", "Geofence Breaches")]
+    )
+    last_day = calendar.monthrange(year, month)[1]
+    return {
+        "title": f"Attendance — {calendar.month_name[month]} {year}",
+        "date_from": f"{year:04d}-{month:02d}-01",
+        "date_to": f"{year:04d}-{month:02d}-{last_day:02d}",
+        "caveat": None,
+        "columns": columns,
+        "rows": totals,
+    }
+
+
+@app.route("/settings/attendance/dashboard/export.xlsx")
+@login_required
+def settings_attendance_dashboard_export():
+    user = cls_db.get_user_by_id(session["user_id"])
+    is_oversight = cls_db.can_view_all_leads(user["role"])
+    year, month = _parse_dashboard_month_args()
+    selected_user_id = _resolve_attendance_dashboard_scope(user, is_oversight)
+
+    report = _attendance_dashboard_report(year, month, selected_user_id)
+    try:
+        buf = cls_reports.export_to_excel(report)
+    except RuntimeError as e:
+        flash(str(e), "error")
+        return redirect(url_for("settings_attendance_dashboard", year=year, month=month,
+                                 user_id=selected_user_id or ""))
+
+    filename = report["title"].lower().replace(" ", "-").replace("/", "-") + ".xlsx"
+    return send_file(
+        buf, as_attachment=True, download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+# ── Token-auth API endpoints (v0.30, Build Order Step 4) ──
+# @token_required / g.telephony_user REUSED EXACTLY, same mechanism as
+# the 2 existing Telephony endpoints below — one bearer token per user,
+# not a second auth scheme for Attendance. No PunchActivity.kt/
+# AttendanceWorker.kt exist yet (Steps 5/6) — these 4 endpoints are
+# tested here with curl/Postman-equivalent requests only.
+
+def _parse_punch_request():
+    """Shared by punch-in/punch-out: validates the multipart body and
+    resolves the punch timestamp. Returns (uploaded_file, lat, lng, ts,
+    date_str, error_response_or_None)."""
+    uploaded = request.files.get("photo")
+    lat_raw = request.form.get("lat", "")
+    lng_raw = request.form.get("lng", "")
+    client_ts = (request.form.get("client_ts") or "").strip()
+
+    if not uploaded or not lat_raw or not lng_raw:
+        return None, None, None, None, None, (
+            jsonify({"success": False, "message": "photo, lat, and lng are all required."}), 400
+        )
+    try:
+        lat, lng = float(lat_raw), float(lng_raw)
+    except ValueError:
+        return None, None, None, None, None, (
+            jsonify({"success": False, "message": "lat/lng must be numbers."}), 400
+        )
+
+    # client_ts is the phone's own capture time (matches the reference
+    # spec's "never silently submit without coordinates" spirit applied
+    # to time too) — falls back to server time if missing/unparseable,
+    # since a punch must never fail over a timestamp glitch.
+    try:
+        punch_dt = datetime.strptime(client_ts, "%Y-%m-%d %H:%M:%S") if client_ts else datetime.now()
+    except ValueError:
+        punch_dt = datetime.now()
+    ts = punch_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    return uploaded, lat, lng, punch_dt, ts, None
+
+
+@app.route("/api/attendance/punch-in", methods=["POST"])
+@token_required
+def api_attendance_punch_in():
+    """
+    v0.30 — Multipart form: 'photo' file, 'lat', 'lng' (required),
+    optional 'client_ts' ('YYYY-MM-DD HH:MM:SS'). Geofence breach is
+    computed and FLAGGED in the response — see cls_db.check_geofence_
+    breach()'s docstring on why it never blocks. Photo is saved to disk
+    (never a DB blob) at ATTENDANCE_PHOTOS_DIR/<user_id>/<date>_in.jpg,
+    overwriting any earlier same-day punch-in photo — consistent with
+    the attendance row itself being an UPDATE, not a new row, on a
+    same-day re-punch (cls_db.record_punch()).
+
+    FCM push-on-punch is NOT implemented here — that's the separate,
+    later FCM-wiring build-order step (needs Srikanth's one-time
+    Firebase project setup first); register-fcm-token below only
+    stores tokens, nothing sends to them yet.
+    """
+    user = g.telephony_user
+    uploaded, lat, lng, punch_dt, ts, error = _parse_punch_request()
+    if error:
+        return error
+    date_str = ts[:10]
+
+    geofence_breach = cls_db.check_geofence_breach(user.get("assigned_project"), lat, lng)
+    status, late_minutes = cls_db.compute_punch_in_timing(punch_dt)
+
+    user_dir = os.path.join(ATTENDANCE_PHOTOS_DIR, secure_filename(str(user["user_id"])))
+    os.makedirs(user_dir, exist_ok=True)
+    photo_filename = f"{date_str}_in.jpg"
+    uploaded.save(os.path.join(user_dir, photo_filename))
+
+    cls_db.record_punch(
+        user["user_id"], "in", date_str, ts, lat, lng, geofence_breach, photo_filename,
+        status=status, late_minutes=late_minutes,
+    )
+
+    return jsonify({
+        "success": True, "status": status, "late_minutes": late_minutes,
+        "geofence_breach": geofence_breach,
+    })
+
+
+@app.route("/api/attendance/punch-out", methods=["POST"])
+@token_required
+def api_attendance_punch_out():
+    """v0.30 — same request shape as punch-in, writing only the
+    logout_* columns — status/late_minutes are computed once, at
+    login, and are never touched by a logout (cls_db.record_punch())."""
+    user = g.telephony_user
+    uploaded, lat, lng, punch_dt, ts, error = _parse_punch_request()
+    if error:
+        return error
+    date_str = ts[:10]
+
+    geofence_breach = cls_db.check_geofence_breach(user.get("assigned_project"), lat, lng)
+
+    user_dir = os.path.join(ATTENDANCE_PHOTOS_DIR, secure_filename(str(user["user_id"])))
+    os.makedirs(user_dir, exist_ok=True)
+    photo_filename = f"{date_str}_out.jpg"
+    uploaded.save(os.path.join(user_dir, photo_filename))
+
+    cls_db.record_punch(user["user_id"], "out", date_str, ts, lat, lng, geofence_breach, photo_filename)
+
+    return jsonify({"success": True, "geofence_breach": geofence_breach})
+
+
+@app.route("/api/attendance/location-ping", methods=["POST"])
+@token_required
+def api_attendance_location_ping():
+    """v0.30 — JSON body {lat, lng, ts}. Silently no-ops (200,
+    success:false) if this user has no OPEN attendance row today
+    (cls_db.record_location_ping()) — a stray ping after logout or a
+    killed WorkManager job (Step 6, not built yet) can never corrupt
+    data. Not an error status: the app has no useful recovery action to
+    take on this response either way."""
+    user = g.telephony_user
+    body = request.get_json(silent=True) or {}
+    ts = str(body.get("ts", "")).strip() or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        lat, lng = float(body.get("lat")), float(body.get("lng"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "lat and lng are required and must be numbers."}), 400
+
+    accepted = cls_db.record_location_ping(user["user_id"], lat, lng, ts)
+    return jsonify({"success": accepted})
+
+
+@app.route("/api/attendance/register-fcm-token", methods=["POST"])
+@token_required
+def api_attendance_register_fcm_token():
+    """v0.30 — JSON body {fcm_token}. Called on app start and on
+    Firebase's token-refresh callback (FCM-wiring build-order step, not
+    built yet — this endpoint just stores whatever it's given so that
+    later step has something to send to)."""
+    user = g.telephony_user
+    body = request.get_json(silent=True) or {}
+    fcm_token = str(body.get("fcm_token", "")).strip()
+    if not fcm_token:
+        return jsonify({"success": False, "message": "fcm_token is required."}), 400
+    cls_db.set_fcm_token(user["user_id"], fcm_token)
+    return jsonify({"success": True})
 
 
 # ─────────────────────────────────────────────────────────────

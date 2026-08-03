@@ -1,6 +1,6 @@
 # CLAUDE.md
 <!--
-Version: 1.1
+Version: 1.2
 Changelog:
   v1.0 (baseline, pre-existing) — original CLAUDE.md content, no version tracking.
   v1.1 (2026-07-28) — added mandatory "Session Closeout" section (Srikanth-requested):
@@ -10,20 +10,26 @@ Changelog:
                        Resume-from-here checkpoint. Added version/changelog header
                        to this file itself, matching the convention already used
                        across every other script in this repo.
+  v1.2 (2026-08-03) — updated all BASE_DIR/CLS_DB_PATH/live-path references from
+                       C:\CLS to D:\CLS to reflect the completed drive migration;
+                       added a new "The C:\CLS -> D:\CLS drive migration" section
+                       documenting what moved, the C:\CLS rollback-backup convention,
+                       and the git-history divergence between the two copies.
+                       Documentation-only change, no behavior/process changes.
 -->
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
 
-CLS ("Centralised Leads System") is a real-estate lead-management platform built for **Asian Properties**. It runs unattended on a single Windows laptop (Task Scheduler jobs) plus a small Cloudflare edge layer. As of **2026-07-26** it is backed by **two** SQLite databases, `C:\CLS\CLS1.db` and `C:\CLS\CLS2.db` (previously a single `cls.db` — see "The CLS1/CLS2 database split" below). There is no git repo here (`git-log.txt` is a stray export, not history) and no automated test suite — validation is done via each script's built-in `--selftest` / dry-run mode and manual review.
+CLS ("Centralised Leads System") is a real-estate lead-management platform built for **Asian Properties**. It runs unattended on a single Windows laptop (Task Scheduler jobs) plus a small Cloudflare edge layer. As of **2026-07-26** it is backed by **two** SQLite databases, `D:\CLS\CLS1.db` and `D:\CLS\CLS2.db` (previously a single `cls.db` — see "The CLS1/CLS2 database split" below). There is no git repo here (`git-log.txt` is a stray export, not history) and no automated test suite — validation is done via each script's built-in `--selftest` / dry-run mode and manual review.
 
 The system has three layers:
-1. **Automation pipeline** (root `C:\CLS\*.py`) — scheduled jobs that pull leads from Meta and Sell.do, sync them into CLS1.db/CLS2.db, and fire conversion events back to Meta.
+1. **Automation pipeline** (root `D:\CLS\*.py`) — scheduled jobs that pull leads from Meta and Sell.do, sync them into CLS1.db/CLS2.db, and fire conversion events back to Meta.
 2. **CRM web app** (`crm/`) — a Flask app where the sales team works leads directly (writes to CLS1.db).
 3. **PWA / mobile dashboard** (`pwa/`) — a Cloudflare Pages site that reads a read-only JSON snapshot (sourced from CLS2.db, the DB Job C reads from) via Workers KV, for phone access.
 
-`cls_db.py` is the shared data-access layer imported by every Python component (`sys.path.insert(0, r"C:\CLS")` + `import cls_db`) — it is the single source of truth for schema, stage-transition rules, business logic, **and which of the two databases a given process talks to** (via `CLS_DB_PATH`, see below). Read its module docstring/changelog before touching schema or lead-lifecycle logic anywhere else in the codebase.
+`cls_db.py` is the shared data-access layer imported by every Python component (`sys.path.insert(0, r"D:\CLS")` + `import cls_db`) — it is the single source of truth for schema, stage-transition rules, business logic, **and which of the two databases a given process talks to** (via `CLS_DB_PATH`, see below). Read its module docstring/changelog before touching schema or lead-lifecycle logic anywhere else in the codebase.
 
 ## The CLS1/CLS2 database split (since 2026-07-26)
 
@@ -38,12 +44,12 @@ The original single `cls.db` was forked into two databases that now serve differ
 **How it's actually set in practice**: small `.bat` wrapper files set `CLS_DB_PATH` before invoking Python, and Task Scheduler's Program/script field points at the wrapper instead of `python.exe`/`pythonw.exe` directly:
 
 ```
-run_selldo_to_cls.bat        set CLS_DB_PATH=C:\CLS\CLS2.db   (Job B)
-run_cls_capi_firer.bat       set CLS_DB_PATH=C:\CLS\CLS2.db   (Job C)
-run_cls_email_drip.bat       set CLS_DB_PATH=C:\CLS\CLS2.db   (Job D)
-run_cls_watchdog.bat         set CLS_DB_PATH=C:\CLS\CLS2.db
-run_cls_telegram_listener.bat set CLS_DB_PATH=C:\CLS\CLS2.db
-run_app.bat                  set CLS_DB_PATH=C:\CLS\CLS1.db   (CRM app)
+run_selldo_to_cls.bat        set CLS_DB_PATH=D:\CLS\CLS2.db   (Job B)
+run_cls_capi_firer.bat       set CLS_DB_PATH=D:\CLS\CLS2.db   (Job C)
+run_cls_email_drip.bat       set CLS_DB_PATH=D:\CLS\CLS2.db   (Job D)
+run_cls_watchdog.bat         set CLS_DB_PATH=D:\CLS\CLS2.db
+run_cls_telegram_listener.bat set CLS_DB_PATH=D:\CLS\CLS2.db
+run_app.bat                  set CLS_DB_PATH=D:\CLS\CLS1.db   (CRM app)
 ```
 Job A (`meta_leads_fetcher.py`) has **no** wrapper — it relies on `cls_db.py`'s default (CLS1.db), which is correct for Job A and not accidental.
 
@@ -52,6 +58,16 @@ Job A (`meta_leads_fetcher.py`) has **no** wrapper — it relies on `cls_db.py`'
 **The flag file is unaffected by the split.** `cls_flags.json` (`cls_db.set_flag`/`get_flag`/`is_flag_fresh`) is a single shared file on disk, not stored in either database — so flag-based hand-offs between jobs work exactly as before regardless of which DB each process targets.
 
 **Rollback point**: the original `cls.db` was preserved as `cls.db.pre_split_backup` (not deleted). Keep it for at least several weeks from 2026-07-26 before considering removal.
+
+## The C:\CLS → D:\CLS drive migration (2026-08-03)
+
+**Date**: 2026-08-03. **D:\CLS is now the live project.** `C:\CLS` is a frozen backup from this migration — do not read from or write to anything under `C:\CLS` unless explicitly asked, e.g. for a rollback comparison.
+
+**What moved**: all CLS Python files, all `.bat` wrappers, both databases (`CLS1.db`, `CLS2.db`), and 8 Task Scheduler entries — everything now lives on `D:\CLS`. `BASE_DIR` and every `.bat` wrapper's `CLS_DB_PATH` documented elsewhere in this file reflect the new `D:\CLS` location.
+
+**C:\CLS is preserved, not deleted** — same "keep for a few weeks" convention already used for `cls.db.pre_split_backup`: retain `C:\CLS` as a frozen rollback point for at least several weeks from 2026-08-03 before considering removal.
+
+**Git note**: `D:\CLS`'s git history diverged from `C:\CLS`'s at the moment of the robocopy performed for this migration. Commits made after that point — specifically the `BASE_DIR`-migration commits — exist **only** in `D:\CLS`'s history, not in `C:\CLS`'s. `C:\CLS`'s git log is frozen at the pre-migration state; do not treat it as a live or authoritative history going forward.
 
 ## Commands
 
@@ -87,7 +103,7 @@ python cls_snapshot.py            # push JSON snapshot to Cloudflare KV (also: -
 python cls_watchdog.py            # health check + Telegram/Slack-style alert digest (via run_cls_watchdog.bat -> CLS2.db)
 python cls_telegram_listener.py   # long-polling Telegram command bot (/stats /today /health /pending) (via run_cls_telegram_listener.bat -> CLS2.db)
 python cls_telecaller_report.py   # weekend Opportunity-stage report email
-python cls_backup.py              # daily backup of C:\CLS to Google Drive via rclone
+python cls_backup.py              # daily backup of D:\CLS to Google Drive via rclone
 python setup_task_scheduler.py    # registers Job D in Windows Task Scheduler (run once, as Admin)
 python cls_parallel_diff.py       # compares CLS1.db vs CLS2.db directly -> parallel_diff_report.txt (primary parallel-run health tool, see below)
 
@@ -95,7 +111,7 @@ python cls_parallel_diff.py       # compares CLS1.db vs CLS2.db directly -> para
 python cls_capi_firer.py --selftest   # style varies per script — check top-of-file docstring
 ```
 
-Each job writes to its own `C:\CLS\*_log.txt` (e.g. `meta_leads_log.txt`, `selldo_cls_log.txt`, `cls_capi_log.txt`, `cls_drip_log.txt`, `cls_watchdog_log.txt`, `crm_app_log.txt`) — check these first when debugging a run instead of re-running blind. See also `job_results.txt` below for a quick one-line-per-run status check across all jobs.
+Each job writes to its own `D:\CLS\*_log.txt` (e.g. `meta_leads_log.txt`, `selldo_cls_log.txt`, `cls_capi_log.txt`, `cls_drip_log.txt`, `cls_watchdog_log.txt`, `crm_app_log.txt`) — check these first when debugging a run instead of re-running blind. See also `job_results.txt` below for a quick one-line-per-run status check across all jobs.
 
 ## Architecture
 
@@ -135,7 +151,7 @@ Stage names and their legal transitions are defined once in `cls_db.STAGE_TRANSI
 
 Every job and the CRM app import this module the same way:
 ```python
-BASE_DIR = r"C:\CLS"
+BASE_DIR = r"D:\CLS"
 sys.path.insert(0, BASE_DIR)
 import cls_db
 ```
@@ -170,7 +186,7 @@ Run manually (`python cls_parallel_diff.py`); not part of the scheduled A-D chai
 
 ## Job result logging: `write_job_result()`
 
-Every job (`meta_leads_fetcher.py`, `selldo_to_cls.py`, `cls_capi_firer.py`, `cls_email_drip.py`) calls `cls_db.write_job_result(job_name, success, summary)` at each of its return points, appending one plain-English line (`[timestamp] Job Name: SUCCESS/FAILED — summary`) to `C:\CLS\job_results.txt`. This is the quick human-glance status check across all jobs at once — separate from, and much shorter than, each job's own detailed `*_log.txt` file.
+Every job (`meta_leads_fetcher.py`, `selldo_to_cls.py`, `cls_capi_firer.py`, `cls_email_drip.py`) calls `cls_db.write_job_result(job_name, success, summary)` at each of its return points, appending one plain-English line (`[timestamp] Job Name: SUCCESS/FAILED — summary`) to `D:\CLS\job_results.txt`. This is the quick human-glance status check across all jobs at once — separate from, and much shorter than, each job's own detailed `*_log.txt` file.
 
 ## Historical migration tooling: `cls_db_fork.py`
 
