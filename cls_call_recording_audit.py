@@ -2,7 +2,7 @@
 =============================================================
 cls_call_recording_audit.py  —  Call-Recording Privacy Audit
 =============================================================
-Version : 1.0
+Version : 1.1
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -47,6 +47,7 @@ USAGE
 
 CHANGELOG
 ---------
+v1.1 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 v1.0 (2026-07-31) — Initial version.
 =============================================================
 """
@@ -55,7 +56,7 @@ import argparse
 import os
 import sys
 
-BASE_DIR = r"C:\CLS"
+BASE_DIR = r"D:\CLS"
 RECORDINGS_DIR = os.path.join(BASE_DIR, "call_recordings")
 sys.path.insert(0, BASE_DIR)
 import cls_db  # noqa: E402

@@ -2,11 +2,13 @@
 =============================================================
 cls_import_selldo_csv.py  —  CLS Sell.do Historical CSV Bulk Import
 =============================================================
-Version : 1.5
+Version : 1.6
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.6  (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
+
 v1.5  (July 2026) — per-insert guardrail logging for --commit runs.
   For every row whose action is "insert" AND commit=True, run() now
   logs one "[insert] cls_id=... crm_lead_no=... last_fired_stage=...
@@ -165,7 +167,7 @@ import cls_db   # the foundation layer — the ONLY way this script touches cls.
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-BASE_DIR = r"C:\CLS"
+BASE_DIR = r"D:\CLS"
 LOG_FILE = os.path.join(BASE_DIR, "cls_import_selldo_log.txt")
 
 CSV_COLUMNS_USED = [

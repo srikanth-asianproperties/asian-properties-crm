@@ -2,11 +2,13 @@
 =============================================================
 cls_backup.py  —  CLS Daily Backup to Google Drive
 =============================================================
-Version : 1.2
+Version : 1.4
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.4  (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
+
 v1.2  (2026-07-31) — Exclude call_recordings/ (Phase B Telephony) from
   both Step 1 (daily copy) and Step 2 (latest sync) via a new
   --exclude "call_recordings/**" flag on each rclone call. Nothing else
@@ -132,7 +134,7 @@ import requests
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-BASE_DIR    = r"C:\CLS"
+BASE_DIR    = r"D:\CLS"
 LOG_FILE    = os.path.join(BASE_DIR, "cls_backup_log.txt")
 RCLONE_EXE  = os.path.join(BASE_DIR, "rclone.exe")
 ENV_FILE    = os.path.join(BASE_DIR, ".env")

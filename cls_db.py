@@ -2,11 +2,13 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.39
+Version : 2.43
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.43 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
+
 v2.39 (2026-08-02) — APX Attendance v0.9 pilot: data-access functions
   (Build Order Step 2 of the v0.9 spec), additions only, nothing
   existing removed or modified except get_all_users_detailed()'s SELECT
@@ -1527,7 +1529,7 @@ from datetime import datetime, timedelta
 # All CLS files live in the same folder as the existing automation,
 # so paths stay consistent with selldo_capi_automation.py (C:\automation).
 
-BASE_DIR  = r"C:\CLS"
+BASE_DIR  = r"D:\CLS"
 # v2.23: DB target is now config, not code — CLS_DB_PATH env var, defaulting
 # to CLS1.db. Set per-process (Task Scheduler task / service launcher) as a
 # real OS environment variable — NOT a line in .env (see v2.23 changelog).

@@ -2,11 +2,15 @@
 =============================================================
 selldo_to_cls.py  —  CLS Job B  |  Sell.do CRM -> CLS Sync
 =============================================================
-Version : 1.7
+Version : 1.8
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.8  (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
+  Explicit one-time override of the "Never touch Job B" rule, approved by
+  Srikanth for this path-only change specifically.
+
 v1.7  (July 2026) — CLS1/CLS2 database split support. Explicit one-time
   override of the "Never touch Job B" rule, approved by Srikanth after
   reviewing the exact diff for this file specifically.
@@ -217,7 +221,7 @@ import cls_db   # the foundation layer — Step 1
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-BASE_DIR  = r"C:\CLS"
+BASE_DIR  = r"D:\CLS"
 ENV_FILE  = os.path.join(BASE_DIR, ".env")
 LOG_FILE  = os.path.join(BASE_DIR, "selldo_cls_log.txt")
 

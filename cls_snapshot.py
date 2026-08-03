@@ -2,8 +2,12 @@
 =============================================================
 cls_snapshot.py  —  CLS Command Center Snapshot Pusher
 =============================================================
-Version : 1.0
+Version : 1.1
 Author  : Built for Asian Properties / Srikanth
+
+CHANGELOG
+---------
+v1.1 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
 WHAT THIS DOES
 --------------
@@ -81,7 +85,7 @@ import cls_db   # the foundation layer — same source of truth as the dashboard
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(os.path.join(r"C:\CLS", ".env"))
+    load_dotenv(os.path.join(r"D:\CLS", ".env"))
 except Exception:
     # On a non-Windows box (e.g. during selftest in a sandbox) this is fine —
     # env vars may already be present in the environment instead.
@@ -93,7 +97,7 @@ import requests
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-BASE_DIR   = r"C:\CLS"
+BASE_DIR   = r"D:\CLS"
 LOG_FILE   = os.path.join(BASE_DIR, "cls_snapshot.log")
 
 KV_KEY               = "snapshot"

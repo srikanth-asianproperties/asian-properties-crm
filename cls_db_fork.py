@@ -2,8 +2,12 @@
 =============================================================
 cls_db_fork.py  —  CLS1/CLS2 One-Time Migration Helper
 =============================================================
-Version : 1.0
+Version : 1.1
 Author  : Built for Asian Properties / Srikanth
+
+CHANGELOG
+---------
+v1.1 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
 PURPOSE
 -------
@@ -44,7 +48,7 @@ import os
 import sqlite3
 import shutil
 
-BASE_DIR    = r"C:\CLS"
+BASE_DIR    = r"D:\CLS"
 SOURCE_DB   = os.path.join(BASE_DIR, "cls.db")
 CLS1_PATH   = os.path.join(BASE_DIR, "CLS1.db")
 CLS2_PATH   = os.path.join(BASE_DIR, "CLS2.db")

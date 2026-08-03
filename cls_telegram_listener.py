@@ -2,11 +2,13 @@
 =============================================================
 cls_telegram_listener.py  —  CLS Telegram Command Interface
 =============================================================
-Version : 1.1
+Version : 1.2
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.2 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
+
 v1.1 (July 2026) — CLS1/CLS2 database split support. DB_FILE now reads
   from the CLS_DB_PATH env var (default CLS1.db) instead of a hardcoded
   cls.db, matching cls_db.py v2.23's pattern — keeps _db()'s direct
@@ -84,7 +86,7 @@ from datetime import datetime
 # so Python's module search path won't include cls_db.py by default.
 # BASE_DIR is defined here early (before the main config block) so
 # the sys.path fix can reference it before import cls_db.
-BASE_DIR = r"C:\CLS"
+BASE_DIR = r"D:\CLS"
 sys.path.insert(0, BASE_DIR)
 
 import cls_db   # public functions: stats(), get_flag(), get_unfired_leads()

@@ -2,11 +2,12 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.6
+Version : 1.7
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.7 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 v1.6 (2026-07-30) : Capture Meta's "platform" field (e.g. "fb"/"ig"),
                     requires cls_db.py v2.32's new upsert_meta_lead(
                     meta_platform=...) param. ADDITIONS ONLY:
@@ -141,7 +142,7 @@ import cls_db   # the foundation layer — Step 1
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-BASE_DIR  = r"C:\CLS"
+BASE_DIR  = r"D:\CLS"
 ENV_FILE  = os.path.join(BASE_DIR, ".env")
 LOG_FILE  = os.path.join(BASE_DIR, "meta_leads_log.txt")
 

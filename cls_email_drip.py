@@ -2,8 +2,12 @@
 =============================================================
 cls_email_drip.py  —  CLS Job D  |  Automated Email Drip
 =============================================================
-Version : 1.3
+Version : 1.4
 Author  : Built for Asian Properties / Srikanth
+
+WHAT CHANGED IN v1.4
+--------------------
+- BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
 WHAT CHANGED IN v1.3
 --------------------
@@ -87,7 +91,7 @@ import cls_db
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-BASE_DIR = r"C:\CLS"
+BASE_DIR = r"D:\CLS"
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 LOG_FILE = os.path.join(BASE_DIR, "cls_drip_log.txt")
 

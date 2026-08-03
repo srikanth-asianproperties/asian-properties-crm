@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.28
+Version : 0.32
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,8 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.32 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
+
 v0.28 (2026-08-02) — APX Attendance v0.9 pilot: Flask/Jinja2 routes only
   (Build Order Step 2 of the v0.9 spec), against cls_db.py v2.38/2.39's
   schema + data-access functions. SIBLING module — no leads/activity_log/
@@ -1221,7 +1223,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 # ── Import cls_db.py the same way every other CLS job does ──
-BASE_DIR = r"C:\CLS"
+BASE_DIR = r"D:\CLS"
 sys.path.insert(0, BASE_DIR)
 import cls_db  # noqa: E402  (must follow the sys.path insert above)
 import cls_reports  # v0.6 — Reports section; lives in crm/ alongside app.py, no sys.path change needed

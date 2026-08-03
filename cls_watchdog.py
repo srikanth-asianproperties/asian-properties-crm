@@ -2,11 +2,13 @@
 =============================================================
 cls_watchdog.py  —  CLS Health Monitor & Alert System
 =============================================================
-Version : 2.6
+Version : 2.7
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.7  (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
+
 v2.6  (July 2026) — Stale-count bug fix + Job D completion flag:
   FIXED   — extract_run_count() was scanning the whole 100-line log tail
               for its count pattern with no awareness of run boundaries.
@@ -220,7 +222,7 @@ import cls_db   # shared foundation — for flag checks and DB access
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-BASE_DIR       = r"C:\CLS"
+BASE_DIR       = r"D:\CLS"
 ENV_FILE       = os.path.join(BASE_DIR, ".env")
 LOG_FILE       = os.path.join(BASE_DIR, "cls_watchdog_log.txt")
 SNAPSHOT_FILE  = os.path.join(BASE_DIR, "cls_watchdog_snapshot.json")

@@ -3,11 +3,12 @@
 =============================================================
 schema_check.py — CLS/CRM Live Schema Diagnostic (read-only)
 =============================================================
-Version : 1.1
+Version : 1.2
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.2 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 v1.1 (July 2026) — CLS1/CLS2 database split support. DB_FILE is no
   longer hardcoded to cls.db — it now takes an optional command-line
   argument (filename, resolved against C:\\CLS), defaulting to CLS1.db.
@@ -46,7 +47,7 @@ import os
 import sys
 import sqlite3
 
-BASE_DIR = r"C:\CLS"
+BASE_DIR = r"D:\CLS"
 DB_NAME  = sys.argv[1] if len(sys.argv) > 1 else "CLS1.db"
 DB_FILE  = os.path.join(BASE_DIR, DB_NAME)
 

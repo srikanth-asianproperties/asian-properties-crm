@@ -2,8 +2,12 @@
 =============================================================
 cls_dashboard.py  —  CLS Dashboard Generator
 =============================================================
-Version : 2.0
+Version : 2.1
 Author  : Built for Asian Properties / Srikanth
+
+CHANGELOG
+---------
+v2.1 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
 WHAT THIS DOES
 --------------
@@ -59,7 +63,7 @@ from datetime import datetime
 
 import cls_db   # the foundation layer
 
-BASE_DIR       = r"C:\CLS"
+BASE_DIR       = r"D:\CLS"
 DASHBOARD_FILE = os.path.join(BASE_DIR, "dashboard.html")
 
 # Meta event -> accent colour. These mirror the old dashboard's event

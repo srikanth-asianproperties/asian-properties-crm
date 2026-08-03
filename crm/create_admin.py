@@ -3,11 +3,13 @@
 =============================================================
 create_admin.py — CRM v0.1 bootstrap: create/fix a CRM login
 =============================================================
-Version : 1.3
+Version : 1.4
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.4  — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
+
 v1.3  — NEW 'manager' role (oversight tier), matching cls_db.py v2.9 /
   app.py v0.9.5. Role choice is now validated against cls_db.CRM_ROLES
   (single source of truth) instead of a literal tuple here, so this
@@ -60,7 +62,7 @@ import os
 # one folder up from this script's C:\CLS\crm\ location. Without this,
 # Python only looks in this script's own folder and site-packages, and
 # never finds it (ModuleNotFoundError: No module named 'cls_db').
-BASE_DIR = r"C:\CLS"
+BASE_DIR = r"D:\CLS"
 sys.path.insert(0, BASE_DIR)
 import cls_db  # noqa: E402  (must follow the sys.path insert above)
 

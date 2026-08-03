@@ -2,8 +2,12 @@
 =============================================================
 cls_parallel_diff.py  —  CLS1 vs CLS2 Parallel-Run Comparison
 =============================================================
-Version : 1.0
+Version : 1.1
 Author  : Built for Asian Properties / Srikanth
+
+CHANGELOG
+---------
+v1.1 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
 PURPOSE
 -------
@@ -56,7 +60,7 @@ import cls_db   # the foundation layer — the ONLY way this script touches eith
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-BASE_DIR    = r"C:\CLS"
+BASE_DIR    = r"D:\CLS"
 CLS1_PATH   = os.path.join(BASE_DIR, "CLS1.db")
 CLS2_PATH   = os.path.join(BASE_DIR, "CLS2.db")
 REPORT_FILE = os.path.join(BASE_DIR, "parallel_diff_report.txt")
