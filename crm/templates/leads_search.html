@@ -1,7 +1,15 @@
-{# leads_search.html (v0.9) — dedicated search screen (item 7 of
+{# leads_search.html (v0.10) — dedicated search screen (item 7 of
    Srikanth's spec). Every OTHER currently-active filter is carried
    forward as a hidden input so searching doesn't silently clear a
    filter someone already set.
+
+   v0.10 (2026-08-04) — Pipeline Stage carry-forward changed from a
+   single hidden <input name="stage"> to a loop over filters.stages
+   (name="stages"), same pattern already used below for configuration/
+   property_type/facing — matches leads_filter.html's radio->checkbox
+   conversion (app.py v0.33 / cls_db.py v2.44). The "Clear search" link's
+   stage=filters.stage query param likewise swapped to
+   stages=filters.stages.
 
    v0.9 (July 2026) — item 1 of Srikanth's bug-fix batch (cls_db.py
    v2.19): lead-ID search is now PREFIX-GATED, not implicit. A bare
@@ -31,7 +39,7 @@
          autofocus style="width:100%; margin-bottom:14px;">
 
   {# Carry every other active filter forward untouched #}
-  <input type="hidden" name="stage" value="{{ filters.stage }}">
+  {% for v in filters.stages %}<input type="hidden" name="stages" value="{{ v }}">{% endfor %}
   <input type="hidden" name="project" value="{{ filters.project }}">
   <input type="hidden" name="owner" value="{{ filters.owner }}">
   <input type="hidden" name="date_from" value="{{ filters.date_from }}">
@@ -50,7 +58,7 @@
   <div class="write-form-row">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if filters.q %}
-    <a href="{{ url_for('leads_list', stage=filters.stage, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, date_preset=filters.date_preset, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" class="btn">Clear search</a>
+    <a href="{{ url_for('leads_list', stages=filters.stages, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, date_preset=filters.date_preset, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" class="btn">Clear search</a>
     {% endif %}
   </div>
 </form>

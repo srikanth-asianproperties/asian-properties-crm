@@ -1,4 +1,4 @@
-{# leads_filter.html (v0.8) — dedicated filter screen (items 8 of
+{# leads_filter.html (v0.9) — dedicated filter screen (items 8 of
    Srikanth's spec). His spec described a two-pane "list of categories
    on the left, options revealed per category" layout — that's a
    desktop pattern that doesn't fit a phone-width screen, so this
@@ -11,6 +11,11 @@
    One GET form, submitted once via "Apply Filters" at the bottom —
    not per-category — so every selection across every category applies
    together in a single request, same as the old top-bar form did.
+
+   v0.9 (2026-08-04) — Pipeline Stage changed from radio (single-value
+   name="stage") to checkbox multi-select (name="stages"), mirroring
+   bulk_reassign_filter.html's existing Pipeline Stage checkbox block
+   exactly. Requires app.py v0.33 / cls_db.py v2.44.
 
    v0.8 (July 2026) — item 4 of Srikanth's bug-fix batch: Date Range's
    plain From/To inputs replaced with an 11-option quick-select dropdown
@@ -99,16 +104,15 @@
       </div>
     </div>
 
-    {# ── PIPELINE STAGE ── #}
-    <div class="filter-accordion-item{% if filters.stage %} open{% endif %}" data-fa="stage">
+    {# ── PIPELINE STAGE (multi-select, v0.33) ── #}
+    <div class="filter-accordion-item{% if filters.stages %} open{% endif %}" data-fa="stage">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('stage')">
-        <span>Pipeline Stage{% if filters.stage %}<span class="fa-current"> · {{ filters.stage }}</span>{% endif %}</span>
+        <span>Pipeline Stage{% if filters.stages %}<span class="fa-current"> · {{ filters.stages|join(', ') }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="stage" value="" {% if not filters.stage %}checked{% endif %}> All stages</label>
         {% for s in stages %}
-        <label class="opt-row"><input type="radio" name="stage" value="{{ s }}" {% if filters.stage == s %}checked{% endif %}> {{ s }}</label>
+        <label class="opt-row"><input type="checkbox" name="stages" value="{{ s }}" {% if s in filters.stages %}checked{% endif %}> {{ s }}</label>
         {% endfor %}
       </div>
     </div>

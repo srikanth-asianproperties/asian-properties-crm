@@ -1,4 +1,4 @@
-{# _leads_list_actionbar.html (v0.7) — bottom icon bar for the leads
+{# _leads_list_actionbar.html (v0.8) — bottom icon bar for the leads
    list page, replacing the old inline top filter form. Filter/Search
    link through to dedicated screens, carrying every currently-active
    filter forward as query params so nothing gets silently reset.
@@ -11,13 +11,20 @@
    inside it — nesting interactive content (checkboxes) inside a
    <button> is invalid HTML and would make a checkbox click also
    bubble up as a button click, toggling the popover shut the instant
-   you tried to check something. #}
+   you tried to check something.
+
+   v0.8 (2026-08-04) — Pipeline Stage carry-forward query param on both
+   breadcrumb links changed from stage=filters.stage to
+   stages=filters.stages (Jinja/Flask url_for repeats a param once per
+   list item, so this correctly emits one stages=... per selected
+   value) — matches leads_filter.html's radio->checkbox conversion
+   (app.py v0.33 / cls_db.py v2.44). #}
 <div class="action-bar">
-  <a class="action-btn" href="{{ url_for('leads_filter_screen', q=filters.q, stage=filters.stage, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" title="Filter">
+  <a class="action-btn" href="{{ url_for('leads_filter_screen', q=filters.q, stages=filters.stages, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" title="Filter">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
     Filter
   </a>
-  <a class="action-btn" href="{{ url_for('leads_search_screen', stage=filters.stage, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" title="Search">
+  <a class="action-btn" href="{{ url_for('leads_search_screen', stages=filters.stages, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" title="Search">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
     Search
   </a>

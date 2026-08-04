@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.32
+Version : 0.33
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,35 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.33 (2026-08-04) — Leads List Pipeline Stage filter, radio -> checkbox
+  multi-select. Requires cls_db.py v2.44. Reuses the SAME stages= list
+  infrastructure _build_lead_filter_where() already supports for Bulk
+  Reassign/Export (cls_db.py v2.30) — no duplicated filter logic.
+  - _parse_lead_filters() gained "stages": request.args.getlist("stages")
+    alongside the existing single-value "stage" key (kept, unchanged —
+    still back-filled for any other reader, though leads_list() itself
+    now reads f["stages"] for the actual query).
+  - leads_list() now passes stages=f["stages"] or None to cls_db.
+    get_leads_page(), instead of stage=f["stage"].
+  - leads_filter.html: Pipeline Stage section changed from radio
+    name="stage" to checkbox name="stages" — mirrors bulk_reassign_
+    filter.html's existing Pipeline Stage checkbox block exactly.
+  - leads_search.html: the single hidden carry-forward
+    <input name="stage"> replaced with a loop over filters.stages, same
+    pattern already used for configuration/property_type/facing; its
+    "Clear search" link's stage=filters.stage query param likewise
+    swapped to stages=filters.stages.
+  - _leads_list_actionbar.html: the Filter/Search breadcrumb links'
+    stage=filters.stage query param swapped to stages=filters.stages
+    (2 call sites) — carries the now-list filter forward correctly
+    instead of silently dropping it.
+  - leads_list.html: the "Filters active" banner condition now checks
+    filters.stages instead of filters.stage.
+  Purely additive at the query layer — no schema migration. filters.stage
+  (singular) is left in the dict for backward compatibility with any old
+  bookmarked URL still carrying ?stage=Prospect, but the actual filtering
+  now happens via filters.stages.
+
 v0.32 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
 v0.31 (2026-08-02) — Pre-Step-6 fix: ATTENDANCE_PHOTOS_DIR parameterized
@@ -2524,6 +2553,14 @@ def _parse_lead_filters():
     additionally back-fills filters["date_preset"] by DETECTING which
     preset those raw dates match (or "custom" if none), purely so the
     filter screen can show the right "· <preset>" summary label.
+
+    v0.33 — NEW "stages" (list, via getlist("stages")) — Pipeline Stage
+    is now a checkbox multi-select on the Leads List filter screen, same
+    pattern as configuration/property_type/facing below. The existing
+    single-value "stage" key is left in place unchanged (still populated
+    from request.args.get("stage")) for backward compatibility with any
+    caller/bookmark that only ever set the old single-value param; the
+    actual query in leads_list() now reads f["stages"], not f["stage"].
     """
     date_preset_param = request.args.get("date_preset") or ""
     date_from = request.args.get("date_from") or ""
@@ -2542,6 +2579,7 @@ def _parse_lead_filters():
     return {
         "q":             request.args.get("q") or "",
         "stage":         request.args.get("stage") or "",
+        "stages":        request.args.getlist("stages"),
         "project":       request.args.get("project") or "",
         "owner":         request.args.get("owner") or "",
         "date_from":     date_from,
@@ -2689,7 +2727,7 @@ def leads_list():
         # Oversight roles (admin/manager, v0.9.5) already see everything,
         # so the flag is a no-op for them.
         result = cls_db.get_leads_page(
-            stage=f["stage"] or None, project=f["project"] or None,
+            project=f["project"] or None,
             search=f["q"] or None, owner=owner, page=page,
             date_from=f["date_from"] or None, date_to=f["date_to"] or None,
             sort_by=f["sort_by"], stage_reason=f["stage_reason"] or None,
@@ -2699,6 +2737,7 @@ def leads_list():
             property_type=f["property_type"] or None,
             facing=f["facing"] or None,
             search_all_owners=(not cls_db.can_view_all_leads(user["role"])),
+            stages=f["stages"] or None,
         )
 
     # v0.5 — lead scoring. Only the CURRENT PAGE of rows gets scored

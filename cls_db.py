@@ -2,11 +2,21 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.43
+Version : 2.44
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.44 (2026-08-04) — Leads List Pipeline Stage filter, radio -> checkbox
+  multi-select. get_leads_page() gained a NEW stages=None param (list,
+  optional), passed straight through to the EXISTING _build_lead_filter_
+  where() call inside it — that function already accepted/handled stages
+  (v2.30, added for Bulk Reassign/Export), so no change there. ADDITIVE
+  ONLY: the existing single-value stage= param and every current caller
+  of get_leads_page() are untouched (default stages=None => no filter
+  narrowing, identical to before this version). app.py's leads_list()
+  route change to pass f["stages"] is reported alongside this one.
+
 v2.43 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
 v2.42 (2026-08-02) — APX Attendance v0.9 pilot: token-auth API business
@@ -3230,7 +3240,7 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
                    sort_by="recent", stage_reason=None, campaign=None,
                    campaigns=None, source=None, sub_source=None, budget=None,
                    configuration=None, property_type=None, facing=None,
-                   search_all_owners=False):
+                   search_all_owners=False, stages=None):
     """
     Paginated, filterable lead list for the CRM's /leads screen.
 
@@ -3258,6 +3268,10 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
     campaigns   : v2.28 — list of exact leads.campaign values, OR'd
                   together (checkbox multi-select). Independent of the
                   single-string `campaign` filter above.
+    stages      : v2.44 — list of exact leads.current_stage values, OR'd
+                  together (checkbox multi-select), same pattern as
+                  campaigns above. Independent of, and additive alongside,
+                  the existing single-value `stage` param above.
     source      : exact match on leads.source (meta/selldo_only/manual_crm).
     sub_source  : exact match on leads.lead_source_detail (the manual-
                   entry source detail, MANUAL_SOURCE_OPTIONS) — a
@@ -3297,7 +3311,7 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
             campaigns=campaigns, source=source, sub_source=sub_source,
             budget=budget, configuration=configuration,
             property_type=property_type, facing=facing,
-            search_all_owners=search_all_owners,
+            search_all_owners=search_all_owners, stages=stages,
         )
         order_sql = SORT_OPTIONS.get(sort_by, SORT_OPTIONS["recent"])
 

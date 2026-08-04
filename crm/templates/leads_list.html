@@ -1,8 +1,13 @@
-{# leads_list.html (v0.9) — top filter bar removed per Srikanth's spec.
+{# leads_list.html (v0.10) — top filter bar removed per Srikanth's spec.
    Header is now just "Leads (N)" + Add lead. Filter/Search/Fields
    moved to the bottom icon bar (_leads_list_actionbar.html) — Filter
    and Search open dedicated full-screen panels; Fields stays an
    in-place popover, just relocated.
+
+   v0.10 (2026-08-04) — "Filters active" banner condition checks
+   filters.stages (list) instead of filters.stage (single value) —
+   Pipeline Stage is now a checkbox multi-select (app.py v0.33 /
+   cls_db.py v2.44).
 
    v0.9 (July 2026, Task 5 of the APX v0.7 batch) — the "Upd" field
    (stage_updated_at, see v0.8's note below — that trade-off is why
@@ -57,7 +62,7 @@
 </div>
 {% endif %}
 
-{% if filters.q or filters.stage or filters.project or filters.owner or filters.date_from or filters.date_to
+{% if filters.q or filters.stages or filters.project or filters.owner or filters.date_from or filters.date_to
       or filters.stage_reason or filters.campaign or filters.source or filters.sub_source or filters.budget
       or filters.configuration or filters.property_type or filters.facing %}
 <div style="display:flex; align-items:center; gap:8px; margin:14px 0; font-size:13px; color:var(--ink-soft); flex-wrap:wrap;">
