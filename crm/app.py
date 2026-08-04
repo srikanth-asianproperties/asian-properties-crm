@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.33
+Version : 0.34
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,30 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.34 (2026-08-04) — PWA WhatsApp deep-link bug fix. "Open WhatsApp"
+  buttons worked in browser but failed in the installed PWA with
+  net::ERR_UNKNOWN_URL_SCHEME on whatsapp://send/.... Root cause: the
+  buttons were <form method=post> submits that got server-redirected
+  (302) to https://wa.me/..., which itself redirects to whatsapp://...
+  — that redirect chain loses user-gesture status in standalone PWA
+  mode, so the OS blocked the custom URL scheme. Fix moves the actual
+  navigation to a plain <a href="https://wa.me/..."> in the templates
+  (a direct, un-intercepted top-level user gesture); this route pair
+  now only logs the send.
+  - whatsapp_send(): same ownership gate and wa_url validation as
+    before (now abort(400) instead of flash+redirect on invalid
+    wa_url, since the caller is a background fetch, not a page nav);
+    still calls cls_db.log_whatsapp_sent(); dropped `return
+    redirect(wa_url)` in favor of `return "", 204`.
+  - reminder_mark_sent(): same change, same reasoning; still calls
+    cls_db.log_reminder_sent().
+  - Confirmed via grep: whatsapp_picker.html and reminders_tomorrow.html
+    are the only callers of url_for('whatsapp_send'/'reminder_mark_sent')
+    in live code (crm/templates/) — both updated in this same change to
+    call these routes via fetch() and navigate independently via <a
+    href>, so no caller is left depending on the old redirect. No
+    schema change, no migration.
+
 v0.33 (2026-08-04) — Leads List Pipeline Stage filter, radio -> checkbox
   multi-select. Requires cls_db.py v2.44. Reuses the SAME stages= list
   infrastructure _build_lead_filter_where() already supports for Bulk
@@ -3406,8 +3430,17 @@ def whatsapp_send(cls_id):
     nothing ever got logged). Now a real POST so the send gets an
     activity_log row — mirrors reminder_mark_sent() below exactly: same
     ownership gate, same "wa_url must start with https://wa.me/"
-    validation, same 302 redirect into WhatsApp (which still can't
-    auto-send — the user reviews and taps Send there).
+    validation.
+
+    v0.34 — PWA deep-link fix. This route used to 302-redirect the
+    browser into wa_url itself; that redirect chain (this route's 302 ->
+    https://wa.me/... -> whatsapp://...) loses user-gesture status in an
+    installed/standalone PWA, so the OS blocked the whatsapp:// custom
+    scheme (net::ERR_UNKNOWN_URL_SCHEME). The browser now navigates via
+    whatsapp_picker.html's own <a href="https://wa.me/..."> directly —
+    this route only logs the send, via a fetch(..., {keepalive:true})
+    fired alongside that navigation, so it returns a plain 204 instead.
+    Validation and logging logic are otherwise unchanged.
     """
     lead = cls_db.get_lead_by_id(cls_id)
     if not lead:
@@ -3417,8 +3450,7 @@ def whatsapp_send(cls_id):
 
     wa_url = request.form.get("wa_url", "")
     if not wa_url.startswith("https://wa.me/"):
-        flash("Couldn't open WhatsApp — invalid link.", "error")
-        return redirect(url_for("whatsapp_picker", cls_id=cls_id))
+        abort(400, description="Invalid WhatsApp link.")
 
     project = (request.form.get("project") or "").strip() or "Unknown project"
     message = (request.form.get("message") or "").strip()
@@ -3427,7 +3459,7 @@ def whatsapp_send(cls_id):
         description += f" — {message}"
 
     cls_db.log_whatsapp_sent(cls_id, _actor(), description)
-    return redirect(wa_url)
+    return "", 204
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3465,6 +3497,17 @@ def reminders_tomorrow():
 @app.route("/reminders/site-visits-tomorrow/mark-sent/<int:visit_id>", methods=["POST"])
 @login_required
 def reminder_mark_sent(visit_id):
+    """
+    v0.34 — PWA deep-link fix. This route used to 302-redirect the
+    browser into wa_url itself; that redirect chain (this route's 302 ->
+    https://wa.me/... -> whatsapp://...) loses user-gesture status in an
+    installed/standalone PWA, so the OS blocked the whatsapp:// custom
+    scheme (net::ERR_UNKNOWN_URL_SCHEME). The browser now navigates via
+    reminders_tomorrow.html's own <a href="https://wa.me/..."> directly
+    — this route only logs the send, via a fetch(..., {keepalive:true})
+    fired alongside that navigation, so it returns a plain 204 instead.
+    Validation and logging logic are otherwise unchanged.
+    """
     visit = cls_db.get_site_visit_by_id(visit_id)
     if not visit:
         abort(404, description="No site visit found with that id.")
@@ -3476,11 +3519,10 @@ def reminder_mark_sent(visit_id):
 
     wa_url = request.form.get("wa_url", "")
     if not wa_url.startswith("https://wa.me/"):
-        flash("Couldn't open WhatsApp — invalid link.", "error")
-        return redirect(url_for("reminders_tomorrow"))
+        abort(400, description="Invalid WhatsApp link.")
 
     cls_db.log_reminder_sent(visit_id, visit["cls_id"], actor=_actor())
-    return redirect(wa_url)
+    return "", 204
 
 
 # ─────────────────────────────────────────────────────────────

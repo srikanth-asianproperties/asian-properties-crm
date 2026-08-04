@@ -1,13 +1,19 @@
-{# reminders_tomorrow.html (v0.10) — Tomorrow's Site Visits: WhatsApp
+{# reminders_tomorrow.html (v0.11) — Tomorrow's Site Visits: WhatsApp
    reminder page. Reached from the Dashboard tile, the drawer
    "Reminders" link, or directly. Salespeople see only their own leads'
    visits (route scopes the query); admins/managers see all of them.
 
-   Same "cannot auto-send" pattern as whatsapp_picker.html: each card's
-   button POSTs to mark-sent (recording the send + gating on lead
-   ownership server-side) and the route 302s the browser straight into
-   WhatsApp with the message pre-filled — the user still reviews and
-   taps Send there. #}
+   v0.11 — PWA deep-link fix. The button used to be a <form method=post>
+   submit that the server 302-redirected to https://wa.me/..., which
+   itself redirects to whatsapp://... — in an installed/standalone PWA
+   that redirect chain loses user-gesture status, so the OS blocks the
+   whatsapp:// custom scheme (net::ERR_UNKNOWN_URL_SCHEME). Each button
+   is now a real <a href="https://wa.me/...">, so the tap is a direct,
+   un-intercepted top-level navigation. The mark-sent logging call still
+   happens (fired via fetch(..., {keepalive:true}) on click, not
+   awaited, no preventDefault) — see app.py's reminder_mark_sent(),
+   which now returns 204 instead of redirecting since the browser
+   navigates via the anchor's own href independently. #}
 {% extends "base.html" %}
 {% block title %}Tomorrow's Site Visits{% endblock %}
 
@@ -42,19 +48,21 @@
     <div style="white-space:pre-wrap; font-size:14px; color:var(--ink); margin-top:10px; background:var(--paper); padding:10px 12px; border-radius:8px;">{{ v.rendered_body }}</div>
 
     {% if not v.reminder_sent_at %}
-    <form method="post" action="{{ url_for('reminder_mark_sent', visit_id=v.visit_id) }}" style="margin-top:12px;">
-      <input type="hidden" name="wa_url" value="https://wa.me/{{ v.phone_e164 }}?text={{ v.rendered_body|urlencode }}">
-      <button type="submit" class="btn btn-primary" style="width:100%; padding:10px; font-size:15px; background:var(--green); border-color:var(--green);">
-        Open WhatsApp →
-      </button>
-    </form>
+    <a href="https://wa.me/{{ v.phone_e164 }}?text={{ v.rendered_body|urlencode }}"
+       class="wa-open-link btn btn-primary"
+       data-log-url="{{ url_for('reminder_mark_sent', visit_id=v.visit_id) }}"
+       style="display:block; width:100%; padding:10px; font-size:15px; background:var(--green); border-color:var(--green); text-align:center; margin-top:12px; box-sizing:border-box;">
+      Open WhatsApp →
+    </a>
     {% else %}
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:12px; flex-wrap:wrap;">
       <span class="badge" style="background:var(--green);">✓ Reminder sent at {{ v.reminder_sent_at|ampm }}</span>
-      <form method="post" action="{{ url_for('reminder_mark_sent', visit_id=v.visit_id) }}">
-        <input type="hidden" name="wa_url" value="https://wa.me/{{ v.phone_e164 }}?text={{ v.rendered_body|urlencode }}">
-        <button type="submit" class="btn" style="padding:4px 10px; font-size:12px;">Send again</button>
-      </form>
+      <a href="https://wa.me/{{ v.phone_e164 }}?text={{ v.rendered_body|urlencode }}"
+         class="wa-open-link btn"
+         data-log-url="{{ url_for('reminder_mark_sent', visit_id=v.visit_id) }}"
+         style="padding:4px 10px; font-size:12px; text-align:center;">
+        Send again
+      </a>
     </div>
     {% endif %}
     {% endif %}
@@ -66,4 +74,21 @@
   <p>No site visits scheduled for tomorrow.</p>
 </div>
 {% endif %}
+
+<script>
+(function () {
+  document.querySelectorAll('.wa-open-link').forEach(function (el) {
+    el.addEventListener('click', function () {
+      var logUrl = el.getAttribute('data-log-url');
+      if (!logUrl) return;
+      var fd = new FormData();
+      fd.append('wa_url', el.getAttribute('href'));
+      // Fire-and-forget: not awaited, no preventDefault — the anchor's
+      // own top-level navigation to wa.me/whatsapp:// must proceed
+      // un-intercepted so the OS still treats it as a user gesture.
+      fetch(logUrl, { method: 'POST', body: fd, keepalive: true });
+    });
+  });
+})();
+</script>
 {% endblock %}
