@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.35
+Version : 0.36
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,24 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.36 (2026-08-06) — APX Attendance Chunk B: Weekoff/Leave rebuilt as
+  range-capable, duplicate-protected self-service (requires cls_db.py
+  v2.45 — see its changelog for the validate-then-write design). NEW
+  attendance_weekoff_submit() / attendance_leave_submit() JSON routes
+  (/attendance/weekoff/submit, /attendance/leave/submit) back a new
+  button+modal in attendance.html; both @login_required, user_id
+  always pulled from session, never from request input. The OLD
+  attendance_weekoff/attendance_leave form-POST routes are PAUSED
+  (commented out, not deleted) — left live they'd let a submission
+  bypass the new duplicate-protection. attendance.html also: removed
+  the old inline Weekoff/Leave card and the employee-facing Correction
+  Request card (front-end only — attendance_correction_request() route
+  and the admin-side Corrections queue are untouched), and restyled
+  the login submit button + logout link to a new scoped
+  .btn-pill-green class (base.html/login.html) — existing .btn/
+  .btn-primary/.drawer-link defaults used everywhere else in the app
+  are unchanged.
+
 v0.35 (2026-08-06) — APX Attendance Chunk A: photo compression + map
   overlay. PunchActivity.kt (client) no longer draws its own text
   watermark — it now only resizes/compresses the raw selfie before
@@ -4522,24 +4540,78 @@ def attendance_home():
     )
 
 
-@app.route("/attendance/weekoff", methods=["POST"])
-@login_required
-def attendance_weekoff():
-    user = cls_db.get_user_by_id(session["user_id"])
-    date_str = (request.form.get("attendance_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
-    ok, message = cls_db.set_self_service_attendance_status(user["user_id"], date_str, "weekoff", _actor())
-    flash(message, "success" if ok else "error")
-    return redirect(url_for("attendance_home"))
+# ── v0.36 Chunk B: Weekoff/Leave rebuilt as range-capable, duplicate- ──
+# protected self-service (see cls_db.py v2.45 changelog for the full
+# design). PAUSED, not deleted, per this repo's convention — the two
+# OLD single-day form-POST routes below are superseded by the two NEW
+# JSON routes further down (attendance_weekoff_submit / attendance_
+# leave_submit). Left live, these would let a submission bypass the
+# new weekoff_log/leave_requests duplicate-protection entirely, since
+# they call cls_db.set_self_service_attendance_status() directly with
+# no knowledge of the new tables.
+#
+# @app.route("/attendance/weekoff", methods=["POST"])
+# @login_required
+# def attendance_weekoff():
+#     user = cls_db.get_user_by_id(session["user_id"])
+#     date_str = (request.form.get("attendance_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+#     ok, message = cls_db.set_self_service_attendance_status(user["user_id"], date_str, "weekoff", _actor())
+#     flash(message, "success" if ok else "error")
+#     return redirect(url_for("attendance_home"))
+#
+#
+# @app.route("/attendance/leave", methods=["POST"])
+# @login_required
+# def attendance_leave():
+#     user = cls_db.get_user_by_id(session["user_id"])
+#     date_str = (request.form.get("attendance_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+#     ok, message = cls_db.set_self_service_attendance_status(user["user_id"], date_str, "leave", _actor())
+#     flash(message, "success" if ok else "error")
+#     return redirect(url_for("attendance_home"))
 
 
-@app.route("/attendance/leave", methods=["POST"])
+@app.route("/attendance/weekoff/submit", methods=["POST"])
 @login_required
-def attendance_leave():
-    user = cls_db.get_user_by_id(session["user_id"])
-    date_str = (request.form.get("attendance_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
-    ok, message = cls_db.set_self_service_attendance_status(user["user_id"], date_str, "leave", _actor())
-    flash(message, "success" if ok else "error")
-    return redirect(url_for("attendance_home"))
+def attendance_weekoff_submit():
+    """
+    (v0.36) Chunk B — NEW JSON endpoint backing attendance.html's
+    Weekoff/Leave button+modal (replaces the PAUSED attendance_weekoff
+    form-POST above). Always today's date, computed server-side — the
+    UI sends no date field by design (spec: "no picker"). user_id comes
+    ONLY from session — self-service, a user can only submit for
+    themselves, never for anyone else. Returns JSON {success, message}.
+    """
+    user_id = session["user_id"]
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    ok, message = cls_db.submit_weekoff(user_id, date_str, _actor())
+    return jsonify({"success": ok, "message": message})
+
+
+@app.route("/attendance/leave/submit", methods=["POST"])
+@login_required
+def attendance_leave_submit():
+    """
+    (v0.36) Chunk B — NEW JSON endpoint backing attendance.html's
+    Weekoff/Leave button+modal (replaces the PAUSED attendance_leave
+    form-POST above). Expects JSON body {"dates": [...]} ('YYYY-MM-DD'
+    strings) from the multi-select calendar. Rejects anything that
+    isn't a well-formed date string here (never trusts the client)
+    before handing off to cls_db.submit_leave(), which does the
+    today-or-future + overlap/duplicate validation. user_id comes ONLY
+    from session. Returns JSON {success, message}.
+    """
+    user_id = session["user_id"]
+    payload = request.get_json(silent=True) or {}
+    raw_dates = payload.get("dates") or []
+    dates = []
+    for d in raw_dates:
+        try:
+            datetime.strptime(d, "%Y-%m-%d")
+            dates.append(d)
+        except (ValueError, TypeError):
+            return jsonify({"success": False, "message": "Invalid date in selection."}), 400
+    ok, message = cls_db.submit_leave(user_id, dates, _actor())
+    return jsonify({"success": ok, "message": message})
 
 
 @app.route("/attendance/correction-request", methods=["POST"])

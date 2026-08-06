@@ -1,5 +1,22 @@
-{# attendance.html (v0.30) — Employee-facing Attendance page. APX
+{# attendance.html (v0.31) — Employee-facing Attendance page. APX
    Attendance v0.9 pilot, Build Order Step 2 (+ a Step 3 nav hook).
+
+   v0.31 — Chunk B (app.py v0.36 / cls_db.py v2.45): the OLD separate
+   "Weekoff / Leave" card (single-date-only forms posting to the now-
+   PAUSED /attendance/weekoff and /attendance/leave routes) is REMOVED,
+   along with the "Correction Request" card next to it (front-end only
+   — attendance_correction_request()/the admin Corrections queue are
+   untouched). Replaced by a single "Weekoff / Leave" button directly
+   below Login/Logout above, opening an inline Weekoff-vs-Leave choice:
+   Weekoff confirms today's date and POSTs (JSON, fetch) to the new
+   /attendance/weekoff/submit; Leave opens a small vanilla-JS multi-
+   select calendar (no library exists in this repo, built from scratch
+   — past dates rendered visibly disabled, never just server-rejected)
+   and POSTs the selected dates to /attendance/leave/submit. Both new
+   endpoints return JSON {success, message}, shown inline via
+   showWeekoffLeaveResult() — no page reload, unlike the old form-POST
+   flow. The 2-column grid that held the two removed cards is gone too
+   (it held nothing else).
 
    v0.30 — geofence-breach color backport: the mini-calendar's breach
    border is now ORANGE (#FF8C00, 2px), matching the Step 3 Dashboard
@@ -13,8 +30,9 @@
    these two methods either, so the fallback message is what shows
    even inside the native app's WebView today — expected, not a bug.
 
-   Weekoff/Leave/Correction Request are plain form POSTs, no native
-   code involved. The mini calendar below stays a personal, single-user
+   Weekoff/Leave is fetch()+JSON as of v0.31 above (was a plain form
+   POST through v0.30); Correction Request is gone from this page as of
+   v0.31 too. The mini calendar below stays a personal, single-user
    view (unchanged from Step 2) — v0.29 just adds a link to the new
    Step 3 Dashboard (settings_attendance_dashboard(), force-scoped
    server-side to this user's own records; the route isn't
@@ -65,45 +83,28 @@
   <p id="punchFallback" style="display:none; font-size:12px; color:var(--ink-soft); margin-top:8px;">
     Login/Logout with photo verification is only available in the Asian Properties CRM mobile app.
   </p>
-</div>
 
-<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin-bottom:16px;">
-
-  <div class="card">
-    <strong style="font-size:15px;">Weekoff / Leave</strong>
-    <p style="font-size:13px; color:var(--ink-soft); margin:8px 0 12px;">
-      Mark a day you're not working — defaults to today. Won't overwrite a day
-      that already has a punch-in or a different status recorded.
-    </p>
-    <form method="post" action="{{ url_for('attendance_weekoff') }}" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
-      <input type="date" name="attendance_date" value="{{ today }}">
-      <button type="submit" class="btn">Weekoff</button>
-    </form>
-    <form method="post" action="{{ url_for('attendance_leave') }}" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-      <input type="date" name="attendance_date" value="{{ today }}">
-      <button type="submit" class="btn">Leave</button>
-    </form>
+  <div style="margin-top:10px;">
+    <button type="button" class="btn" onclick="toggleWeekoffLeaveChoice()">Weekoff / Leave</button>
   </div>
 
-  <div class="card">
-    <strong style="font-size:15px;">Correction Request</strong>
-    <p style="font-size:13px; color:var(--ink-soft); margin:8px 0 12px;">
-      Ask an admin to fix a wrong or missing entry for a specific day.
-    </p>
-    <form method="post" action="{{ url_for('attendance_correction_request') }}" style="display:flex; flex-direction:column; gap:8px;">
-      <input type="date" name="attendance_date" required>
-      <select name="field_changed" required>
-        {% for f in correction_fields %}
-        <option value="{{ f }}">{{ f.replace('_', ' ')|title }}</option>
-        {% endfor %}
-      </select>
-      <input type="text" name="new_value" placeholder="New value (status: {{ attendance_statuses|join(', ') }}; times: YYYY-MM-DD HH:MM:SS)" required>
-      <textarea name="request_note" placeholder="Why? (optional)" rows="2"
-        style="width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px; font-size:14px; font-family:inherit; resize:vertical; min-height:60px; box-sizing:border-box;"></textarea>
-      <button type="submit" class="btn btn-primary" style="align-self:flex-start;">Submit Request</button>
-    </form>
-  </div>
+  <div id="weekoffLeaveChoice" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button type="button" class="btn" onclick="startWeekoff()">Weekoff</button>
+      <button type="button" class="btn" onclick="startLeave()">Leave</button>
+    </div>
 
+    <div id="leaveCalendarPanel" style="display:none; margin-top:12px; max-width:320px;">
+      <div id="leaveCalendarGrid"></div>
+      <div id="leaveSelectedSummary" style="font-size:12px; color:var(--ink-soft); margin-top:8px;"></div>
+      <div style="margin-top:8px; display:flex; gap:8px;">
+        <button type="button" class="btn btn-primary" onclick="submitLeaveSelection()">Submit Leave</button>
+        <button type="button" class="btn" onclick="cancelLeaveSelection()">Cancel</button>
+      </div>
+    </div>
+
+    <p id="weekoffLeaveResult" style="display:none; font-size:13px; margin-top:10px;"></p>
+  </div>
 </div>
 
 <div class="card">
@@ -179,6 +180,177 @@ function punchOut() {
   } else {
     document.getElementById('punchFallback').style.display = 'block';
   }
+}
+
+// ── v0.31 Chunk B: Weekoff/Leave button+modal (app.py v0.36 /       ──
+// cls_db.py v2.45's two new JSON endpoints back this). No modal/date-
+// picker library exists anywhere in this repo — everything below is
+// plain vanilla JS/DOM, matching this codebase's existing style
+// (inline confirm(), toggled display:none/block panels).
+var leaveSelectedDates = new Set();
+var leaveCalendarMonth = null; // Date, always the 1st of the displayed month
+
+function toggleWeekoffLeaveChoice() {
+  var panel = document.getElementById('weekoffLeaveChoice');
+  var showing = panel.style.display !== 'none';
+  panel.style.display = showing ? 'none' : 'block';
+  document.getElementById('leaveCalendarPanel').style.display = 'none';
+  hideWeekoffLeaveResult();
+}
+
+function showWeekoffLeaveResult(message, ok) {
+  var p = document.getElementById('weekoffLeaveResult');
+  p.textContent = message;
+  p.style.color = ok ? 'var(--green)' : 'var(--red)';
+  p.style.display = 'block';
+}
+function hideWeekoffLeaveResult() {
+  document.getElementById('weekoffLeaveResult').style.display = 'none';
+}
+
+// 'YYYY-MM-DD' -> 'DD-MM-YYYY', for confirm()/result messages only —
+// every value sent to the server stays 'YYYY-MM-DD'.
+function formatDDMMYYYY(dateStr) {
+  var parts = dateStr.split('-');
+  return parts[2] + '-' + parts[1] + '-' + parts[0];
+}
+
+function startWeekoff() {
+  document.getElementById('leaveCalendarPanel').style.display = 'none';
+  hideWeekoffLeaveResult();
+  var todayStr = "{{ today }}";
+  if (!confirm('Confirm Weekoff for today, ' + formatDDMMYYYY(todayStr) + '?')) return;
+  fetch("{{ url_for('attendance_weekoff_submit') }}", {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'}
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) { showWeekoffLeaveResult(data.message, data.success); })
+    .catch(function() { showWeekoffLeaveResult('Network error — please try again.', false); });
+}
+
+function startLeave() {
+  hideWeekoffLeaveResult();
+  leaveSelectedDates = new Set();
+  var today = new Date();
+  leaveCalendarMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  document.getElementById('leaveCalendarPanel').style.display = 'block';
+  renderLeaveCalendar();
+}
+
+function cancelLeaveSelection() {
+  document.getElementById('leaveCalendarPanel').style.display = 'none';
+  leaveSelectedDates = new Set();
+}
+
+function toLeaveDateStr(y, m, d) {
+  var mm = String(m + 1).padStart(2, '0');
+  var dd = String(d).padStart(2, '0');
+  return y + '-' + mm + '-' + dd;
+}
+
+// Renders the current leaveCalendarMonth as a 7-col grid. Past dates
+// (< today, string-compared since both sides are 'YYYY-MM-DD') are
+// rendered VISIBLY disabled (greyed out, no click handler) — never
+// just silently rejected only on the server. Server-side validation
+// in cls_db.submit_leave() ALSO re-checks this independently.
+function renderLeaveCalendar() {
+  var grid = document.getElementById('leaveCalendarGrid');
+  var y = leaveCalendarMonth.getFullYear();
+  var m = leaveCalendarMonth.getMonth();
+  var monthNames = ['January','February','March','April','May','June','July',
+                     'August','September','October','November','December'];
+  var todayStr = "{{ today }}";
+  var realToday = new Date();
+  var isCurrentMonth = (y === realToday.getFullYear() && m === realToday.getMonth());
+  var firstDow = new Date(y, m, 1).getDay();
+  var daysInMonth = new Date(y, m + 1, 0).getDate();
+
+  var html = '';
+  html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
+  html += '<button type="button" class="btn" style="padding:4px 10px;" onclick="navLeaveMonth(-1)"' +
+          (isCurrentMonth ? ' disabled' : '') + '>&lsaquo;</button>';
+  html += '<strong style="font-size:14px;">' + monthNames[m] + ' ' + y + '</strong>';
+  html += '<button type="button" class="btn" style="padding:4px 10px;" onclick="navLeaveMonth(1)">&rsaquo;</button>';
+  html += '</div>';
+  html += '<div style="display:grid; grid-template-columns:repeat(7,1fr); gap:4px; font-size:11px; text-align:center; color:var(--ink-soft); margin-bottom:4px;">';
+  ['S','M','T','W','T','F','S'].forEach(function(d) { html += '<div>' + d + '</div>'; });
+  html += '</div>';
+  html += '<div style="display:grid; grid-template-columns:repeat(7,1fr); gap:4px;">';
+  for (var i = 0; i < firstDow; i++) { html += '<div></div>'; }
+  for (var day = 1; day <= daysInMonth; day++) {
+    var dateStr = toLeaveDateStr(y, m, day);
+    var isPast = dateStr < todayStr;
+    var isSelected = leaveSelectedDates.has(dateStr);
+    var cellStyle = 'padding:8px 0; text-align:center; border-radius:6px; font-size:13px; border:1px solid var(--line);';
+    if (isPast) {
+      cellStyle += 'color:var(--ink-soft); background:var(--paper); cursor:not-allowed; opacity:0.5;';
+      html += '<div style="' + cellStyle + '">' + day + '</div>';
+    } else {
+      cellStyle += 'cursor:pointer;';
+      cellStyle += isSelected
+        ? 'background:var(--green); color:#fff; border-color:var(--green); font-weight:600;'
+        : 'background:#fff;';
+      html += '<div style="' + cellStyle + '" onclick="toggleLeaveDate(\'' + dateStr + '\')">' + day + '</div>';
+    }
+  }
+  html += '</div>';
+  grid.innerHTML = html;
+  updateLeaveSelectedSummary();
+}
+
+function navLeaveMonth(delta) {
+  var next = new Date(leaveCalendarMonth.getFullYear(), leaveCalendarMonth.getMonth() + delta, 1);
+  var today = new Date();
+  var floor = new Date(today.getFullYear(), today.getMonth(), 1);
+  leaveCalendarMonth = next < floor ? floor : next;
+  renderLeaveCalendar();
+}
+
+function toggleLeaveDate(dateStr) {
+  if (leaveSelectedDates.has(dateStr)) {
+    leaveSelectedDates.delete(dateStr);
+  } else {
+    leaveSelectedDates.add(dateStr);
+  }
+  renderLeaveCalendar();
+}
+
+function updateLeaveSelectedSummary() {
+  var el = document.getElementById('leaveSelectedSummary');
+  if (leaveSelectedDates.size === 0) {
+    el.textContent = 'No dates selected yet.';
+    return;
+  }
+  var sorted = Array.from(leaveSelectedDates).sort();
+  el.textContent = sorted.length + ' date(s) selected: ' + sorted.map(formatDDMMYYYY).join(', ');
+}
+
+function submitLeaveSelection() {
+  if (leaveSelectedDates.size === 0) {
+    showWeekoffLeaveResult('Select at least one date first.', false);
+    return;
+  }
+  var sorted = Array.from(leaveSelectedDates).sort();
+  var rangeText = sorted.length === 1
+    ? formatDDMMYYYY(sorted[0])
+    : formatDDMMYYYY(sorted[0]) + ' to ' + formatDDMMYYYY(sorted[sorted.length - 1]) + ' (' + sorted.length + ' day(s))';
+  if (!confirm('Confirm Leave for ' + rangeText + '?')) return;
+
+  fetch("{{ url_for('attendance_leave_submit') }}", {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({dates: sorted})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      showWeekoffLeaveResult(data.message, data.success);
+      if (data.success) {
+        document.getElementById('leaveCalendarPanel').style.display = 'none';
+        leaveSelectedDates = new Set();
+      }
+    })
+    .catch(function() { showWeekoffLeaveResult('Network error — please try again.', false); });
 }
 </script>
 {% endblock %}

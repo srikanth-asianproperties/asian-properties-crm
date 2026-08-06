@@ -1,4 +1,10 @@
-<!-- base.html v0.17 — NEW "Attendance" drawer link (between Reminders and
+<!-- base.html v0.18 — Chunk B cosmetic: new SCOPED .btn-pill-green CSS
+     class (green, oval/pill) applied ONLY to the logout link below —
+     .btn/.btn-primary/.drawer-link defaults used everywhere else are
+     untouched. login.html's submit button gets the same class
+     separately. See app.py v0.36 / cls_db.py v2.45 for the paired
+     Weekoff/Leave rebuild this same change lands alongside.
+     v0.17 — NEW "Attendance" drawer link (between Reminders and
      Reports), role-agnostic — every logged-in user gets the same
      employee /attendance page (app.py v0.28, APX Attendance v0.9 pilot,
      Build Order Step 2). No badge/count, unlike Reminders.
@@ -333,6 +339,27 @@
   .btn-primary{ background: var(--navy); color: #fff; border-color: var(--navy); }
   .btn-primary:hover{ background: var(--navy-light); }
 
+  /* v0.36 — Chunk B: scoped green pill style for ONLY the login submit
+     button and the logout link (login.html / this file's nav drawer
+     below). Deliberately its OWN class, not a change to .btn/
+     .btn-primary/.drawer-link above/below — every other button and the
+     rest of the nav drawer across the whole app keeps its current look
+     untouched. */
+  .btn-pill-green{
+    display: inline-block;
+    padding: 9px 22px;
+    border-radius: 999px;
+    border: 1px solid var(--green);
+    background: var(--green);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    text-decoration: none;
+  }
+  .btn-pill-green:hover{ background: #1E8449; border-color: #1E8449; text-decoration: none; color: #fff; }
+
   input[type="text"], input[type="email"], input[type="password"],
   input[type="tel"], input[type="date"], input[type="time"], select{
     padding: 10px 12px;
@@ -505,7 +532,7 @@
        reachable via normal navigation instead of only a raw URL. -->
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   <div class="drawer-divider"></div>
-  <a href="{{ url_for('logout') }}" class="drawer-link">Log out</a>
+  <a href="{{ url_for('logout') }}" class="btn-pill-green" style="margin:10px 20px; display:block;">Log out</a>
   <div class="drawer-footer">Asian Properties CRM</div>
 </nav>
 {% endif %}

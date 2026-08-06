@@ -2,11 +2,39 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.44
+Version : 2.45
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.45 (2026-08-06) — APX Attendance Chunk B: Weekoff/Leave rebuilt as
+  range-capable, duplicate-protected self-service (additions only).
+  NEW TABLES (additive, self-healing CREATE TABLE IF NOT EXISTS):
+  weekoff_log (id, user_id, date, submitted_at) and leave_requests (id,
+  user_id, start_date, end_date, submitted_at) — one leave_requests row
+  per CONTIGUOUS date range, not one row per day (dates given as a flat
+  list from the UI's multi-select calendar are grouped into contiguous
+  runs by the new _group_contiguous_dates() helper). No status/approval
+  column on either table by design — a row's existence means approved
+  (auto-approved on submit, no admin step in this chunk).
+  NEW submit_weekoff(user_id, date_str, actor) / submit_leave(user_id,
+  dates, actor): both do a READ-ONLY validation pass FIRST (duplicate
+  weekoff_log row, overlapping leave_requests range, cross-conflict
+  between the two, plus the EXISTING punch-data/conflicting-status
+  feasibility rule via new _can_self_service_mark() dry-run helper) —
+  only if every check clears does either function write anything, and
+  the write order is: sync attendance.status via the EXISTING
+  set_self_service_attendance_status() first (so the Dashboard/export/
+  today-badge these already read from keep working with zero Chunk C
+  changes), THEN insert the weekoff_log/leave_requests row last. Any
+  single failure returns before any write happens — no partial saves.
+  This intentionally supersedes the v2.39 Weekoff/Leave UI entry point:
+  app.py's OLD attendance_weekoff/attendance_leave routes are PAUSED
+  (commented out, not deleted) in the same v0.36 change, since leaving
+  them live would let a submission bypass all of the above. NOTHING
+  else about set_self_service_attendance_status() itself changed — it
+  is reused as-is, unmodified, by both new functions above.
+
 v2.44 (2026-08-04) — Leads List Pipeline Stage filter, radio -> checkbox
   multi-select. get_leads_page() gained a NEW stages=None param (list,
   optional), passed straight through to the EXISTING _build_lead_filter_
@@ -2815,6 +2843,37 @@ def init_db():
             created_at      TEXT
         );
     """)
+
+    # ── Weekoff/Leave request log (v2.45, Chunk B) ──
+    # A row's existence means approved — no status/approval column, since
+    # this chunk auto-approves on submit (no admin step yet). weekoff_log
+    # is one row per single day; leave_requests is one row per CONTIGUOUS
+    # date range (start_date/end_date), not one row per day — see
+    # submit_leave()'s docstring for how a multi-select of individual
+    # dates gets grouped into ranges before insert. Both are populated
+    # ONLY via submit_weekoff()/submit_leave() below, which also sync
+    # attendance.status so the existing Dashboard/export/today-badge
+    # keep reading a single consistent source.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS weekoff_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER REFERENCES users(user_id),
+            date          TEXT,
+            submitted_at  TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_weekoff_log_user_date ON weekoff_log(user_id, date);")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS leave_requests (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER REFERENCES users(user_id),
+            start_date    TEXT,
+            end_date      TEXT,
+            submitted_at  TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leave_requests_user_range ON leave_requests(user_id, start_date, end_date);")
 
     # Admin-managed holiday calendar.
     conn.execute("""
@@ -9520,6 +9579,189 @@ def set_self_service_attendance_status(user_id, date_str, status, actor):
             )
         conn.commit()
         return True, f"Marked {date_str} as {status}."
+    finally:
+        conn.close()
+
+
+def _can_self_service_mark(conn, user_id, date_str, status):
+    """
+    (v2.45) Read-only dry run of set_self_service_attendance_status()'s
+    own feasibility rule, on an ALREADY-OPEN connection so callers can
+    check every date in a multi-date submission before writing anything.
+    Returns (ok: bool, error_message_or_None).
+    """
+    existing = conn.execute(
+        "SELECT * FROM attendance WHERE user_id=? AND attendance_date=?",
+        (user_id, date_str)
+    ).fetchone()
+    if existing is None:
+        return True, None
+    if existing["login_ts"]:
+        return False, (f"{date_str} already has a punch-in recorded — "
+                        "submit a Correction Request instead.")
+    if existing["status"] and existing["status"] != status:
+        return False, (f"{date_str} is already marked '{existing['status']}' — "
+                        "submit a Correction Request instead.")
+    return True, None
+
+
+def _group_contiguous_dates(dates):
+    """
+    (v2.45) Sorted/deduped list of 'YYYY-MM-DD' strings -> list of
+    (start, end) tuples, merging consecutive calendar days into one
+    range each. A single non-adjacent date becomes its own (d, d) range.
+    """
+    if not dates:
+        return []
+    parsed = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in set(dates))
+    ranges = []
+    range_start = prev = parsed[0]
+    for d in parsed[1:]:
+        if (d - prev).days == 1:
+            prev = d
+            continue
+        ranges.append((range_start.strftime("%Y-%m-%d"), prev.strftime("%Y-%m-%d")))
+        range_start = prev = d
+    ranges.append((range_start.strftime("%Y-%m-%d"), prev.strftime("%Y-%m-%d")))
+    return ranges
+
+
+def submit_weekoff(user_id, date_str, actor):
+    """
+    (v2.45) Chunk B — employee self-service Weekoff via the new
+    weekoff_log table. Order of checks, all read-only before any write:
+      1. Duplicate — a weekoff_log row already exists for this user+date.
+      2. Conflict — date falls inside an existing leave_requests range
+         for this user.
+      3. Feasibility — the day can actually be marked (no punch data,
+         no conflicting different status), via _can_self_service_mark().
+    Only if all three pass: syncs attendance.status='weekoff' via the
+    EXISTING set_self_service_attendance_status() (so the Dashboard/
+    export/today-badge keep working unchanged), THEN inserts the
+    weekoff_log row last. Returns (ok: bool, message: str).
+    """
+    conn = _connect()
+    try:
+        dup = conn.execute(
+            "SELECT 1 FROM weekoff_log WHERE user_id=? AND date=?",
+            (user_id, date_str)
+        ).fetchone()
+        if dup:
+            return False, f"Already marked as Weekoff for {date_str}."
+
+        leave_conflict = conn.execute(
+            "SELECT 1 FROM leave_requests WHERE user_id=? AND start_date<=? AND end_date>=?",
+            (user_id, date_str, date_str)
+        ).fetchone()
+        if leave_conflict:
+            return False, f"{date_str} already has an approved Leave covering it."
+
+        ok, err = _can_self_service_mark(conn, user_id, date_str, "weekoff")
+        if not ok:
+            return False, err
+    finally:
+        conn.close()
+
+    ok, message = set_self_service_attendance_status(user_id, date_str, "weekoff", actor)
+    if not ok:
+        return False, message
+
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO weekoff_log (user_id, date, submitted_at) VALUES (?, ?, ?)",
+            (user_id, date_str, _now())
+        )
+        conn.commit()
+        return True, f"Weekoff confirmed for {date_str}."
+    finally:
+        conn.close()
+
+
+def submit_leave(user_id, dates, actor):
+    """
+    (v2.45) Chunk B — employee self-service Leave via the new
+    leave_requests table. `dates` is a list of individual 'YYYY-MM-DD'
+    strings from the UI's multi-select calendar (order/duplicates don't
+    matter — deduped/sorted here). Consecutive calendar days are merged
+    into ONE leave_requests row per contiguous run via
+    _group_contiguous_dates() — the chosen interpretation of the
+    start_date/end_date schema, not one row per individual day.
+
+    Validates ALL resulting ranges before writing anything:
+      1. Past dates — defense in depth. The UI already disables these,
+         but a request must never trust client-only validation for a
+         date range going into the DB.
+      2. Each range against every existing leave_requests row for this
+         user (any overlap) and every weekoff_log date for this user
+         inside that range.
+      3. Feasibility of every individual date in every range, via
+         _can_self_service_mark().
+    Any single failure rejects the WHOLE submission — nothing is
+    inserted, same "no partial save" rule as submit_weekoff(). Only
+    after every range clears every check does it sync attendance.status
+    for every date (existing set_self_service_attendance_status()),
+    then insert one leave_requests row per range. Returns (ok: bool,
+    message: str).
+    """
+    if not dates:
+        return False, "No dates selected."
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if any(d < today_str for d in dates):
+        return False, "Leave can only be requested for today or a future date."
+
+    ranges = _group_contiguous_dates(dates)
+
+    conn = _connect()
+    try:
+        for start, end in ranges:
+            overlap = conn.execute(
+                "SELECT 1 FROM leave_requests WHERE user_id=? AND start_date<=? AND end_date>=?",
+                (user_id, end, start)
+            ).fetchone()
+            if overlap:
+                return False, f"{start} to {end} overlaps an existing Leave request."
+
+            weekoff_conflict = conn.execute(
+                "SELECT 1 FROM weekoff_log WHERE user_id=? AND date>=? AND date<=?",
+                (user_id, start, end)
+            ).fetchone()
+            if weekoff_conflict:
+                return False, f"{start} to {end} includes a date already marked Weekoff."
+
+        all_dates = []
+        for start, end in ranges:
+            d = datetime.strptime(start, "%Y-%m-%d").date()
+            end_d = datetime.strptime(end, "%Y-%m-%d").date()
+            while d <= end_d:
+                all_dates.append(d.strftime("%Y-%m-%d"))
+                d += timedelta(days=1)
+
+        for date_str in all_dates:
+            ok, err = _can_self_service_mark(conn, user_id, date_str, "leave")
+            if not ok:
+                return False, err
+    finally:
+        conn.close()
+
+    for date_str in all_dates:
+        ok, message = set_self_service_attendance_status(user_id, date_str, "leave", actor)
+        if not ok:
+            return False, message
+
+    conn = _connect()
+    try:
+        now = _now()
+        for start, end in ranges:
+            conn.execute(
+                "INSERT INTO leave_requests (user_id, start_date, end_date, submitted_at) VALUES (?, ?, ?, ?)",
+                (user_id, start, end, now)
+            )
+        conn.commit()
+        if len(ranges) == 1:
+            return True, f"Leave confirmed for {ranges[0][0]} to {ranges[0][1]}."
+        return True, f"Leave confirmed for {len(ranges)} date range(s)."
     finally:
         conn.close()
 
