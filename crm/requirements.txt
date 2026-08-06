@@ -1,4 +1,10 @@
 # APX CRM — requirements.txt
+# v4  (2026-08-06) — added Pillow for APX Attendance Chunk A's server-
+#   side punch-photo map-overlay compositing (app.py v0.35 /
+#   cls_attendance_photo.py v1.0). requests was already a project
+#   dependency (used elsewhere in the CLS pipeline) — no new entry
+#   needed for the Static Maps HTTP call.
+#
 # v3  (July 2026) — added openpyxl for Reports section Excel export
 #   (app.py v0.9.7 / cls_reports.py v1.0). PDF export is browser
 #   print-to-PDF, not a server-side library — no new dependency for that.
@@ -13,3 +19,4 @@ Flask
 python-dotenv
 waitress
 openpyxl
+Pillow

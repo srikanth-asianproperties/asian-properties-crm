@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.34
+Version : 0.35
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,22 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.35 (2026-08-06) — APX Attendance Chunk A: photo compression + map
+  overlay. PunchActivity.kt (client) no longer draws its own text
+  watermark — it now only resizes/compresses the raw selfie before
+  upload. api_attendance_punch_in()/api_attendance_punch_out() no
+  longer call `uploaded.save(path)` directly; both now read the raw
+  bytes and pass them through the new cls_attendance_photo.
+  render_punch_photo(bytes, lat, lng, ts) before writing to disk. That
+  function tries a Google Static Maps pin thumbnail + coordinates/
+  date-time text composite, falls back to the old plain-text overlay
+  style on any failure, and falls back to the untouched original photo
+  if even that fails — a punch can never fail over an image problem.
+  New OS env var CLS_MAPS_API_KEY (same "real env var, never .env"
+  convention as CLS_DB_PATH), new dependency Pillow (requirements.txt).
+  No schema change — cls_db.record_punch() already only ever stored
+  the photo filename, never bytes.
+
 v0.34 (2026-08-04) — PWA WhatsApp deep-link bug fix. "Open WhatsApp"
   buttons worked in browser but failed in the installed PWA with
   net::ERR_UNKNOWN_URL_SCHEME on whatsapp://send/.... Root cause: the
@@ -1358,6 +1374,7 @@ BASE_DIR = r"D:\CLS"
 sys.path.insert(0, BASE_DIR)
 import cls_db  # noqa: E402  (must follow the sys.path insert above)
 import cls_reports  # v0.6 — Reports section; lives in crm/ alongside app.py, no sys.path change needed
+import cls_attendance_photo  # v0.35 — APX Attendance Chunk A: map-thumbnail photo watermarking
 
 # v0.21 — Phase B Telephony: where uploaded call recordings land.
 # Deliberately outside cls_db.py's DB file (this is plain files, not
@@ -4853,6 +4870,13 @@ def api_attendance_punch_in():
     the attendance row itself being an UPDATE, not a new row, on a
     same-day re-punch (cls_db.record_punch()).
 
+    v0.35 — the raw upload is passed through cls_attendance_photo.
+    render_punch_photo() before being written to disk (map-thumbnail
+    watermark, self-healing fallback chain — see that module's
+    docstring). render_punch_photo() never raises, so this route's
+    behavior on a map/image failure is unchanged from before: the punch
+    still saves, just with a plainer photo.
+
     FCM push-on-punch is NOT implemented here — that's the separate,
     later FCM-wiring build-order step (needs Srikanth's one-time
     Firebase project setup first); register-fcm-token below only
@@ -4870,7 +4894,9 @@ def api_attendance_punch_in():
     user_dir = os.path.join(ATTENDANCE_PHOTOS_DIR, secure_filename(str(user["user_id"])))
     os.makedirs(user_dir, exist_ok=True)
     photo_filename = f"{date_str}_in.jpg"
-    uploaded.save(os.path.join(user_dir, photo_filename))
+    rendered_photo = cls_attendance_photo.render_punch_photo(uploaded.read(), lat, lng, ts)
+    with open(os.path.join(user_dir, photo_filename), "wb") as f:
+        f.write(rendered_photo)
 
     cls_db.record_punch(
         user["user_id"], "in", date_str, ts, lat, lng, geofence_breach, photo_filename,
@@ -4888,7 +4914,10 @@ def api_attendance_punch_in():
 def api_attendance_punch_out():
     """v0.30 — same request shape as punch-in, writing only the
     logout_* columns — status/late_minutes are computed once, at
-    login, and are never touched by a logout (cls_db.record_punch())."""
+    login, and are never touched by a logout (cls_db.record_punch()).
+
+    v0.35 — same cls_attendance_photo.render_punch_photo() pass-through
+    as punch-in above."""
     user = g.telephony_user
     uploaded, lat, lng, punch_dt, ts, error = _parse_punch_request()
     if error:
@@ -4900,7 +4929,9 @@ def api_attendance_punch_out():
     user_dir = os.path.join(ATTENDANCE_PHOTOS_DIR, secure_filename(str(user["user_id"])))
     os.makedirs(user_dir, exist_ok=True)
     photo_filename = f"{date_str}_out.jpg"
-    uploaded.save(os.path.join(user_dir, photo_filename))
+    rendered_photo = cls_attendance_photo.render_punch_photo(uploaded.read(), lat, lng, ts)
+    with open(os.path.join(user_dir, photo_filename), "wb") as f:
+        f.write(rendered_photo)
 
     cls_db.record_punch(user["user_id"], "out", date_str, ts, lat, lng, geofence_breach, photo_filename)
 
