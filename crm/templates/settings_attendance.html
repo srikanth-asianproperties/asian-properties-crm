@@ -1,5 +1,8 @@
-{# settings_attendance.html (v0.29) — Attendance admin hub. Same
+{# settings_attendance.html (v0.30) — Attendance admin hub. Same
    card-grid pattern as settings.html.
+   v0.30 — Chunk C: NEW "Who's Present Today" tile, pointing at
+   settings_attendance_today() — @admin_required (not the looser
+   can_view_all_leads() gate Dashboard/Export use).
    v0.29 — NEW "Dashboard & Export" tile (Build Order Step 3), pointing
    at settings_attendance_dashboard() — that route isn't @admin_required
    (a salesperson reaches the same page force-scoped to themselves via
@@ -23,6 +26,16 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
       Monthly calendar, present/late/absent/leave totals, and Excel/PDF export.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_attendance_today') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+      <span style="font-weight:700; font-size:16px;">Who's Present Today</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Every employee's actual status right now — present, late, absent, on leave, weekoff, or not marked yet.
     </p>
   </a>
 

@@ -1,5 +1,15 @@
-{# attendance.html (v0.31) — Employee-facing Attendance page. APX
+{# attendance.html (v0.32) — Employee-facing Attendance page. APX
    Attendance v0.9 pilot, Build Order Step 2 (+ a Step 3 nav hook).
+
+   v0.32 — Chunk C (app.py v0.37 / cls_db.py v2.46): this ENTIRE page's
+   existing content (top "View My Calendar & Export" link, the "Today"
+   badge/Punch In-Out/Weekoff-Leave card, the personal mini-calendar)
+   is now wrapped in {% if current_user.role != 'admin' %} — admins
+   don't punch, so none of it applies to them. An admin instead sees a
+   small card linking to the new Who's-Present-Today view and Settings
+   > Attendance. Checked as the LITERAL role=='admin' string, NOT via
+   OVERSIGHT_ROLES/can_view_all_leads — manager is completely
+   unaffected and still sees/uses this page exactly as before.
 
    v0.31 — Chunk B (app.py v0.36 / cls_db.py v2.45): the OLD separate
    "Weekoff / Leave" card (single-date-only forms posting to the now-
@@ -41,6 +51,22 @@
 {% block title %}Attendance{% endblock %}
 
 {% block content %}
+{% if current_user.role == 'admin' %}
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+  <h2 style="margin:0;">Attendance</h2>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <strong style="font-size:15px;">Admin</strong>
+  <p style="font-size:13px; color:var(--ink-soft); margin:8px 0 12px;">
+    Admins don't punch in/out — manage the team's attendance from here instead.
+  </p>
+  <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <a href="{{ url_for('settings_attendance_today') }}" class="btn btn-primary">Who's Present Today</a>
+    <a href="{{ url_for('settings_attendance') }}" class="btn">Settings &amp; Attendance</a>
+  </div>
+</div>
+{% else %}
 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
   <h2 style="margin:0;">Attendance</h2>
   {# v0.29 — Build Order Step 3: this page's own admin_required-free
@@ -353,4 +379,5 @@ function submitLeaveSelection() {
     .catch(function() { showWeekoffLeaveResult('Network error — please try again.', false); });
 }
 </script>
+{% endif %}
 {% endblock %}

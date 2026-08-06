@@ -1,7 +1,26 @@
-{# settings_attendance_corrections.html (v0.28) — admin Settings >
+{# settings_attendance_corrections.html (v0.30) — admin Settings >
    Attendance > Corrections. Approve/reject queue: one route handles
    both actions via a hidden 'action' field, same idiom as
-   settings_users.html's activate/deactivate toggle form. #}
+   settings_users.html's activate/deactivate toggle form.
+
+   v0.30 — Chunk C bugfix: the exemption form's single free-text
+   new_value field (v0.29) asked admins to hand-type either a status
+   string or a strict "YYYY-MM-DD HH:MM:SS" datetime, with only a
+   placeholder as a hint — a guaranteed source of "Time must be in
+   YYYY-MM-DD HH:MM:SS format" rejections (confirmed: admins are used
+   to seeing DD-MM-YYYY dates everywhere ELSE in this app, e.g. Chunk
+   B's Weekoff/Leave confirm() dialogs). Replaced with: a Status
+   <select> (populated from attendance_statuses, no free typing) shown
+   only when Field = Status, and a proper <input type="date"> +
+   <input type="time" step="1"> pair shown only when Field = Login Ts/
+   Logout Ts, toggled by the Field dropdown's onchange
+   (updateExemptionValueInputs()). A new hidden new_value input is
+   assembled into the exact required string by prepareExemptionSubmit()
+   right before the form POSTs — the visible inputs themselves are
+   never named new_value, so nothing free-typed ever reaches the
+   server directly. cls_db.py's create_correction_request() strptime
+   check is COMPLETELY UNCHANGED — still the real last line of
+   defense, this only fixes what the FORM sends it. #}
 {% extends "base.html" %}
 {% block title %}Attendance Corrections{% endblock %}
 
@@ -60,4 +79,99 @@
   <div class="card empty-state"><p>Nothing resolved yet.</p></div>
   {% endif %}
 </div>
+
+<h3 style="font-size:14px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.04em; margin-top:28px;">Grant a Proactive Exemption</h3>
+<p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:-4px;">
+  Directly set a status or time for any employee on any date — no employee request needed first.
+  Applied immediately (auto-approved) and logged in Resolved above.
+</p>
+<div class="card" style="margin-top:10px; max-width:480px;">
+  <form method="post" action="{{ url_for('settings_attendance_exempt') }}" onsubmit="return prepareExemptionSubmit();" style="display:flex; flex-direction:column; gap:10px;">
+    <select name="user_id" required>
+      <option value="">Select employee&hellip;</option>
+      {% for u in employees %}
+      <option value="{{ u.user_id }}">{{ u.full_name or u.email }}</option>
+      {% endfor %}
+    </select>
+    <input type="date" name="attendance_date" required>
+    <select name="field_changed" id="exemptFieldChanged" required onchange="updateExemptionValueInputs()">
+      {% for f in correction_fields %}
+      <option value="{{ f }}">{{ f.replace('_', ' ')|title }}</option>
+      {% endfor %}
+    </select>
+
+    <select id="exemptStatusSelect" style="display:none;">
+      <option value="">Select status&hellip;</option>
+      {% for s in attendance_statuses %}
+      <option value="{{ s }}">{{ s.replace('_', ' ')|title }}</option>
+      {% endfor %}
+    </select>
+
+    <div id="exemptDateTimeInputs" style="display:none; gap:8px;">
+      <input type="date" id="exemptTimeDate" style="flex:1;">
+      <input type="time" id="exemptTimeTime" step="1" style="flex:1;">
+    </div>
+
+    <input type="hidden" name="new_value" id="exemptNewValueHidden">
+
+    <textarea name="request_note" placeholder="Note (optional — defaults to &quot;Proactive admin exemption&quot;)" rows="2"
+      style="width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px; font-size:14px; font-family:inherit; resize:vertical; min-height:60px; box-sizing:border-box;"></textarea>
+    <button type="submit" class="btn btn-primary" style="align-self:flex-start;">Apply Exemption</button>
+  </form>
+</div>
+
+<script>
+// v0.30 Chunk C bugfix — the Field dropdown decides which value-input
+// set is visible (Status dropdown vs Date+Time pickers), and
+// assembles the hidden new_value field into the EXACT
+// "YYYY-MM-DD HH:MM:SS" string create_correction_request() requires
+// (cls_db.py, unchanged) right before the form submits. Neither
+// visible input is itself named new_value, so nothing free-typed ever
+// reaches the server directly anymore — see this file's own v0.30
+// header note on the bug this replaces.
+function updateExemptionValueInputs() {
+  var field = document.getElementById('exemptFieldChanged').value;
+  var statusSelect = document.getElementById('exemptStatusSelect');
+  var dateTimeInputs = document.getElementById('exemptDateTimeInputs');
+  if (field === 'status') {
+    statusSelect.style.display = 'block';
+    dateTimeInputs.style.display = 'none';
+  } else {
+    statusSelect.style.display = 'none';
+    dateTimeInputs.style.display = 'flex';
+  }
+}
+
+function prepareExemptionSubmit() {
+  var field = document.getElementById('exemptFieldChanged').value;
+  var hidden = document.getElementById('exemptNewValueHidden');
+  if (field === 'status') {
+    var statusVal = document.getElementById('exemptStatusSelect').value;
+    if (!statusVal) {
+      alert('Select a status.');
+      return false;
+    }
+    hidden.value = statusVal;
+  } else {
+    var dateVal = document.getElementById('exemptTimeDate').value;
+    var timeVal = document.getElementById('exemptTimeTime').value;
+    if (!dateVal || !timeVal) {
+      alert('Select both a date and a time.');
+      return false;
+    }
+    // <input type="time" step="1"> normally yields 'HH:MM:SS' — padded
+    // defensively in case a browser ever hands back 'HH:MM' without
+    // seconds, so the assembled string always matches exactly what
+    // create_correction_request()'s strptime("%Y-%m-%d %H:%M:%S")
+    // expects (that check itself is completely unchanged).
+    if (timeVal.length === 5) { timeVal += ':00'; }
+    hidden.value = dateVal + ' ' + timeVal;
+  }
+  return true;
+}
+
+// Runs once on load so the correct input set shows for whichever
+// option the Field dropdown defaults to (its first <option>, 'status').
+document.addEventListener('DOMContentLoaded', updateExemptionValueInputs);
+</script>
 {% endblock %}

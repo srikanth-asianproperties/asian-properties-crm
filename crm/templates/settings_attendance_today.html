@@ -1,0 +1,51 @@
+{# settings_attendance_today.html (v1) — APX Attendance Chunk C.
+   Admin-only "who's present today" view (app.py v0.37's
+   settings_attendance_today(), @admin_required). Every ACTIVE
+   employee, one row each, showing their ACTUAL status for today —
+   not a binary present/not-present. status is the raw attendance.
+   status value (present/late/absent/weekoff/leave/half_day) when a
+   row exists; when none exists yet (nothing punched, no self-service
+   status set), not_marked is True and this template shows "Not
+   marked yet" instead of guessing/labeling it absent — those mean
+   different things (hasn't acted yet vs. a recorded absence). #}
+{% extends "base.html" %}
+{% block title %}Who's Present Today{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_attendance') }}" style="font-size:14px;">&larr; Back to Attendance</a>
+<h2 style="margin-top:10px;">Who's Present Today — {{ today }}</h2>
+
+<div style="display:flex; flex-direction:column; gap:10px; margin-top:16px;">
+  {% for row in overview %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <div>
+        <strong style="font-size:14px;">{{ row.full_name or row.email }}</strong>
+        {% if row.not_marked %}
+        <span class="badge" style="background:var(--ink-soft); margin-left:6px;">Not marked yet</span>
+        {% else %}
+        <span class="badge" style="background:
+          {% if row.status == 'present' %}var(--green)
+          {% elif row.status == 'late' %}var(--amber)
+          {% elif row.status == 'absent' %}var(--red)
+          {% elif row.status == 'leave' %}#7C5CBF
+          {% elif row.status == 'weekoff' %}var(--ink-soft)
+          {% elif row.status == 'half_day' %}var(--blue)
+          {% else %}var(--ink-soft){% endif %}; margin-left:6px;">{{ row.status.replace('_', ' ')|title }}</span>
+        {% endif %}
+      </div>
+      <div style="font-size:13px; color:var(--ink-soft);">
+        {% if row.login_ts %}In: {{ row.login_ts|ampm }}{% endif %}
+        {% if row.login_geofence_breach %}<span class="badge" style="background:var(--red); margin-left:4px;">Geofence</span>{% endif %}
+        {% if row.logout_ts %} &middot; Out: {{ row.logout_ts|ampm }}{% endif %}
+        {% if row.logout_geofence_breach %}<span class="badge" style="background:var(--red); margin-left:4px;">Geofence</span>{% endif %}
+        {% if row.late_minutes %} &middot; {{ row.late_minutes }} min late{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  {% if not overview %}
+  <div class="card empty-state"><p>No active employees.</p></div>
+  {% endif %}
+</div>
+{% endblock %}

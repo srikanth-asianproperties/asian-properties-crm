@@ -2,11 +2,33 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.45
+Version : 2.46
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.46 (2026-08-06) — APX Attendance Chunk C: admin-only "who's present
+  today" view + proactive exemption (additions only). Requires app.py
+  v0.37 for the 2 new routes wiring these in.
+  NEW get_today_attendance_overview(date_str): every ACTIVE user
+  LEFT JOINed to their attendance row for that date (none silently
+  omitted, same convention as get_attendance_totals_for_month()'s
+  owner_scope=None branch). Returns the RAW status value when a row
+  exists (present/late/absent/weekoff/leave/half_day — not collapsed
+  to a smaller bucket set) plus a not_marked flag when no row exists
+  yet, so "hasn't punched" renders distinctly from a recorded 'absent'.
+  NEW apply_admin_attendance_exemption(user_id, date_str, field_changed,
+  new_value, note, actor): proactive admin override that does NOT
+  require a pending attendance_corrections row to exist first — chains
+  the EXISTING create_correction_request() (validate+insert) straight
+  into the EXISTING resolve_attendance_correction() (approve+write) on
+  the row it just created, with NEITHER existing function modified in
+  any way. The row is created and resolved in the same call, so it
+  never sits pending — nothing left to duplicate or collide with. See
+  the function's own docstring for one flagged (not fixed) pre-existing
+  race if an employee has a separate pending request on the same field
+  at the same time.
+
 v2.45 (2026-08-06) — APX Attendance Chunk B: Weekoff/Leave rebuilt as
   range-capable, duplicate-protected self-service (additions only).
   NEW TABLES (additive, self-healing CREATE TABLE IF NOT EXISTS):
@@ -9507,6 +9529,58 @@ def get_attendance_totals_for_month(year, month, owner_scope=None):
         conn.close()
 
 
+def get_today_attendance_overview(date_str):
+    """
+    (v2.46) Chunk C — "Who's present today" admin view. Every ACTIVE
+    user LEFT JOINed to their attendance row for date_str (if any),
+    same "every active user shown, none silently omitted" convention
+    as get_attendance_totals_for_month()'s owner_scope=None branch.
+
+    Returns a list of dicts, one per active user, ordered by
+    full_name: {user_id, full_name, email, status, not_marked,
+    login_ts, logout_ts, late_minutes, login_geofence_breach,
+    logout_geofence_breach}. status is the RAW attendance.status value
+    (present/late/absent/weekoff/leave/half_day) when a row exists —
+    deliberately not collapsed to a smaller "not binary" bucket set,
+    since that would hide real data the schema already tracks and the
+    existing Dashboard already surfaces. When no row exists yet for
+    today (nothing punched, no self-service status set), status is
+    None and not_marked is True — the caller/template should render
+    that as "Not marked yet," distinct from an explicit 'absent'
+    status, since the two mean different things (hasn't acted yet vs.
+    a recorded absence).
+    """
+    conn = _connect()
+    try:
+        users = conn.execute(
+            "SELECT user_id, full_name, email FROM users WHERE active=1 "
+            "ORDER BY full_name COLLATE NOCASE"
+        ).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM attendance WHERE attendance_date=?", (date_str,)
+        ).fetchall()
+        by_user = {r["user_id"]: r for r in rows}
+
+        overview = []
+        for u in users:
+            a = by_user.get(u["user_id"])
+            overview.append({
+                "user_id": u["user_id"],
+                "full_name": u["full_name"],
+                "email": u["email"],
+                "status": a["status"] if a else None,
+                "not_marked": a is None,
+                "login_ts": a["login_ts"] if a else None,
+                "logout_ts": a["logout_ts"] if a else None,
+                "late_minutes": a["late_minutes"] if a else 0,
+                "login_geofence_breach": a["login_geofence_breach"] if a else 0,
+                "logout_geofence_breach": a["logout_geofence_breach"] if a else 0,
+            })
+        return overview
+    finally:
+        conn.close()
+
+
 def _get_or_create_attendance_row(conn, user_id, date_str):
     """(v2.39, internal) Returns an attendance_id for user_id+date_str,
     creating a bare row (no status/punch data) if none exists yet.
@@ -9887,6 +9961,57 @@ def resolve_attendance_correction(correction_id, approve, actor):
         return True, ("Correction approved." if approve else "Correction rejected.")
     finally:
         conn.close()
+
+
+def apply_admin_attendance_exemption(user_id, date_str, field_changed, new_value, note, actor):
+    """
+    (v2.46) Chunk C — proactive admin override, usable WITHOUT a
+    pending attendance_corrections row already existing (unlike the
+    reactive employee-submit -> admin-approve flow above). Wiring:
+    calls the EXISTING create_correction_request() unmodified (same
+    field_changed/new_value validation an employee's own submission
+    goes through — note defaults to "Proactive admin exemption" if
+    none given, so it reads distinctly from a real employee request in
+    the Corrections history), looks up the 'pending' row it just
+    inserted, then calls the EXISTING resolve_attendance_correction()
+    unmodified with approve=True. Neither existing function's code or
+    signature changes — this only glues the two together back-to-back
+    instead of leaving a human approval step between them. The row is
+    created and resolved within the same call, so it never sits
+    pending — nothing is left around to duplicate or collide with.
+
+    KNOWN EDGE CASE (pre-existing category, not introduced here): if
+    an employee has a SEPARATE pending request open on the same
+    attendance_id/field_changed at the same moment an admin uses this,
+    whichever gets resolved last simply wins (plain last-write-wins on
+    the attendance row) — the same race that already exists if two
+    corrections ever targeted the same field on the same day. Not
+    solved here; flagged for awareness only.
+
+    Returns (ok: bool, message: str).
+    """
+    ok, message = create_correction_request(
+        user_id, date_str, field_changed, new_value,
+        note or "Proactive admin exemption", actor
+    )
+    if not ok:
+        return False, message
+
+    conn = _connect()
+    try:
+        attendance_id = _get_or_create_attendance_row(conn, user_id, date_str)
+        row = conn.execute(
+            "SELECT correction_id FROM attendance_corrections "
+            "WHERE attendance_id=? AND field_changed=? AND status='pending' "
+            "ORDER BY correction_id DESC LIMIT 1",
+            (attendance_id, field_changed)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return False, "Could not locate the request just created."
+
+    return resolve_attendance_correction(row["correction_id"], True, actor)
 
 
 def list_attendance_holidays():

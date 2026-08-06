@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.36
+Version : 0.37
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,28 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.37 (2026-08-06) — APX Attendance Chunk C: admin "who's present
+  today" view + proactive exemption (requires cls_db.py v2.46). NEW
+  settings_attendance_today() (/settings/attendance/today, GET,
+  @admin_required — deliberately NOT the looser can_view_all_leads()
+  gate the Dashboard/Export pair uses) renders a new template listing
+  every active employee's actual status for today. NEW
+  settings_attendance_exempt() (/settings/attendance/exempt, POST,
+  @admin_required) backs a new form section added to the BOTTOM of
+  settings_attendance_corrections.html — the existing pending-queue/
+  history sections there are unchanged. settings_attendance_
+  corrections() now also passes employees/correction_fields/
+  attendance_statuses into that template for the new form's dropdowns
+  (additive context only, existing template variables untouched).
+  Also: attendance.html now hides Punch In/Out, the Weekoff/Leave
+  button, and the "Today" status badge for role=='admin' specifically
+  (checked literally, NOT via OVERSIGHT_ROLES/can_view_all_leads, so
+  manager is completely unaffected and still punches normally) —
+  admin instead sees a link to the new Who's-Present-Today page plus
+  a pointer into Settings > Attendance. Holidays, Dashboard, Export,
+  and the existing reactive Correction Request approve/reject flow
+  are all UNCHANGED — only added to, never modified.
+
 v0.36 (2026-08-06) — APX Attendance Chunk B: Weekoff/Leave rebuilt as
   range-capable, duplicate-protected self-service (requires cls_db.py
   v2.45 — see its changelog for the validate-then-write design). NEW
@@ -4673,6 +4695,24 @@ def settings_attendance_holiday_delete(holiday_date):
     return redirect(url_for("settings_attendance_holidays"))
 
 
+@app.route("/settings/attendance/today")
+@login_required
+@admin_required
+def settings_attendance_today():
+    """
+    (v0.37) Chunk C — admin-only "who's present today" view. Deliberately
+    @admin_required, NOT the looser can_view_all_leads()/OVERSIGHT_ROLES
+    gate the Dashboard/Export pair uses — matches the Holidays/
+    Corrections/Projects convention, per Srikanth's explicit choice.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    return render_template(
+        "settings_attendance_today.html",
+        today=today,
+        overview=cls_db.get_today_attendance_overview(today),
+    )
+
+
 @app.route("/settings/attendance/corrections", methods=["GET", "POST"])
 @login_required
 @admin_required
@@ -4698,7 +4738,48 @@ def settings_attendance_corrections():
         "settings_attendance_corrections.html",
         pending=[c for c in all_corrections if c["status"] == "pending"],
         resolved=[c for c in all_corrections if c["status"] != "pending"],
+        # v0.37 Chunk C — employee dropdown for the new proactive-
+        # exemption form section at the bottom of this template. Same
+        # get_all_users_detailed() source as the Dashboard's employee
+        # filter.
+        employees=cls_db.get_all_users_detailed(),
+        correction_fields=cls_db.ATTENDANCE_CORRECTION_FIELDS,
+        attendance_statuses=cls_db.ATTENDANCE_STATUSES,
     )
+
+
+@app.route("/settings/attendance/exempt", methods=["POST"])
+@login_required
+@admin_required
+def settings_attendance_exempt():
+    """
+    (v0.37) Chunk C — proactive admin exemption form POST, submitted
+    from the new section at the bottom of settings_attendance_
+    corrections.html. Thin wrapper over cls_db.apply_admin_attendance_
+    exemption() — see that function's docstring for exactly how it
+    reuses create_correction_request()/resolve_attendance_correction()
+    unmodified, back-to-back, with neither existing function changed.
+    """
+    try:
+        user_id = int(request.form.get("user_id", ""))
+    except ValueError:
+        flash("Select an employee.", "error")
+        return redirect(url_for("settings_attendance_corrections"))
+
+    date_str = (request.form.get("attendance_date") or "").strip()
+    field_changed = (request.form.get("field_changed") or "").strip()
+    new_value = (request.form.get("new_value") or "").strip()
+    note = (request.form.get("request_note") or "").strip()
+
+    if not date_str or not new_value:
+        flash("Date and new value are required.", "error")
+        return redirect(url_for("settings_attendance_corrections"))
+
+    ok, message = cls_db.apply_admin_attendance_exemption(
+        user_id, date_str, field_changed, new_value, note, _actor()
+    )
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("settings_attendance_corrections"))
 
 
 @app.route("/settings/attendance/projects", methods=["GET", "POST"])
