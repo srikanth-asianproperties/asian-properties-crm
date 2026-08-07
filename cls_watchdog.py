@@ -2,11 +2,35 @@
 =============================================================
 cls_watchdog.py  —  CLS Health Monitor & Alert System
 =============================================================
-Version : 2.7
+Version : 2.8
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.8  (2026-08-04) — Telegram alerting paused, Brevo promoted to primary:
+  PAUSED  — Telegram send is now commented out in both places it fired
+              (the per-cycle health report and the end-of-day daily
+              summary in run()) — ISP/firewall issue reaching
+              api.telegram.org, see [today's date] 2026-08-04. The
+              "CLS Telegram Listener" and "CLS Email Drip" Task
+              Scheduler tasks were also disabled separately (not part
+              of this file — that's the ops-side half of this change).
+              Revert by un-commenting the two Telegram send blocks in
+              run() once the ISP/firewall issue is resolved.
+  CHANGED — send_brevo_alert() is now the PRIMARY and ONLY alert
+              delivery path for both messages — no more
+              try-Telegram-then-except-fallback pattern. Same alert
+              content/formatting as before (send_brevo_alert() already
+              builds its own HTML body from the same report_msg/
+              daily_msg strings); only WHEN it fires changed, not what
+              it says. Also removes the ~15-40s Telegram request/retry
+              wait every cycle since Telegram is no longer attempted.
+  UNCHANGED — check_database_accessible(), the completion-flag checks,
+              and check_pending_fire_queue() — only the alert DELIVERY
+              mechanism changed, not what is checked. send_telegram()
+              and selftest()'s Telegram test path are left intact
+              (unused by the paused logic, ready for when this reverts).
+
 v2.7  (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
 v2.6  (July 2026) — Stale-count bug fix + Job D completion flag:
@@ -941,13 +965,18 @@ def run(force_alert=False):
     for line in report_msg.split("\n"):
         log(f"  {line}")
 
-    if telegram_ok:
-        tg_sent = send_telegram(bot_token, chat_id, report_msg)
-        if not tg_sent:
-            log("Telegram unavailable — attempting Brevo email fallback.", "WARNING")
-            send_brevo_alert(env, report_msg)
-    else:
-        log("Telegram not configured — report logged only.", "WARNING")
+    # PAUSED — Telegram unreachable, see 2026-08-04, reverting once
+    # ISP/firewall issue resolved. Brevo is now the primary and only
+    # alert path (v2.8) — same report_msg content, just no more
+    # try-Telegram-then-except-fallback wait every cycle.
+    # if telegram_ok:
+    #     tg_sent = send_telegram(bot_token, chat_id, report_msg)
+    #     if not tg_sent:
+    #         log("Telegram unavailable — attempting Brevo email fallback.", "WARNING")
+    #         send_brevo_alert(env, report_msg)
+    # else:
+    #     log("Telegram not configured — report logged only.", "WARNING")
+    send_brevo_alert(env, report_msg)
 
     # ── End-of-day daily summary — sent ONLY on the 17:55 run (v2.3) ──
     # Scans the full log files and sums all 5 cycles for today.
@@ -988,14 +1017,18 @@ def run(force_alert=False):
             owner_summary=owner_summary,
         )
 
-        log("Sending daily summary to Telegram...")
-        if telegram_ok:
-            tg_sent = send_telegram(bot_token, chat_id, daily_msg)
-            if not tg_sent:
-                log("Telegram unavailable for daily summary — trying Brevo.", "WARNING")
-                send_brevo_alert(env, daily_msg)
-        else:
-            log("Telegram not configured — daily summary logged only.", "WARNING")
+        log("Sending daily summary via Brevo (Telegram paused, see v2.8)...")
+        # PAUSED — Telegram unreachable, see 2026-08-04, reverting once
+        # ISP/firewall issue resolved. Brevo is now the primary and only
+        # alert path (v2.8) — same daily_msg content, no more fallback wait.
+        # if telegram_ok:
+        #     tg_sent = send_telegram(bot_token, chat_id, daily_msg)
+        #     if not tg_sent:
+        #         log("Telegram unavailable for daily summary — trying Brevo.", "WARNING")
+        #         send_brevo_alert(env, daily_msg)
+        # else:
+        #     log("Telegram not configured — daily summary logged only.", "WARNING")
+        send_brevo_alert(env, daily_msg)
 
     log("CLS WATCHDOG — END")
     log("=" * 55)

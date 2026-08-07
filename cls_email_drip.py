@@ -2,8 +2,20 @@
 =============================================================
 cls_email_drip.py  —  CLS Job D  |  Automated Email Drip
 =============================================================
-Version : 1.4
+Version : 1.5
 Author  : Built for Asian Properties / Srikanth
+
+WHAT CHANGED IN v1.5
+--------------------
+- PAUSED — Email Drip disabled as of 2026-08-04 per Srikanth, Task
+  Scheduler task also disabled. run() now checks DRIP_PAUSED at the
+  very top and exits immediately with a logged warning if the script
+  is run manually by accident, instead of relying solely on the Task
+  Scheduler task being off. No existing logic was removed — everything
+  below the guard is untouched and will resume working exactly as
+  before once un-paused. Re-enable: set DRIP_PAUSED = False below (or
+  comment out the guard block at the top of run()) + re-enable the
+  Task Scheduler task "CLS Email Drip".
 
 WHAT CHANGED IN v1.4
 --------------------
@@ -94,6 +106,14 @@ import cls_db
 BASE_DIR = r"D:\CLS"
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 LOG_FILE = os.path.join(BASE_DIR, "cls_drip_log.txt")
+
+# ═══════════════════════════════════════════════════════════
+# PAUSED — Email Drip disabled as of 2026-08-04 per Srikanth,
+# Task Scheduler task also disabled. Re-enable: set DRIP_PAUSED
+# to False (or comment out the guard block at the top of run())
+# + re-enable the Task Scheduler task "CLS Email Drip".
+# ═══════════════════════════════════════════════════════════
+DRIP_PAUSED = True
 
 # ── Naishka image base URL ──
 # Used as fallback if NAISHKA_IMAGE_URLS is empty.
@@ -762,6 +782,14 @@ def run(dry_run=False, img_overrides=None):
     if dry_run:
         log("MODE: --dry-run (no emails will actually be sent)")
     log("=" * 55)
+
+    # PAUSED — Email Drip disabled as of 2026-08-04 per Srikanth. Exits
+    # immediately so a manual/accidental run does no work, rather than
+    # relying solely on the Task Scheduler task being off. Re-enable by
+    # setting DRIP_PAUSED = False above (or removing this guard block).
+    if DRIP_PAUSED:
+        log("Job D is PAUSED — exiting without action.", "WARNING")
+        return False
 
     cls_db.init_db()
 
