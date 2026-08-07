@@ -2,11 +2,49 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.49
+Version : 2.50
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.50 (2026-08-07) — Manager view-mode toggle. Mounika is a player-coach
+  (manager role, but also carries her own leads) — she needs to flip her
+  OWN default leads/dashboard view between "team-wide" (today's unchanged
+  manager behavior) and "own-leads-only" (see her pipeline the way a
+  salesperson would), without touching her role, write access, or report
+  access, all of which stay exactly as can_view_all_leads()/
+  can_write_any_lead()/WRITE_ANYWHERE_ROLES already define them.
+  ADDITIVE ONLY, nothing existing removed or modified:
+    - Self-healing migration: `view_mode TEXT DEFAULT 'manager'` on
+      users (guarded PRAGMA table_info check, same idiom as v1.7's
+      owner_match_name / v2.38's assigned_project). DEFAULT 'manager'
+      means every existing row — including every current admin and
+      salesperson row, for whom this column is simply unused — keeps
+      today's behavior with zero action required.
+    - NEW get_view_mode(user): 'individual' only for role=='manager'
+      AND view_mode=='individual' on that row; 'manager' for every
+      other case (wrong role, unset, or any unexpected column value).
+      Fails closed to the wider "manager" default, same posture as
+      can_view_all_leads()'s own fail-closed-to-most-restricted
+      docstring — except here "restricted" and "default" are the same
+      value (company-wide), since this column only NARROWS an
+      oversight role's own view, it never widens anyone's.
+    - NEW effective_company_wide(user): can_view_all_leads(user["role"])
+      AND get_view_mode(user) != 'individual'. This is the ONE new
+      function app.py's view-SCOPING call sites (dashboard/leads-list/
+      etc.) now call in place of can_view_all_leads(user["role"]) —
+      see app.py v0.41's changelog for exactly which call sites did and
+      did NOT change. can_view_all_leads() itself is completely
+      unmodified and is still what every WRITE/ACCESS gate should keep
+      using.
+    - NEW set_view_mode(user_id, mode): validates mode is 'manager' or
+      'individual'; no-ops (returns False) unless the target row's role
+      is 'manager' — deliberately not settable for admin/salesperson
+      rows even by direct call, so this column can never mean anything
+      for a role other than manager. Returns True iff updated.
+  Every pre-existing caller of can_view_all_leads()/can_write_any_lead()
+  is byte-for-byte unaffected — this version adds three new functions
+  and one new column, nothing else.
 v2.49 (2026-08-07) — Surface call direction (incoming/outgoing) on
   recorded calls. Direction was already captured by the app and staged
   on call_log_staging.direction (v2.33) but dropped before reaching
@@ -2609,6 +2647,17 @@ def init_db():
     if "assigned_project" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN assigned_project TEXT;")
 
+    # ── Self-healing migration: view_mode (v2.50, manager view-mode toggle) ──
+    # A manager's own default-scope preference for their leads/dashboard
+    # views — 'manager' (company-wide, today's unchanged behavior) or
+    # 'individual' (own-leads-only, like a salesperson). DEFAULT 'manager'
+    # so every existing row (including admin/salesperson rows, which never
+    # read this column — see get_view_mode()) needs no backfill. Meaningless
+    # outside role=='manager'; get_view_mode()/effective_company_wide()
+    # below are the only code that should ever interpret this column.
+    if "view_mode" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN view_mode TEXT DEFAULT 'manager';")
+
     # ── v2.7 — WhatsApp message templates ──
     # One template per project (project is the title AND the unique key,
     # mirroring how Sell.do titles each template by project name).
@@ -3086,6 +3135,76 @@ def can_write_any_lead(role):
     replace that check, it widens who satisfies it.
     """
     return role in WRITE_ANYWHERE_ROLES
+
+
+# ─────────────────────────────────────────────────────────────
+# VIEW MODE  (v2.50 — manager view-mode toggle, config-not-code)
+# ─────────────────────────────────────────────────────────────
+# A player-coach manager's own preference for what their DEFAULT leads/
+# dashboard SCOPE shows — 'manager' (company-wide, today's unchanged
+# behavior) or 'individual' (own-leads-only, like a salesperson). This
+# is deliberately NOT a role and does not touch can_view_all_leads()/
+# can_write_any_lead()/WRITE_ANYWHERE_ROLES above: a manager who flips
+# to 'individual' still has full oversight WRITE access to every lead
+# and full report access — only their own default VIEW narrows.
+
+def get_view_mode(user):
+    """
+    (v2.50) Returns 'individual' only when this user's role is exactly
+    'manager' AND their stored view_mode is exactly 'individual'.
+    Returns 'manager' for every other case — wrong/unrecognised role,
+    unset/NULL view_mode, or any unexpected value in that column. Fails
+    closed to 'manager' (the wider, company-wide default), mirroring
+    can_view_all_leads()'s own fail-closed posture: an unexpected input
+    never produces the narrower/individual result for a role it wasn't
+    explicitly set for. Takes the whole user dict (not just a column)
+    so both checks read off the same row the caller already fetched.
+    """
+    if user.get("role") != "manager":
+        return "manager"
+    if user.get("view_mode") == "individual":
+        return "individual"
+    return "manager"
+
+
+def effective_company_wide(user):
+    """
+    (v2.50) The function app.py's view-SCOPING call sites should call
+    instead of can_view_all_leads(user["role"]) directly — wherever that
+    call was deciding "does this login see everyone's leads by default,
+    or just their own", not a WRITE gate (can_write_any_lead) or a
+    report-ACCESS gate (_check_report_access in app.py), both of which
+    stay on their existing role-only checks, unaffected by this.
+    True for admins always (view_mode never applies to them). True for
+    managers UNLESS they've toggled to 'individual'. False for
+    salespeople, exactly as can_view_all_leads() already returned.
+    """
+    return can_view_all_leads(user["role"]) and get_view_mode(user) != "individual"
+
+
+def set_view_mode(user_id, mode):
+    """
+    (v2.50) Flip a manager's own view_mode. `mode` must be exactly
+    'manager' or 'individual' — anything else returns False untouched.
+    Also no-ops (returns False) if the target user's role isn't
+    'manager': deliberately not settable for admin or salesperson rows,
+    even via direct call, so this column can never carry a meaningful
+    value for a role get_view_mode() doesn't apply it to.
+
+    Returns True iff a manager row was found and updated.
+    """
+    if mode not in ("manager", "individual"):
+        return False
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT role FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not row or row["role"] != "manager":
+            return False
+        conn.execute("UPDATE users SET view_mode=? WHERE user_id=?", (mode, user_id))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
 
 
 PBKDF2_ITERATIONS = 260_000  # OWASP-recommended floor for PBKDF2-SHA256 (2024+)

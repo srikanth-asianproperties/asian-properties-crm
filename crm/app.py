@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.40
+Version : 0.41
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,51 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.41 (2026-08-07) — Manager view-mode toggle (requires cls_db.py
+  v2.50). Mounika is a player-coach (manager role, carries her own
+  leads too) — this lets her flip her OWN default leads/dashboard view
+  between "team-wide" (unchanged manager behavior) and "own-leads-only"
+  (see her own pipeline like a salesperson would), with zero change to
+  her role, WRITE access, or report ACCESS.
+  NEW route POST /toggle-view-mode (@login_required, 403 if
+  current_user.role != 'manager'): reads the user's current view_mode
+  via cls_db.get_view_mode(), flips it, saves via cls_db.set_view_mode()
+  (which itself re-validates role=='manager' — belt and suspenders with
+  the route's own 403), redirects to request.referrer if present and
+  same-origin-relative, else dashboard().
+  SWAPPED cls_db.can_view_all_leads(user["role"]) -> cls_db.
+  effective_company_wide(user) at every call site that was computing a
+  company-wide-vs-own-leads SCOPE variable for a leads/dashboard VIEW:
+  dashboard(), dashboard_booking_summary(), dashboard_today(),
+  due_list(), reengaged_list(), new_enquiries_list(),
+  settings_telephony_recordings(), and leads_list() (which didn't have
+  a named `company_wide` variable before — introduced one there, same
+  pattern as the others, replacing its 3 inline can_view_all_leads()
+  calls).
+  DELIBERATELY NOT changed — flagged, not an oversight:
+    - _check_report_access()'s admin_only gate and reports_home()'s
+      is_oversight flag — that's report ACCESS (which categories/
+      reports a role may open at all), not a view SCOPE, and Srikanth's
+      instruction was explicit that this stays role-based.
+    - _is_lead_owner_or_admin() / can_write_any_lead() and every WRITE
+      route built on them — write access stays role-based, unaffected
+      by view_mode, also explicit.
+    - lead_detail()'s `restricted` gate and serve_recording()'s
+      `can_read` gate — both OR in can_write, which is already True for
+      every manager via WRITE_ANYWHERE_ROLES regardless of view_mode,
+      so swapping the can_view_all_leads() half of either OR would be a
+      no-op in practice; left as can_view_all_leads() for clarity.
+    - settings_telephony()'s company_wide (recording-FOLDER-PATH config
+      rows, not leads) and settings_telephony_revoke_token()'s gate —
+      user-config/action screens, not a leads view; and the Attendance
+      Dashboard's is_oversight (a different domain entirely). None of
+      these were in the requested list; flagging here since they use
+      the identical can_view_all_leads() pattern, in case Srikanth wants
+      any of them folded into the toggle later.
+    - leads_filter_screen()'s owner_options/can_view_all_owners — these
+      populate the FILTER PANEL's available choices, not leads_list()'s
+      own default scope; leads_list() itself (the page actually shown)
+      is covered above.
 v0.40 (2026-08-07) — Two small fixes, bundled:
   (1) NEW APP_VERSION constant (config-not-code, defined near
   RECORDINGS_DIR below), surfaced via inject_current_user() as
@@ -1484,7 +1529,7 @@ import cls_attendance_photo  # v0.35 — APX Attendance Chunk A: map-thumbnail p
 # lockstep with this file's own docstring "Version :" line above (see
 # CHANGELOG v0.40) — surfaced into every template via
 # inject_current_user() as `app_version`.
-APP_VERSION = "0.40"
+APP_VERSION = "0.41"
 
 RECORDINGS_DIR = os.path.join(BASE_DIR, "call_recordings")
 
@@ -1896,6 +1941,37 @@ def home():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/toggle-view-mode", methods=["POST"])
+@login_required
+def toggle_view_mode():
+    """
+    v0.41 — flips the CURRENT LOGIN's own manager view_mode between
+    'manager' (company-wide, the default) and 'individual' (own-leads-
+    only) — see cls_db.py v2.50's changelog. 403 for anyone whose role
+    isn't 'manager'; cls_db.set_view_mode() itself re-checks this too
+    (belt and suspenders), so this can never take effect for an admin
+    or salesperson account even if reached some other way.
+
+    Redirects back to wherever the toggle control was clicked
+    (request.referrer), so the same nav-drawer control works from every
+    page; falls back to dashboard() when there's no referrer, or it
+    points somewhere off this app (same-origin check against
+    request.host_url — an open-redirect guard, since a Referer header is
+    technically client-supplied).
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    if user["role"] != "manager":
+        abort(403, description="Only managers have a view-mode toggle.")
+
+    new_mode = "individual" if cls_db.get_view_mode(user) == "manager" else "manager"
+    cls_db.set_view_mode(user["user_id"], new_mode)
+
+    dest = request.referrer
+    if dest and dest.startswith(request.host_url):
+        return redirect(dest)
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -1911,7 +1987,7 @@ def dashboard():
     # already used correctly (see that route's docstring for why
     # owner_match_name, not email, is the right scoping key here).
     user = cls_db.get_user_by_id(session["user_id"])
-    company_wide = cls_db.can_view_all_leads(user["role"])
+    company_wide = cls_db.effective_company_wide(user)
     scope_owner = None if company_wide else user.get("owner_match_name")
     new_enquiries_count = cls_db.get_new_enquiries_count(owner=scope_owner)  # v1.9 — stage-based now
     reengaged_count = cls_db.get_reengaged_count(days=7, owner=scope_owner)
@@ -1970,7 +2046,7 @@ def dashboard_booking_summary():
     roles. Admin/manager get the full dropdown + "All" (owner=None).
     """
     user = cls_db.get_user_by_id(session["user_id"])
-    company_wide = cls_db.can_view_all_leads(user["role"])
+    company_wide = cls_db.effective_company_wide(user)
 
     if company_wide:
         owner = request.args.get("owner") or None
@@ -2036,7 +2112,10 @@ def dashboard_today():
     user = cls_db.get_user_by_id(session["user_id"])
     # v0.9.5 — managers, like admins, supervise the whole team, so they
     # see the company-wide total, not just their own actions.
-    company_wide = cls_db.can_view_all_leads(user["role"])
+    # v0.41 — unless they've toggled their own view_mode to 'individual'
+    # (cls_db.effective_company_wide()), in which case they see their
+    # own actions only, same as a salesperson.
+    company_wide = cls_db.effective_company_wide(user)
     scope_email = None if company_wide else user["email"]
     perf = cls_db.get_todays_activity_counts(actor_email=scope_email)
     return render_template(
@@ -2116,7 +2195,7 @@ def due_list(kind):
     if kind not in ("site_visit", "follow_up"):
         abort(404)
     user = cls_db.get_user_by_id(session["user_id"])
-    company_wide = cls_db.can_view_all_leads(user["role"])
+    company_wide = cls_db.effective_company_wide(user)
     scope_owner = None if company_wide else user.get("owner_match_name")
     items = cls_db.get_due_by_kind(kind, owner=scope_owner)
     return render_template("due_list.html", items=items, kind=kind)
@@ -2133,7 +2212,7 @@ def reengaged_list():
     v0.20 — owner-scoping bug fix: same scope_owner gate as dashboard().
     """
     user = cls_db.get_user_by_id(session["user_id"])
-    company_wide = cls_db.can_view_all_leads(user["role"])
+    company_wide = cls_db.effective_company_wide(user)
     scope_owner = None if company_wide else user.get("owner_match_name")
     leads = cls_db.get_reengaged_leads(days=7, owner=scope_owner)
     return render_template("reengaged_list.html", leads=leads)
@@ -2151,7 +2230,7 @@ def new_enquiries_list():
     v0.20 — owner-scoping bug fix: same scope_owner gate as dashboard().
     """
     user = cls_db.get_user_by_id(session["user_id"])
-    company_wide = cls_db.can_view_all_leads(user["role"])
+    company_wide = cls_db.effective_company_wide(user)
     scope_owner = None if company_wide else user.get("owner_match_name")
     leads = cls_db.get_new_enquiries_leads(owner=scope_owner)
     return render_template("new_enquiries_list.html", leads=leads)
@@ -2847,7 +2926,14 @@ def leads_list():
     user = cls_db.get_user_by_id(session["user_id"])
     owner_unlinked_warning = False
 
-    if cls_db.can_view_all_leads(user["role"]):
+    # v0.41 — company_wide now goes through cls_db.effective_company_wide()
+    # rather than can_view_all_leads(user["role"]) directly, so a manager
+    # who has toggled their own view_mode to 'individual' is force-scoped
+    # to their own owner_match_name below exactly like a salesperson. An
+    # admin, or a manager who hasn't toggled, sees no behavior change.
+    company_wide = cls_db.effective_company_wide(user)
+
+    if company_wide:
         # v0.9.5 — oversight roles (admin OR manager) can optionally view
         # one person's pipeline via a dropdown; leaving it blank shows
         # everyone's leads. (A manager with their own owner_match_name
@@ -2868,7 +2954,7 @@ def leads_list():
     # rather than silently falling through to "everyone's leads" —
     # fails closed, not open. (Oversight roles never hit this — they're
     # allowed the unfiltered view by design.)
-    if not cls_db.can_view_all_leads(user["role"]) and not owner:
+    if not company_wide and not owner:
         result = {"rows": [], "total": 0, "page": 1, "per_page": cls_db.CRM_PAGE_SIZE, "total_pages": 1}
     else:
         # v0.9.1 — a salesperson's ACTIVE SEARCH looks across all owners
@@ -2886,7 +2972,7 @@ def leads_list():
             configuration=f["configuration"] or None,
             property_type=f["property_type"] or None,
             facing=f["facing"] or None,
-            search_all_owners=(not cls_db.can_view_all_leads(user["role"])),
+            search_all_owners=(not company_wide),
             stages=f["stages"] or None,
         )
 
@@ -4170,7 +4256,7 @@ def settings_telephony_recordings():
     since every row shown is already theirs.
     """
     user = cls_db.get_user_by_id(session["user_id"])
-    company_wide = cls_db.can_view_all_leads(user["role"])
+    company_wide = cls_db.effective_company_wide(user)
 
     f = _parse_recordings_filters()
     if not company_wide:
