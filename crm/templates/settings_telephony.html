@@ -25,7 +25,21 @@
    Token" and reworded the description + regenerate-confirm text below
    to say what it actually gates today. No functional change — same
    route, same generate_api_token()/verify_api_token(), same one
-   token per user. #}
+   token per user.
+
+   v5 (2026-08-07) — Option C self-service token-sync redesign
+   (app.py v0.38 / cls_db.py v2.47). Manual "Generate Token" (which
+   showed the raw value for an admin to relay by voice — the flow
+   that caused this morning's two failures) is retired. The per-row
+   button is now "Revoke Token", an admin kill-switch only — it posts
+   to the renamed settings_telephony_revoke_token route and shows no
+   token value, since none is generated here anymore. Employees get
+   their own token via the app's new "Sync my token" button instead.
+   "View Synced Recordings →" changed from a plain text link to a
+   styled button — same destination, no functional change. Recording
+   folder paths above are UNCHANGED — confirmed load-bearing
+   (MainActivity.kt's findRecordingFileNear() scopes MediaStore
+   search with it), left exactly as before. #}
 {% extends "base.html" %}
 {% block title %}Telephony{% endblock %}
 
@@ -46,7 +60,7 @@
 </p>
 {% endif %}
 <p style="margin-top:8px;">
-  <a href="{{ url_for('settings_telephony_recordings') }}">View Synced Recordings →</a>
+  <a href="{{ url_for('settings_telephony_recordings') }}" class="btn" style="text-decoration:none; display:inline-block;">View Synced Recordings →</a>
 </p>
 
 <form method="post" action="{{ url_for('settings_telephony') }}">
@@ -77,17 +91,19 @@
   <h3 style="margin-top:0; font-size:16px;">Mobile App API Token</h3>
   <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">
     One token per person, used by the Asian Properties CRM mobile app for BOTH
-    call-recording sync and Attendance punch-in/out. Generating a new token immediately
-    deactivates that user's previous one — they'll need to re-enter the new token in the
-    app before either feature works again. Shown once, right after you generate it.
+    call-recording sync and Attendance punch-in/out. Employees get their own token
+    by tapping "Sync my token" in the app — nothing to generate or relay here.
+    "Revoke Token" is a kill-switch for a lost phone or departing employee: it
+    immediately stops that user's current token from working, for BOTH Telephony
+    sync and Attendance punch-in/out, until they sync a new one in the app.
   </p>
   <div style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">
     {% for u in users %}
     <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:10px;">
       <span style="font-size:14px;">{{ u.full_name or u.email }}</span>
-      <form method="post" action="{{ url_for('settings_telephony_generate_token', user_id=u.user_id) }}"
-            onsubmit="return confirm('Generate a new app API token for {{ u.full_name or u.email }}? Their current token will stop working immediately, for BOTH Telephony sync and Attendance punch-in/out.');">
-        <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">Generate Token</button>
+      <form method="post" action="{{ url_for('settings_telephony_revoke_token', user_id=u.user_id) }}"
+            onsubmit="return confirm('Revoke the app API token for {{ u.full_name or u.email }}? Their current token will stop working immediately, for BOTH Telephony sync and Attendance punch-in/out, until they tap \'Sync my token\' in the app again.');">
+        <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">Revoke Token</button>
       </form>
     </div>
     {% endfor %}

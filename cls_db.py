@@ -2,11 +2,48 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.46
+Version : 2.48
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.48 (2026-08-07) — Diagnostic-only companion to verify_api_token(),
+  for the 401-with-zero-trace gap found while investigating Elohar/
+  Devender's token failures. NEW diagnose_api_token_failure(raw_token):
+  called ONLY from token_required's rejection path in app.py, ONLY
+  after verify_api_token() has already returned None — never used to
+  grant access, never returns the token or its hash, just a short
+  reason string. Designed against the Option C generate/revoke split
+  (v2.47 below): a token's own row going inactive no longer always
+  means "regenerated" — revoke_api_token() also sets active=0 but,
+  unlike generate_api_token(), deliberately does NOT insert a
+  replacement. Distinguishes "superseded by a newer active token"
+  (this user already has a working token from a later sync) from
+  "revoked, no replacement yet" (needs a Sync-my-token tap) by
+  checking whether any active row currently exists for the user.
+  user_active is checked before token_active, so a deactivated CRM
+  login is reported as that rather than misattributed to a token
+  problem when both happen to be true. Additions only —
+  verify_api_token()/generate_api_token()/revoke_api_token() are all
+  unchanged.
+v2.47 (2026-08-07) — Telephony token architecture change (Option C,
+  self-service "Sync my token"): ADDITIVE ONLY, nothing existing
+  removed or modified. Root cause this replaces: manual admin token
+  generation + voice-relay to employees, which failed twice in one
+  morning (a token silently invalidated by a same-day re-regeneration
+  before the employee could use it; a token accidentally pasted into
+  the wrong settings field). NEW revoke_api_token(user_id): admin
+  "Revoke Token" kill-switch for Settings > Telephony (lost phone /
+  departing employee) — deactivates the user's current active token
+  WITHOUT minting a replacement, so there is no new token to relay.
+  Deliberately duplicates the 2-line "deactivate current active
+  token" UPDATE already inside generate_api_token() rather than
+  refactoring generate_api_token() to share a helper — generate_api_
+  token() itself is untouched, per this file's additions-only change
+  posture. The employee's own next "Sync my token" tap in the app
+  (new POST /api/my-token route, app.py) calls the EXISTING, unchanged
+  generate_api_token() to mint their own fresh token — no separate
+  DB-layer change needed for that side of the flow.
 v2.46 (2026-08-06) — APX Attendance Chunk C: admin-only "who's present
   today" view + proactive exemption (additions only). Requires app.py
   v0.37 for the 2 new routes wiring these in.
@@ -4391,6 +4428,71 @@ def verify_api_token(raw_token):
         )
         conn.commit()
         return dict(row)
+    finally:
+        conn.close()
+
+
+def revoke_api_token(user_id):
+    """
+    v2.47 — Admin "Revoke Token" kill-switch (Settings > Telephony),
+    part of the Option C self-service token-sync redesign. Deactivates
+    this user's current active token WITHOUT minting a replacement —
+    there is deliberately no new raw value to show/relay here. The
+    employee's next "Sync my token" tap in the app (POST /api/my-token,
+    app.py) mints their own fresh one via the existing, unmodified
+    generate_api_token(). Mirrors the "deactivate current active
+    token" half of that function's logic as its own small function
+    (a 2-line duplication) rather than refactoring generate_api_token()
+    to share it, so that existing, already-working function is not
+    touched at all.
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE user_api_tokens SET active=0 WHERE user_id=? AND active=1",
+            (user_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def diagnose_api_token_failure(raw_token):
+    """
+    v2.48 — diagnostic-only companion to verify_api_token(). Call this
+    ONLY after verify_api_token() has already returned None, to find
+    out WHY for logging purposes. Never grants access, never returns
+    the raw token or its hash — only a short human-readable reason.
+    Distinguishes "superseded" (a newer active token already exists
+    for this user) from "revoked, no replacement yet" (an admin hit
+    Revoke Token and nothing new was minted) — see v2.48 changelog.
+    """
+    if not raw_token:
+        return "empty token after Bearer prefix"
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    conn = _connect()
+    try:
+        row = conn.execute("""
+            SELECT t.active AS token_active, u.active AS user_active, u.user_id AS user_id
+            FROM user_api_tokens t
+            JOIN users u ON u.user_id = t.user_id
+            WHERE t.token_hash=?
+        """, (token_hash,)).fetchone()
+        if not row:
+            return "no matching token row"
+        if not row["user_active"]:
+            return f"user_id={row['user_id']} deactivated"
+        if not row["token_active"]:
+            current = conn.execute(
+                "SELECT 1 FROM user_api_tokens WHERE user_id=? AND active=1",
+                (row["user_id"],)
+            ).fetchone()
+            if current:
+                return (f"token superseded by a newer active token "
+                        f"(user_id={row['user_id']}) — device may be using a stale synced value")
+            return (f"token revoked, no replacement yet "
+                    f"(user_id={row['user_id']}) — needs to tap Sync my token in the app")
+        return "unknown (verify_api_token failed for an unrecognized reason)"
     finally:
         conn.close()
 

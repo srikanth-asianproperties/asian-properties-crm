@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.37
+Version : 0.39
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,45 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.39 (2026-08-07) — token_required now logs WHY a bearer-token 401
+  happens (crm_app_log.txt), via cls_db.diagnose_api_token_failure()
+  (requires cls_db.py v2.48). Found while investigating Elohar/
+  Devender's morning 401s: rejections left zero trace before this.
+  Additive only, no auth behavior change — every existing accept/
+  reject decision in token_required is unchanged, this only adds a
+  log line on each of the two reject paths.
+v0.38 (2026-08-07) — Telephony token architecture change (Option C,
+  self-service "Sync my token"; requires cls_db.py v2.47). Replaces
+  manual admin token generation + voice-relay, which failed twice in
+  one morning (a re-regenerated token silently invalidated the one an
+  employee had just been given; a token accidentally pasted into the
+  wrong settings field). NEW POST /api/my-token (api_my_token(),
+  @login_required — session-cookie auth, NOT @token_required): returns
+  ONLY the calling session's own user_id's token, never accepts a
+  user_id param. Raw tokens are never stored anywhere (cls_db.
+  verify_api_token() only ever sees a SHA-256 hash) so there is no
+  "return the existing token" — every call mints a FRESH one via the
+  existing, unmodified cls_db.generate_api_token(), deliberately POST
+  (not GET) so no prefetch/proxy/cache layer can trigger it without a
+  real user tap behind it. Intended to be called by the app's new
+  "Sync my token" button (android_pilot SettingsActivity.kt) only,
+  never automatically/on a timer — each call invalidates whatever
+  token is currently active for that user on any other device, same
+  pre-existing limitation the old admin-regenerate flow already had.
+  settings_telephony_generate_token() RENAMED to
+  settings_telephony_revoke_token(), route changed from POST
+  /settings/telephony/token/<user_id> to POST /settings/telephony/
+  token/<user_id>/revoke, and its body changed from generating a new
+  token to calling the new cls_db.revoke_api_token(user_id) — an admin
+  kill-switch (lost phone / departing employee) that deactivates
+  without minting a replacement, so there's no new raw value to relay
+  by hand; the employee's own next "Sync my token" tap mints their
+  own. Same permission check as before (unchanged). settings_telephony.
+  html updated to match (button relabeled "Revoke Token", confirm()
+  text reworded, "View Synced Recordings" link restyled as a button).
+  user_recording_paths.recording_folder_path is UNCHANGED — confirmed
+  load-bearing (MainActivity.kt's findRecordingFileNear() uses it to
+  scope MediaStore candidate search), left in place, not touched.
 v0.37 (2026-08-06) — APX Attendance Chunk C: admin "who's present
   today" view + proactive exemption (requires cls_db.py v2.46). NEW
   settings_attendance_today() (/settings/attendance/today, GET,
@@ -1667,10 +1706,13 @@ def token_required(view):
     def wrapped(*args, **kwargs):
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
+            _log(f"Token rejected: missing/malformed Authorization header (path={request.path})", "WARN")
             abort(401, description="Missing or malformed Authorization header.")
         raw_token = auth_header[len("Bearer "):].strip()
         user = cls_db.verify_api_token(raw_token)
         if not user:
+            reason = cls_db.diagnose_api_token_failure(raw_token)
+            _log(f"Token rejected: {reason} (path={request.path})", "WARN")
             abort(401, description="Invalid or expired token.")
         g.telephony_user = user
         return view(*args, **kwargs)
@@ -3979,37 +4021,71 @@ def settings_telephony():
     return render_template("settings_telephony.html", users=users, company_wide=company_wide)
 
 
-@app.route("/settings/telephony/token/<int:user_id>", methods=["POST"])
+@app.route("/settings/telephony/token/<int:user_id>/revoke", methods=["POST"])
 @login_required
-def settings_telephony_generate_token(user_id):
+def settings_telephony_revoke_token(user_id):
     """
-    v0.22 — issues a new telephony API token for one user (old one is
-    deactivated, not deleted — cls_db.generate_api_token()'s "never
-    discard" posture). The raw token is shown exactly once via flash —
-    it is never logged (crm_app_log.txt never sees it) and cls_db.py
-    never stores it, only its hash.
+    v0.38 — was settings_telephony_generate_token() (v0.22); renamed
+    and repurposed as part of the Option C self-service token-sync
+    redesign. Manual admin generation + voice-relay is retired — this
+    is now purely an admin KILL-SWITCH (lost phone / departing
+    employee): deactivates the user's current active token via the
+    new cls_db.revoke_api_token(user_id) and mints NOTHING in its
+    place, so there is no raw value to show or relay by hand. The
+    employee gets a working token again by tapping "Sync my token" in
+    the app themselves (POST /api/my-token below), which mints their
+    own via the unchanged cls_db.generate_api_token().
 
-    v0.22 — self-scoped access: was @admin_required, now @login_required
-    only. Oversight roles (admin, manager) may still regenerate anyone's
-    token, same as before. A non-oversight (salesperson) login may only
-    ever regenerate their OWN token — 403s regardless of what the URL's
-    user_id says, never trusting the request to self-report.
+    Permission check is UNCHANGED from v0.22: self-scoped access.
+    Oversight roles (admin, manager) may revoke anyone's token; a
+    non-oversight (salesperson) login may only ever revoke their OWN
+    — 403s regardless of what the URL's user_id says, never trusting
+    the request to self-report.
     """
     requester = cls_db.get_user_by_id(session["user_id"])
     if not cls_db.can_view_all_leads(requester["role"]) and user_id != requester["user_id"]:
-        abort(403, description="You may only regenerate your own telephony token.")
+        abort(403, description="You may only revoke your own telephony token.")
 
     user = cls_db.get_user_by_id(user_id)
     if not user:
         flash("Unknown user.", "error")
         return redirect(url_for("settings_telephony"))
-    raw_token = cls_db.generate_api_token(user_id)
+    cls_db.revoke_api_token(user_id)
     flash(
-        f"New token for {user['full_name'] or user['email']}: {raw_token} "
-        f"— copy this now, it will not be shown again.",
+        f"Token revoked for {user['full_name'] or user['email']} — they'll need to "
+        f"tap \"Sync my token\" in the app to get a new one.",
         "success"
     )
     return redirect(url_for("settings_telephony"))
+
+
+@app.route("/api/my-token", methods=["POST"])
+@login_required
+def api_my_token():
+    """
+    v0.38 — Option C self-service token sync. Session-cookie authed
+    ONLY (@login_required, not @token_required) — always acts on
+    session["user_id"], NEVER accepts a user_id parameter, so this can
+    never be used to fetch anyone else's token.
+
+    Raw tokens are never stored anywhere (cls_db.verify_api_token()
+    only ever sees a SHA-256 hash), so there is no "return the
+    existing token" path — every call mints a FRESH one via the
+    existing, unmodified cls_db.generate_api_token(), deactivating
+    whatever was active before. Deliberately POST, not GET, so no
+    prefetch/proxy/cache layer can trigger this without a real user
+    action behind it. Meant to be called ONLY by the app's explicit
+    "Sync my token" button (android_pilot SettingsActivity.kt), never
+    automatically/on a timer — each call invalidates whatever token
+    is currently active for this user on any other device, same
+    pre-existing limitation the old admin-regenerate flow already had.
+
+    The raw token is returned in the JSON body and NEVER logged —
+    same "never logged" posture as the flash-message path this
+    replaces.
+    """
+    raw_token = cls_db.generate_api_token(session["user_id"])
+    return jsonify({"token": raw_token})
 
 
 def _parse_recordings_filters():
