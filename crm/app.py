@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.39
+Version : 0.40
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,23 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.40 (2026-08-07) — Two small fixes, bundled:
+  (1) NEW APP_VERSION constant (config-not-code, defined near
+  RECORDINGS_DIR below), surfaced via inject_current_user() as
+  `app_version` in every template. base.html's drawer-footer and
+  settings.html now show it ("APX v0.40"). MUST be bumped in lockstep
+  with this docstring's own "Version :" line above on every future
+  version bump — nothing reads the docstring programmatically, so
+  keeping the two equal is a manual convention, not enforced by code.
+  (2) api_telephony_upload_recording() now looks up the call's
+  direction (INCOMING/OUTGOING, already staged in call_log_staging by
+  report-calls) via the NEW cls_db.get_call_direction(lead_id,
+  call_timestamp) (requires cls_db.py v2.49) and passes it into
+  log_call_recording() so lead_detail.html can render it. No match
+  found -> direction=None, same as any historical row; never blocks
+  the upload. Only wired into the fresh-upload branch, not the
+  recovering-missing-file branch (update_call_recording_file() is
+  unchanged, out of scope for this fix).
 v0.39 (2026-08-07) — token_required now logs WHY a bearer-token 401
   happens (crm_app_log.txt), via cls_db.diagnose_api_token_failure()
   (requires cls_db.py v2.48). Found while investigating Elohar/
@@ -1463,6 +1480,12 @@ import cls_attendance_photo  # v0.35 — APX Attendance Chunk A: map-thumbnail p
 # that exclusion was reversed in cls_backup.py v1.3 (Srikanth's explicit
 # confirmation the consent-notice design is resolved) — RECORDINGS_DIR
 # is backed up like everything else now.
+# v0.40 — single source-of-truth app version, config-not-code. Keep in
+# lockstep with this file's own docstring "Version :" line above (see
+# CHANGELOG v0.40) — surfaced into every template via
+# inject_current_user() as `app_version`.
+APP_VERSION = "0.40"
+
 RECORDINGS_DIR = os.path.join(BASE_DIR, "call_recordings")
 
 # v0.30 — APX Attendance Build Order Step 4: where punch-in/out selfies
@@ -1734,6 +1757,9 @@ def inject_current_user():
     # this (not current_user) to decide whether to render the
     # impersonation banner, since current_user is the TARGET during
     # impersonation.
+    # v0.40 — also injects `app_version` (the APP_VERSION constant
+    # above), role-agnostic and available even when logged out, so
+    # base.html can show it in the footer on every page.
     user = None
     unread_assignment_count = 0
     pending_reminder_count = 0
@@ -1751,6 +1777,7 @@ def inject_current_user():
         "unread_assignment_count": unread_assignment_count,
         "pending_reminder_count": pending_reminder_count,
         "impersonator": impersonator,
+        "app_version": APP_VERSION,
     }
 
 
@@ -4524,9 +4551,15 @@ def api_telephony_upload_recording():
             lead_id, call_timestamp, safe_name, duration_seconds, lead.get("phone_norm"),
         )
     else:
+        # v0.40 — direction (INCOMING/OUTGOING) was already staged in
+        # call_log_staging by report-calls; look it up by the same
+        # (lead_id, call_timestamp) match key and carry it through onto
+        # the activity_log row. No match -> None, never blocks the upload.
+        direction = cls_db.get_call_direction(lead_id, call_timestamp)
         ok, msg = cls_db.log_call_recording(
             lead_id, user["email"], safe_name,
             duration_seconds, lead.get("phone_norm"), call_timestamp,
+            direction=direction,
         )
     return jsonify({"success": ok, "message": msg})
 

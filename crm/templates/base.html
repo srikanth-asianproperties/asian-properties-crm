@@ -533,7 +533,7 @@
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   <div class="drawer-divider"></div>
   <a href="{{ url_for('logout') }}" class="btn-pill-green" style="margin:10px 20px; display:block;">Log out</a>
-  <div class="drawer-footer">Asian Properties CRM</div>
+  <div class="drawer-footer">Asian Properties CRM{% if app_version %} · APX v{{ app_version }}{% endif %}</div>
 </nav>
 {% endif %}
 

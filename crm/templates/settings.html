@@ -1,4 +1,4 @@
-{# settings.html (v0.21) — Settings hub. A grid of tiles; each future
+{# settings.html (v0.40) — Settings hub. A grid of tiles; each future
    admin tool drops in here as another tile.
 
    v0.10 — NEW "WhatsApp Reminder Templates" tile (site-visit reminders,
@@ -49,7 +49,10 @@
    hub) in the admin block, alongside Telephony. NEW role-agnostic "My
    Attendance" tile in the second block, pointing at /attendance (the
    employee page every logged-in user gets, same "one tile per role
-   scope" reasoning as My Telephony Settings above). #}
+   scope" reasoning as My Telephony Settings above).
+
+   v0.40 — NEW small "APX v{{ app_version }}" line near the bottom
+   (app.py v0.40's APP_VERSION, injected by inject_current_user()). #}
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 
@@ -216,6 +219,14 @@
   </div>
 
 </div>
+
+{# v0.22 — app_version (crm/app.py APP_VERSION, injected by
+   inject_current_user()) shown here as a natural landing spot for
+   "what version is this CRM on", alongside the same text already in
+   base.html's drawer footer. #}
+{% if app_version %}
+<p style="font-size:12px; color:var(--ink-soft); margin-top:18px;">APX v{{ app_version }}</p>
+{% endif %}
 
 <script>
 // v0.20 — calls the native bridge android_pilot's MainActivity.kt v9

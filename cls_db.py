@@ -2,11 +2,25 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.48
+Version : 2.49
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.49 (2026-08-07) — Surface call direction (incoming/outgoing) on
+  recorded calls. Direction was already captured by the app and staged
+  on call_log_staging.direction (v2.33) but dropped before reaching
+  activity_log — log_call_recording() had nowhere to put it, so
+  lead_detail.html had nothing to render. ADDITIVE ONLY: nullable
+  `direction TEXT` column on activity_log (same guarded PRAGMA
+  table_info migration pattern as the v2.33 trio). _log_activity()
+  gains a `direction=None` param, passed through to the INSERT.
+  log_call_recording() gains a `direction=None` param. NEW
+  get_call_direction(cls_id, call_timestamp): looks up
+  call_log_staging.direction by the same (matched_cls_id,
+  call_timestamp) key record_call_log_entry() staged it under — used
+  only by app.py's api_telephony_upload_recording() (requires app.py
+  v0.40). Every pre-existing caller/row is unaffected.
 v2.48 (2026-08-07) — Diagnostic-only companion to verify_api_token(),
   for the 401-with-zero-trace gap found while investigating Elohar/
   Devender's token failures. NEW diagnose_api_token_failure(raw_token):
@@ -2484,6 +2498,16 @@ def init_db():
     if "matched_phone" not in activity_cols:
         conn.execute("ALTER TABLE activity_log ADD COLUMN matched_phone TEXT;")
 
+    # ── Self-healing migration: call direction (v2.49) ──
+    # direction was already captured by the app and stored on
+    # call_log_staging (v2.33's schema above) but dropped before it
+    # reached activity_log — log_call_recording() had nowhere to put it.
+    # Nullable, same convention as the v2.33 trio above: every
+    # pre-existing row (and every non-call_recording activity_type)
+    # leaves this NULL and is completely unaffected.
+    if "direction" not in activity_cols:
+        conn.execute("ALTER TABLE activity_log ADD COLUMN direction TEXT;")
+
     # ── site_visits / follow_ups — CRM v0.5 (Writer) scheduling ──
     # "Missed" is NEVER a stored value on either table — it's computed
     # at query time (now > scheduled_at AND status='scheduled') by
@@ -4158,7 +4182,7 @@ def get_latest_stage_and_owner_changes():
 def _log_activity(conn, cls_id, activity_type, actor, prev_value=None,
                   new_value=None, description=None, created_at=None,
                   recording_file_path=None, duration_seconds=None,
-                  matched_phone=None):
+                  matched_phone=None, direction=None):
     """
     Internal helper — appends one row to activity_log. Takes an OPEN
     connection (not a fresh one) so callers can log the activity in
@@ -4176,16 +4200,21 @@ def _log_activity(conn, cls_id, activity_type, actor, prev_value=None,
     params, all None by default — every pre-existing caller is
     unaffected. Used only by log_call_recording() for activity_type=
     'call_recording' rows (see Phase B Telephony schema above).
+
+    v2.49: optional direction param, None by default — every pre-
+    existing caller unaffected. Used only by log_call_recording() to
+    carry call_log_staging.direction ('INCOMING'/'OUTGOING'/... as
+    reported by the app) through onto the call_recording row.
     """
     conn.execute("""
         INSERT INTO activity_log (
             cls_id, activity_type, actor, prev_value, new_value,
             description, created_at, recording_file_path,
-            duration_seconds, matched_phone
-        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            duration_seconds, matched_phone, direction
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
     """, (cls_id, activity_type, actor, prev_value, new_value,
           description, created_at or _now(), recording_file_path,
-          duration_seconds, matched_phone))
+          duration_seconds, matched_phone, direction))
 
 
 # Stages that cancel any open schedule the moment a lead lands on them.
@@ -4589,12 +4618,18 @@ def update_call_recording_file(cls_id, call_timestamp, file_path, duration_secon
         conn.close()
 
 
-def log_call_recording(cls_id, actor, file_path, duration_seconds, matched_phone, call_timestamp):
+def log_call_recording(cls_id, actor, file_path, duration_seconds, matched_phone, call_timestamp, direction=None):
     """
     Log an uploaded call recording to a lead's activity timeline.
     created_at is backdated to call_timestamp (the real call time, via
     _log_activity's v2.28 created_at param) rather than upload time —
     same convention as upsert_meta_lead()'s lead_entered row.
+
+    v2.49: optional direction param ('INCOMING'/'OUTGOING'/... as
+    captured by the app and staged in call_log_staging), None by
+    default so this stays backwards-compatible with any caller that
+    doesn't have it. app.py's api_telephony_upload_recording() looks
+    it up via get_call_direction() and passes it through.
 
     Returns (ok: bool, message: str), same convention as add_note()/
     change_lead_stage().
@@ -4610,9 +4645,37 @@ def log_call_recording(cls_id, actor, file_path, duration_seconds, matched_phone
             recording_file_path=file_path,
             duration_seconds=duration_seconds,
             matched_phone=matched_phone,
+            direction=direction,
         )
         conn.commit()
         return True, "Call recording logged."
+    finally:
+        conn.close()
+
+
+def get_call_direction(cls_id, call_timestamp):
+    """
+    (v2.49) Looks up the call direction ('INCOMING'/'OUTGOING'/... as
+    reported by the app) for one call, matched by the SAME key
+    record_call_log_entry() staged it under: matched_cls_id +
+    call_timestamp. Used only by api_telephony_upload_recording() to
+    carry direction from call_log_staging (already captured there since
+    v2.33) through to the activity_log.call_recording row that
+    log_call_recording() creates — direction was captured all along but
+    previously dropped at this exact handoff.
+
+    Returns None if no matching staging row exists (or it has no
+    direction) — the caller never blocks the upload on this, it just
+    logs the recording with direction=None, same as any historical row.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute("""
+            SELECT direction FROM call_log_staging
+            WHERE matched_cls_id=? AND call_timestamp=?
+            ORDER BY staging_id DESC LIMIT 1
+        """, (cls_id, call_timestamp)).fetchone()
+        return row["direction"] if row and row["direction"] else None
     finally:
         conn.close()
 

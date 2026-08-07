@@ -1,4 +1,13 @@
-{# lead_detail.html v10 (2026-07-31) — Phase B Telephony: new branch for
+{# lead_detail.html v11 (2026-08-07) — call_recording branch (v10 below)
+   now also shows a small ↙/↗ direction indicator right before "Call
+   recording" — ↙ for Incoming, ↗ for Outgoing, nothing for NULL
+   (every historical row, and any call whose call_log_staging match
+   lookup missed). Reads the NEW a.direction column (cls_db.py v2.49,
+   requires app.py v0.40 to populate it). No new CSS, matches the
+   existing single-line emoji-prefix style used by every other branch
+   in this timeline.
+
+   lead_detail.html v10 (2026-07-31) — Phase B Telephony: new branch for
    activity_type 'call_recording' (cls_db.py v2.33's new columns —
    recording_file_path, duration_seconds, matched_phone — on
    activity_log). Renders "📞 Call recording — M:SS" with an inline
@@ -591,7 +600,7 @@
             <div>🆕 {{ a.description|replace('\n', '<br>')|safe if a.description else '' }}</div>
           {% elif a.activity_type == 'call_recording' %}
             <div>
-              📞 Call recording{% if a.duration_seconds is not none %} — {{ (a.duration_seconds // 60) }}:{{ '%02d'|format(a.duration_seconds % 60) }}{% endif %}
+              📞{% if a.direction and a.direction|upper == 'INCOMING' %} ↙{% elif a.direction and a.direction|upper == 'OUTGOING' %} ↗{% endif %} Call recording{% if a.duration_seconds is not none %} — {{ (a.duration_seconds // 60) }}:{{ '%02d'|format(a.duration_seconds % 60) }}{% endif %}
               <audio controls preload="none" style="display:block; margin-top:6px; max-width:320px; width:100%;">
                 <source src="{{ url_for('serve_recording', lead_id=a.cls_id, filename=a.recording_file_path) }}" type="audio/mpeg">
               </audio>
