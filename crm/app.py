@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.41
+Version : 0.42
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,37 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.42 (2026-08-09) — Nine-item batch (requires cls_db.py v2.51):
+  - settings_attendance_dashboard()'s `employees` list (the oversight
+    filter dropdown) now excludes role='admin', matching cls_db.py
+    v2.51's same exclusion in the two functions this route calls.
+  - settings.html: "My Attendance" tile in the role-agnostic second
+    block now hidden for current_user.role == 'admin'. manager/
+    salesperson unaffected.
+  - lead_detail.html: activity-log branches now bold their static
+    label fragment (e.g. "Stage changed:", "Reassigned:") — template-
+    only, no route/schema change.
+  - leads_search.html: caption text updated to match cls_db.py v2.51's
+    rewritten search classification (# / apx- = exact lead-ID match;
+    an all-digits term = phone-only; otherwise unchanged combined
+    search).
+  - NEW GET /attendance/today-summary (login_required, self-scoped
+    only — actor is always session["user_id"], no company-wide
+    option): renders attendance_today_summary.html from
+    cls_db.get_todays_achievements(), reusing dashboard_today.html's
+    existing .stat-card/.stat-card-grid classes, no new CSS.
+  - /logout is now an INTERSTITIAL (confirmed with Srikanth): with an
+    active session it shows the Daily Achievements screen above
+    (show_logout_button=True) instead of clearing the session
+    immediately. NEW /logout/confirm carries the exact clear-session-
+    and-redirect body /logout used to run directly — reached only via
+    the interstitial's "Continue to logout" button. A /logout hit with
+    no active session skips straight to login, unchanged from before.
+  - dashboard.html: removed the "View all leads →" button (was
+    directly above the bottom tab bar). Confirmed with Srikanth this
+    is the element item 2 meant — NOT the nav-drawer "Leads" link
+    (base.html), which stays untouched as the only way to reach
+    /leads.
 v0.41 (2026-08-07) — Manager view-mode toggle (requires cls_db.py
   v2.50). Mounika is a player-coach (manager role, carries her own
   leads too) — this lets her flip her OWN default leads/dashboard view
@@ -1925,6 +1956,35 @@ def login():
 
 @app.route("/logout")
 def logout():
+    """
+    v0.42 — Item 7: /logout is now an interstitial, not an immediate
+    session clear. With an active session, shows today's Daily
+    Achievements (cls_db.get_todays_achievements) with a "Continue to
+    logout" action — the actual clear now happens at logout_confirm()
+    below, reached only from that button. A hit with no active session
+    (already logged out, or a stray GET) skips straight to login —
+    nothing to show. Not native attendance punch-out — that's still
+    unwired (android_pilot has no app source yet) — this is purely the
+    CRM web session's own /logout link (base.html's nav-drawer).
+    """
+    if not session.get("user_id"):
+        return redirect(url_for("login"))
+    achievements = cls_db.get_todays_achievements(session["user_id"])
+    return render_template(
+        "attendance_today_summary.html",
+        achievements=achievements,
+        show_logout_button=True,
+    )
+
+
+@app.route("/logout/confirm")
+def logout_confirm():
+    """
+    v0.42 — Item 7: the actual session clear, unchanged in behavior
+    from what /logout itself used to do directly — moved here so
+    /logout can show the achievements interstitial first. Reached only
+    via the "Continue to logout" button on that screen.
+    """
     if session.get("session_row_id"):
         cls_db.end_user_session(session["session_row_id"], reason="manual")
     session.clear()
@@ -2123,6 +2183,26 @@ def dashboard_today():
         active_tab="today",
         perf=perf,
         company_wide=company_wide,
+    )
+
+
+@app.route("/attendance/today-summary")
+@login_required
+def attendance_today_summary():
+    """
+    v0.42 — Item 7: Daily Achievements. ALWAYS self-scoped — actor is
+    session["user_id"], no company-wide option, regardless of role.
+    Renders cls_db.get_todays_achievements(), reusing dashboard_today.
+    html's existing .stat-card/.stat-card-grid classes (no new CSS).
+
+    Independently reachable on its own (no logout button rendered
+    here — that only appears when /logout itself renders this same
+    template with show_logout_button=True, see logout() above).
+    """
+    achievements = cls_db.get_todays_achievements(session["user_id"])
+    return render_template(
+        "attendance_today_summary.html",
+        achievements=achievements,
     )
 
 
@@ -5099,7 +5179,7 @@ def settings_attendance_dashboard():
             if h["holiday_date"].startswith(f"{year:04d}-{month:02d}")
         }
 
-    employees = [u for u in cls_db.get_all_users_detailed() if u["active"]] if is_oversight else []
+    employees = [u for u in cls_db.get_all_users_detailed() if u["active"] and u["role"] != "admin"] if is_oversight else []
     current_year = datetime.now().year
 
     return render_template(

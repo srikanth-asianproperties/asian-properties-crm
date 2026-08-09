@@ -1,7 +1,13 @@
-{# leads_search.html (v0.10) — dedicated search screen (item 7 of
+{# leads_search.html (v0.11) — dedicated search screen (item 7 of
    Srikanth's spec). Every OTHER currently-active filter is carried
    forward as a hidden input so searching doesn't silently clear a
    filter someone already set.
+
+   v0.11 (2026-08-09) — Caption updated for cls_db.py v2.51's rewritten
+   search classification: "#"/"apx-" now does an EXACT lead-ID match
+   (was a LIKE match — "#2" no longer also hits 20/200/etc), and a
+   bare all-digits term (no prefix) now matches phone ONLY, not name/
+   email. No form/route change.
 
    v0.10 (2026-08-04) — Pipeline Stage carry-forward changed from a
    single hidden <input name="stage"> to a loop over filters.stages
@@ -30,8 +36,9 @@
 
 <h2 style="margin-top:10px;">Search Leads</h2>
 <p style="font-size:13px; color:var(--ink-soft); margin-top:-8px;">
-  Search name, phone, or email — or type "#" followed by the lead number
-  (e.g. #250, or apx-250) to search by Lead ID only.
+  Search name, phone, or email — or type "#" or "apx-" followed by the
+  lead number (e.g. #250, or apx-250) to match that Lead ID exactly.
+  A phone number on its own (digits only) matches by phone only.
 </p>
 
 <form method="get" action="{{ url_for('leads_list') }}" class="card" style="margin-top:16px;">

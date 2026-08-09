@@ -1,4 +1,17 @@
-{# lead_detail.html v11 (2026-08-07) — call_recording branch (v10 below)
+{# lead_detail.html v12 (2026-08-09) — Item 3: every activity-log branch's
+   static label fragment (e.g. "Stage changed:", "Reassigned:", "Site
+   visit scheduled for", "Follow-up completed", "Property details
+   updated", "Called (tapped from CRM)") is now wrapped in <strong>,
+   leaving interpolated values/description text at normal weight. The
+   'note' branch is deliberately UNCHANGED — it's the user's own free
+   text, nothing static to bold. The 'lead_entered' branch is special-
+   cased: if a.description contains " (source:", the fragment before
+   it is bolded and the "(source: ...)" suffix stays normal weight; if
+   not found (e.g. Meta-sourced descriptions with different phrasing),
+   it renders exactly as before. Template-only change — no route or
+   schema touched.
+
+   lead_detail.html v11 (2026-08-07) — call_recording branch (v10 below)
    now also shows a small ↙/↗ direction indicator right before "Call
    recording" — ↙ for Incoming, ↗ for Outgoing, nothing for NULL
    (every historical row, and any call whose call_log_staging match
@@ -565,42 +578,47 @@
           {% if a.activity_type == 'note' %}
             <div>📝 {{ a.description }}</div>
           {% elif a.activity_type == 'stage_change' %}
-            <div>🔄 Stage changed: <strong>{{ a.prev_value }}</strong> → <strong>{{ a.new_value }}</strong>{% if a.description %} — {{ a.description }}{% endif %}</div>
+            <div>🔄 <strong>Stage changed:</strong> <strong>{{ a.prev_value }}</strong> → <strong>{{ a.new_value }}</strong>{% if a.description %} — {{ a.description }}{% endif %}</div>
           {% elif a.activity_type == 'assignment_change' %}
-            <div>👤 Reassigned: <strong>{{ a.prev_value or '(unassigned)' }}</strong> → <strong>{{ a.new_value }}</strong></div>
+            <div>👤 <strong>Reassigned:</strong> <strong>{{ a.prev_value or '(unassigned)' }}</strong> → <strong>{{ a.new_value }}</strong></div>
           {% elif a.activity_type == 'site_visit_scheduled' %}
-            <div>📅 Site visit scheduled for {{ a.new_value|ampm }}{% if a.description %} — {{ a.description }}{% endif %}</div>
+            <div>📅 <strong>Site visit scheduled for</strong> {{ a.new_value|ampm }}{% if a.description %} — {{ a.description }}{% endif %}</div>
           {% elif a.activity_type == 'site_visit_conducted' %}
-            <div>✅ Site visit conducted — {{ a.description }}</div>
+            <div>✅ <strong>Site visit conducted</strong> — {{ a.description }}</div>
           {% elif a.activity_type == 'site_visit_rescheduled' %}
-            <div>🔁 Site visit rescheduled: {{ a.prev_value|ampm }} → {{ a.new_value|ampm }} — {{ a.description }}</div>
+            <div>🔁 <strong>Site visit rescheduled:</strong> {{ a.prev_value|ampm }} → {{ a.new_value|ampm }} — {{ a.description }}</div>
           {% elif a.activity_type == 'site_visit_cancelled' %}
-            <div>❌ Site visit cancelled — {{ a.description }}</div>
+            <div>❌ <strong>Site visit cancelled</strong> — {{ a.description }}</div>
           {% elif a.activity_type == 'site_visit_no_show' %}
-            <div>🚫 Didn't visit — {{ a.description }}</div>
+            <div>🚫 <strong>Didn't visit</strong> — {{ a.description }}</div>
           {% elif a.activity_type == 'follow_up_scheduled' %}
-            <div>⏰ Follow-up scheduled for {{ a.new_value|ampm }}{% if a.description %} — {{ a.description }}{% endif %}</div>
+            <div>⏰ <strong>Follow-up scheduled for</strong> {{ a.new_value|ampm }}{% if a.description %} — {{ a.description }}{% endif %}</div>
           {% elif a.activity_type == 'follow_up_completed' %}
-            <div>✅ Follow-up completed — {{ a.description }}</div>
+            <div>✅ <strong>Follow-up completed</strong> — {{ a.description }}</div>
           {% elif a.activity_type == 'follow_up_postponed' %}
-            <div>🔁 Follow-up postponed: {{ a.prev_value|ampm }} → {{ a.new_value|ampm }} — {{ a.description }}</div>
+            <div>🔁 <strong>Follow-up postponed:</strong> {{ a.prev_value|ampm }} → {{ a.new_value|ampm }} — {{ a.description }}</div>
           {% elif a.activity_type == 'follow_up_cancelled' %}
-            <div>❌ Follow-up cancelled — {{ a.description }}</div>
+            <div>❌ <strong>Follow-up cancelled</strong> — {{ a.description }}</div>
           {% elif a.activity_type == 'call_attempted' %}
-            <div>📞 Called (tapped from CRM)</div>
+            <div>📞 <strong>Called (tapped from CRM)</strong></div>
           {% elif a.activity_type == 'lead_created_manual' %}
-            <div>➕ Lead created manually — started at {{ a.new_value|ampm }}</div>
+            <div>➕ <strong>Lead created manually — started at</strong> {{ a.new_value|ampm }}</div>
           {% elif a.activity_type == 'source_changed' %}
-            <div>🏷️ Source changed: <strong>{{ a.prev_value or '(none)' }}</strong> → <strong>{{ a.new_value }}</strong></div>
+            <div>🏷️ <strong>Source changed:</strong> <strong>{{ a.prev_value or '(none)' }}</strong> → <strong>{{ a.new_value }}</strong></div>
           {% elif a.activity_type == 'property_details_updated' %}
-            <div>🏠 Property details updated — {{ a.description }}</div>
+            <div>🏠 <strong>Property details updated</strong> — {{ a.description }}</div>
           {% elif a.activity_type == 'contact_info_updated' %}
-            <div>✏️ Contact info updated — {{ a.description }}</div>
+            <div>✏️ <strong>Contact info updated</strong> — {{ a.description }}</div>
           {% elif a.activity_type == 'lead_entered' %}
+            {% set _idx = (a.description.find(' (source:') if a.description else -1) %}
+            {% if _idx != -1 %}
+            <div>🆕 <strong>{{ a.description[:_idx]|replace('\n', '<br>')|safe }}</strong>{{ a.description[_idx:]|replace('\n', '<br>')|safe }}</div>
+            {% else %}
             <div>🆕 {{ a.description|replace('\n', '<br>')|safe if a.description else '' }}</div>
+            {% endif %}
           {% elif a.activity_type == 'call_recording' %}
             <div>
-              📞{% if a.direction and a.direction|upper == 'INCOMING' %} ↙{% elif a.direction and a.direction|upper == 'OUTGOING' %} ↗{% endif %} Call recording{% if a.duration_seconds is not none %} — {{ (a.duration_seconds // 60) }}:{{ '%02d'|format(a.duration_seconds % 60) }}{% endif %}
+              📞{% if a.direction and a.direction|upper == 'INCOMING' %} ↙{% elif a.direction and a.direction|upper == 'OUTGOING' %} ↗{% endif %} <strong>Call recording</strong>{% if a.duration_seconds is not none %} — {{ (a.duration_seconds // 60) }}:{{ '%02d'|format(a.duration_seconds % 60) }}{% endif %}
               <audio controls preload="none" style="display:block; margin-top:6px; max-width:320px; width:100%;">
                 <source src="{{ url_for('serve_recording', lead_id=a.cls_id, filename=a.recording_file_path) }}" type="audio/mpeg">
               </audio>

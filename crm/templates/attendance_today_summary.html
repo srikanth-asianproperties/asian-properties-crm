@@ -1,0 +1,86 @@
+{# attendance_today_summary.html (v2) — Item 7: "Daily Achievements".
+   Self-scoped only (route never passes a company_wide option). Reuses
+   dashboard_today.html's .stat-card/.stat-card-grid classes verbatim
+   — no new CSS.
+
+   v2 — show_logout_button (bool, optional, default falsy): when True
+   — set only by app.py's /logout route — an extra "Continue to
+   logout" button renders at the bottom, linking to logout_confirm()
+   (the route that actually clears the session). /attendance/today-
+   summary itself never sets this flag, so that standalone route keeps
+   rendering exactly as before, with no logout action on the page. #}
+{% extends "base.html" %}
+{% block title %}Today's Achievements{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:0;">Today's Achievements</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:-6px;">
+  Your own activity today. Resets at midnight.
+</p>
+
+{% if achievements %}
+<div class="stat-card-grid">
+
+  <div class="stat-card">
+    <div class="stat-card-header">Calls Made</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-ink">{{ achievements.calls_attempted }}</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-card-header">Site Visits Scheduled</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-blue">{{ achievements.site_visits_created }}</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-card-header">Site Visits Conducted</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-green">{{ achievements.site_visits_conducted }}</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-card-header">Follow-ups Scheduled</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-blue">{{ achievements.follow_ups_created }}</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-card-header">Follow-ups Completed</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-green">{{ achievements.follow_ups_completed }}</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-card-header">Stage Changes</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-ink">{{ achievements.stage_changes }}</div>
+    </div>
+  </div>
+
+  {% if achievements.time_worked %}
+  <div class="stat-card">
+    <div class="stat-card-header">Time Worked Today</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-ink">{{ achievements.time_worked }}</div>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% else %}
+<p style="color:var(--ink-soft); font-size:14px;">No activity to show.</p>
+{% endif %}
+
+{% if show_logout_button %}
+<div style="margin-top:24px;">
+  <a href="{{ url_for('logout_confirm') }}" class="btn-pill-green" style="display:inline-block;">Continue to logout</a>
+</div>
+{% endif %}
+
+{% endblock %}

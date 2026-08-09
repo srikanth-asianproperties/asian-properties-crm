@@ -2,11 +2,48 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.50
+Version : 2.51
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.51 (2026-08-09) — Nine-item batch, ADDITIVE ONLY, nothing existing
+  removed or modified except the four call sites named below:
+    - get_today_attendance_overview(date_str): active-users query now
+      excludes role='admin' — admin shouldn't appear in "who's present
+      today," same posture as get_attendance_totals_for_month() below.
+    - get_attendance_totals_for_month(): owner_scope=None branch's
+      active-users query now excludes role='admin' too, for the same
+      reason. owner_scope=<user_id> branch (a specific person, incl.
+      an admin drilling into their OWN record on purpose) is untouched.
+    - _build_lead_filter_where()'s search-term classification rewritten:
+      "#"/"apx-" prefix now does an EXACT match on crm_lead_no (was
+      LIKE); an all-digits term (no prefix) now matches phone_norm
+      ONLY, no name/email; anything else keeps the existing combined
+      name/phone/email LIKE. Closes the LIKE-on-lead-id gap (e.g. "#2"
+      used to also match lead 20/200/...) and stops an all-digits
+      search accidentally hitting name/email columns.
+    - compute_punch_in_timing() now reads the NEW module constants
+      WORKDAY_START_TIME/WORKDAY_END_TIME instead of app_settings
+      ['attendance_late_after_time'] — one less DB round-trip per
+      punch, and a value Srikanth can see and reason about directly in
+      code. The app_settings row itself is left in place, untouched,
+      unread by anything now — killing it is a separate decision.
+    - NEW WORKDAY_START_TIME = "10:30", WORKDAY_END_TIME = "17:30"
+      module constants (config-not-code, same idiom as
+      ATTENDANCE_STATUSES) — WORKDAY_END_TIME doesn't drive any logic
+      yet, added now so item 7 below and any future "workday" feature
+      share one definition.
+    - NEW get_todays_achievements(user_id): self-scoped "Daily
+      Achievements" summary for the logout interstitial (see app.py
+      v0.42's changelog) — get_todays_activity_counts()'s own-actions
+      dict plus today's stage_change count (activity_log, actor=this
+      user's email) and total time worked today (today's attendance
+      row's logout_ts-login_ts, "still working" if logged in but not
+      out yet, key omitted entirely if no attendance row exists today
+      — e.g. roles that don't punch). Deliberately no "time spoken to
+      customers" metric — no call-duration data exists pre-Telephony,
+      same honest limit get_todays_activity_counts() already documents.
 v2.50 (2026-08-07) — Manager view-mode toggle. Mounika is a player-coach
   (manager role, but also carries her own leads) — she needs to flip her
   OWN default leads/dashboard view between "team-wide" (today's unchanged
@@ -3427,25 +3464,31 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
 
     if has_active_search:
         search_term = search.strip().lower()
-        # v2.19 — "#" or "apx-" prefix now means LEAD-ID-ONLY search:
-        # match crm_lead_no exclusively, not name/phone/email at all.
-        # A bare numeric term (e.g. "250") no longer implicitly matches
-        # lead ID — it used to be OR'd in with name/phone/email, so a
-        # plain "250" could accidentally match a phone number AND a
-        # lead ID AND an email at once. The explicit prefix is now the
-        # only way to search by lead ID.
-        lead_id_only = False
+        # v2.19 — "#" or "apx-" prefix means LEAD-ID-ONLY search: match
+        # crm_lead_no exclusively, not name/phone/email at all.
+        # (v2.51) That match is now EXACT, not LIKE — a LIKE match on
+        # a lead number let "#2" also hit 20/200/2005/etc, which isn't
+        # what typing an exact lead ID means. A bare numeric term (no
+        # prefix) is a separate case handled below — it no longer
+        # implicitly matches lead ID either.
         if search_term.startswith("#"):
-            search_term = search_term[1:].strip()
-            lead_id_only = True
+            id_term = search_term[1:].strip()
+            where.append("CAST(crm_lead_no AS TEXT) = ?")
+            params.append(id_term)
         elif search_term.startswith("apx-"):
-            search_term = search_term[4:].strip()
-            lead_id_only = True
-        like = f"%{search_term}%"
-        if lead_id_only:
-            where.append("CAST(crm_lead_no AS TEXT) LIKE ?")
-            params.append(like)
+            id_term = search_term[4:].strip()
+            where.append("CAST(crm_lead_no AS TEXT) = ?")
+            params.append(id_term)
+        elif search_term.isdigit():
+            # (v2.51) An all-digits term (any length, incl. a full
+            # 10-digit phone number) matches phone_norm ONLY — no
+            # name/email — so a phone-number search can't accidentally
+            # hit an email address that happens to contain the same
+            # digits.
+            where.append("phone_norm LIKE ?")
+            params.append(f"%{search_term}%")
         else:
+            like = f"%{search_term}%"
             where.append(
                 "(LOWER(full_name) LIKE ? OR phone_norm LIKE ? OR email_norm LIKE ?)"
             )
@@ -4222,6 +4265,69 @@ def get_todays_activity_counts(actor_email=None):
         return result
     finally:
         conn.close()
+
+
+def get_todays_achievements(user_id):
+    """
+    (v2.51) Self-scoped "Daily Achievements" summary — item 7, shown as
+    an interstitial on logout (see app.py v0.42's changelog). Always
+    scoped to user_id's own actions, never company-wide.
+
+    Extends get_todays_activity_counts()'s dict (calls_attempted,
+    site_visits_created/conducted, follow_ups_created/completed,
+    notes_added — all today, all this user's own actor rows) with two
+    more numbers:
+      stage_changes : today's activity_log rows with
+                       activity_type='stage_change' and actor=this
+                       user's email — same actor-scoping convention
+                       get_todays_activity_counts() already uses.
+      time_worked   : today's attendance row's logout_ts-login_ts as
+                       "Xh Ym", "still working" if login_ts is set but
+                       logout_ts isn't yet, or the key is OMITTED
+                       entirely if no attendance row exists today at
+                       all (e.g. a role that doesn't punch) — omission,
+                       not a zero/blank, so the template can tell "no
+                       data" apart from "worked 0 minutes."
+
+    Deliberately does NOT attempt a "time spoken to customers" metric
+    — no call-duration data exists pre-Telephony, same honest limit
+    get_todays_activity_counts() already documents for calls_attempted.
+
+    Returns None if user_id doesn't resolve to a user at all.
+    """
+    user = get_user_by_id(user_id)
+    if not user:
+        return None
+
+    today = _now()[:10]
+    result = get_todays_activity_counts(actor_email=user["email"])
+
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) c FROM activity_log "
+            "WHERE substr(created_at, 1, 10) = ? AND activity_type = 'stage_change' "
+            "AND actor = ?",
+            (today, user["email"])
+        ).fetchone()
+        result["stage_changes"] = row["c"] if row else 0
+    finally:
+        conn.close()
+
+    attendance = get_attendance_for_date(user_id, today)
+    if attendance and attendance.get("login_ts"):
+        if attendance.get("logout_ts"):
+            try:
+                login_dt = datetime.strptime(attendance["login_ts"], "%Y-%m-%d %H:%M:%S")
+                logout_dt = datetime.strptime(attendance["logout_ts"], "%Y-%m-%d %H:%M:%S")
+                worked_minutes = max(0, int((logout_dt - login_dt).total_seconds() // 60))
+                result["time_worked"] = f"{worked_minutes // 60}h {worked_minutes % 60}m"
+            except ValueError:
+                pass
+        else:
+            result["time_worked"] = "still working"
+
+    return result
 
 
 def get_latest_stage_and_owner_changes():
@@ -9692,6 +9798,15 @@ def write_job_result(job_name, success, summary):
 # Config-not-code, same idiom as CRM_ROLES/OVERSIGHT_ROLES above.
 ATTENDANCE_STATUSES = ("present", "late", "absent", "weekoff", "leave", "half_day")
 
+# (v2.51) Hardcoded workday window — replaces the app_settings
+# ['attendance_late_after_time'] lookup compute_punch_in_timing() used
+# to do on every punch. The app_settings row itself is left in place,
+# untouched, just no longer read by anything. WORKDAY_END_TIME isn't
+# wired into any logic yet — added now so it and WORKDAY_START_TIME
+# share one definition for whatever reads a "workday" boundary next.
+WORKDAY_START_TIME = "10:30"
+WORKDAY_END_TIME = "17:30"
+
 # The only two statuses an employee can self-service set via
 # set_self_service_attendance_status() below. present/late/absent are
 # punch-derived only (Step 4's API endpoints), never settable here.
@@ -9754,6 +9869,10 @@ def get_attendance_totals_for_month(year, month, owner_scope=None):
     salesperson's own view, or an admin/manager drilling into one
     employee), regardless of active flag — an admin reviewing a
     recently-deactivated employee's last month should still see them.
+    (v2.51) owner_scope=None also excludes role='admin' from the "All
+    employees" list — admin isn't a scoped employee to report on. This
+    does NOT apply to owner_scope=<user_id>: an admin drilling into
+    their OWN or another specific user's record still works unchanged.
 
     One query for the user list, one query for every attendance row in
     the month, merged in Python — deliberately not a single GROUP BY
@@ -9775,7 +9894,7 @@ def get_attendance_totals_for_month(year, month, owner_scope=None):
         else:
             users = conn.execute(
                 "SELECT user_id, full_name, email FROM users WHERE active=1 "
-                "ORDER BY full_name COLLATE NOCASE"
+                "AND role != 'admin' ORDER BY full_name COLLATE NOCASE"
             ).fetchall()
 
         prefix = f"{year:04d}-{month:02d}"
@@ -9819,6 +9938,9 @@ def get_today_attendance_overview(date_str):
     user LEFT JOINed to their attendance row for date_str (if any),
     same "every active user shown, none silently omitted" convention
     as get_attendance_totals_for_month()'s owner_scope=None branch.
+    (v2.51) Excludes role='admin' — admin doesn't appear in "who's
+    present today," same exclusion as get_attendance_totals_for_month()
+    below.
 
     Returns a list of dicts, one per active user, ordered by
     full_name: {user_id, full_name, email, status, not_marked,
@@ -9838,7 +9960,7 @@ def get_today_attendance_overview(date_str):
     try:
         users = conn.execute(
             "SELECT user_id, full_name, email FROM users WHERE active=1 "
-            "ORDER BY full_name COLLATE NOCASE"
+            "AND role != 'admin' ORDER BY full_name COLLATE NOCASE"
         ).fetchall()
         rows = conn.execute(
             "SELECT * FROM attendance WHERE attendance_date=?", (date_str,)
@@ -10438,21 +10560,17 @@ def check_geofence_breach(project_bucket, lat, lng):
 def compute_punch_in_timing(punch_dt):
     """
     (v2.42) Given a punch-in datetime, compares its time-of-day against
-    app_settings['attendance_late_after_time'] ('HH:MM', seeded '10:00'
-    in v2.38) and returns (status, late_minutes): status is 'late' with
-    the exact number of minutes past the threshold, or 'present' with
-    late_minutes=0. Falls back to '10:00' if the setting is somehow
-    missing/malformed rather than raising — a punch must never fail
-    because of a bad config value.
+    the WORKDAY_START_TIME module constant ('HH:MM') and returns
+    (status, late_minutes): status is 'late' with the exact number of
+    minutes past the threshold, or 'present' with late_minutes=0.
+
+    (v2.51) Reads the WORKDAY_START_TIME constant directly instead of
+    app_settings['attendance_late_after_time'] — one less DB round-trip
+    per punch. Still falls back to 10:00 if the constant is somehow
+    malformed rather than raising — a punch must never fail because of
+    a bad config value.
     """
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT setting_value FROM app_settings WHERE setting_key='attendance_late_after_time'"
-        ).fetchone()
-    finally:
-        conn.close()
-    raw = (row["setting_value"] if row else None) or "10:00"
+    raw = WORKDAY_START_TIME or "10:00"
     try:
         threshold_h, threshold_m = (int(p) for p in raw.split(":")[:2])
     except (ValueError, AttributeError):

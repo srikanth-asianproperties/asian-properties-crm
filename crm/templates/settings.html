@@ -1,5 +1,11 @@
-{# settings.html (v0.40) — Settings hub. A grid of tiles; each future
+{# settings.html (v0.41) — Settings hub. A grid of tiles; each future
    admin tool drops in here as another tile.
+
+   v0.41 — "My Attendance" tile (role-agnostic second block) now
+   gated on current_user.role != 'admin'. admin already has the
+   separate company-wide "Attendance" tile in the admin-only block
+   above; a personal punch-in/out tile doesn't apply to that role.
+   manager/salesperson unaffected.
 
    v0.10 — NEW "WhatsApp Reminder Templates" tile (site-visit reminders,
    separate from the existing WhatsApp Templates tile/table).
@@ -191,6 +197,7 @@
     </p>
   </a>
 
+  {% if current_user.role != 'admin' %}
   <a href="{{ url_for('attendance_home') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div style="display:flex; align-items:center; gap:10px;">
       <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
@@ -200,6 +207,7 @@
       Login/Logout, Weekoff, Leave, and Correction Requests.
     </p>
   </a>
+  {% endif %}
 
   <div class="card">
     <div style="display:flex; align-items:center; gap:10px;">

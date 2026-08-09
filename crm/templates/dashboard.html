@@ -1,8 +1,14 @@
-{# dashboard.html (v0.13) — "Stats Overview" top-tab view, itself living
+{# dashboard.html (v0.14) — "Stats Overview" top-tab view, itself living
    inside the "Stats" tab of the 3-tab BOTTOM dashboard (Stats / Today's
    Performance / Pipeline Analysis). Bottom tab bar unchanged from v0.6.
    Kept at the /dashboard route/filename so every existing
    url_for('dashboard') link elsewhere still works.
+
+   v0.14 (2026-08-09) — Item 2: removed the "View all leads →" button
+   (was directly above the bottom tab bar, linked to leads_list). The
+   nav-drawer "Leads" link (base.html) is untouched and remains the
+   only way to reach /leads. No route/context change — dashboard()
+   itself is unmodified.
 
    v0.13 (2026-07-29) — the old plain <h2>Stats</h2> heading is replaced
    by _dashboard_view_tabbar.html's 2 top tabs (Stats Overview / Leads
@@ -95,10 +101,6 @@
   by phone/email to a prior lead) and haven't had any activity logged since —
   it clears the moment someone touches the lead.
 </p>
-
-<div style="margin-top:24px;">
-  <a href="{{ url_for('leads_list') }}" class="btn btn-primary">View all leads →</a>
-</div>
 
 {% include "_dashboard_tabbar.html" %}
 {% endblock %}
