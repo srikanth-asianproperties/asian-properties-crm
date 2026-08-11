@@ -1,11 +1,18 @@
-{# settings_bulk_jobs.html (v1.0) — Settings > Bulk Reassign > Past Bulk
+{# settings_bulk_jobs.html (v1.1) — Settings > Bulk Reassign > Past Bulk
    Jobs. Plain table, no charts — cls_db.get_bulk_jobs() (bulk_jobs
    table, cls_db.py v2.28), newest first. filters_summary is already a
    short human-readable string (built by app.py's
    _bulk_filters_summary()), so this just prints it — no second
    renderer for a filter-object shape. job_type is shown as a badge in
    case a future bulk action besides bulk_reassign starts writing to
-   this same table (BULK_JOB_TYPES is written generically for that). #}
+   this same table (BULK_JOB_TYPES is written generically for that).
+
+   v1.1 (2026-08-11) — Phase 5: NEW "Export" column, one download link
+   per row to app.py's new /settings/bulk-jobs/<job_id>/export.xlsx —
+   only rendered as a link when job.leads_snapshot_count > 0 (cls_db.py
+   v2.53's get_bulk_jobs() now carries that count via LEFT JOIN). Jobs
+   run before the bulk_job_leads migration existed have a count of 0,
+   so they show plain text instead of a broken/empty-file link. #}
 {% extends "base.html" %}
 {% block title %}Bulk Jobs{% endblock %}
 
@@ -23,6 +30,7 @@
         <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">By</th>
         <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Filters</th>
         <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Leads</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Export</th>
       </tr>
     </thead>
     <tbody>
@@ -33,6 +41,13 @@
         <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ job.actor }}</td>
         <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ job.filters_summary }}</td>
         <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ job.lead_count }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">
+          {% if job.leads_snapshot_count %}
+          <a href="{{ url_for('settings_bulk_job_export_excel', job_id=job.job_id) }}" class="btn" style="font-size:12px; padding:4px 10px;">Download</a>
+          {% else %}
+          <span style="color:var(--ink-soft); font-size:12px;">Not available for jobs before this date</span>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

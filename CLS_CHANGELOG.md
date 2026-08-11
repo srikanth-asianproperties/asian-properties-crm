@@ -1,6 +1,16 @@
 # CLS/APX CRM — Changelog
 
 ## 2026-08-11
+- bulk job history export (cls_db.py v2.53, app.py v0.46,
+  settings_bulk_jobs.html v1.1) — new bulk_job_leads snapshot table:
+  every bulk-reassign job now records the exact cls_ids it touched,
+  atomically with its bulk_jobs row (create_bulk_job() now opens the
+  transaction both inserts share and returns job_id — the only non-
+  additive cls_db.py change this phase, confirmed with Srikanth before
+  writing it). NEW per-job "Download" link on Past Bulk Jobs
+  (/settings/bulk-jobs/<job_id>/export.xlsx), hidden for jobs that
+  predate this migration ("Not available for jobs before this date").
+  Phase 5 of the 6-phase feature batch.
 - dashboard_today / dashboard_pipeline (app.py v0.45, cls_db.py v2.52,
   dashboard_today.html v0.8, dashboard_pipeline.html v0.9, NEW
   dashboard_today_drilldown.html) — every tile on both tabs is now

@@ -2,11 +2,28 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.52
+Version : 2.53
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.53 (2026-08-11) — Phase 5 of the 6-phase feature batch. NEW
+  bulk_job_leads table (init_db(), self-healing CREATE TABLE IF NOT
+  EXISTS) — per-job cls_id snapshot. NEW record_bulk_job_leads(job_id,
+  cls_ids, conn=None) and get_bulk_job_lead_rows(job_id).
+  NOT purely additive — two EXISTING functions changed, confirmed with
+  Srikanth first (see Phase 5's "atomicity approach" decision):
+    - create_bulk_job(): gained optional cls_ids=None, conn=None params
+      and now RETURNS job_id (previously returned nothing). When cls_ids
+      is passed, it calls record_bulk_job_leads() inside its OWN
+      transaction before committing, so a bulk_jobs row can never exist
+      without its snapshot (or vice versa). Every existing caller (there
+      was exactly one, app.py's settings_bulk_reassign_commit()) passed
+      neither new param and ignored the return value — behavior for
+      those call sites is unchanged until app.py is updated to use them.
+    - get_bulk_jobs(): now LEFT JOINs a per-job leads_snapshot_count
+      (COUNT of bulk_job_leads rows) onto each returned dict. All
+      existing keys/behavior unchanged, this only adds one new key.
 v2.52 (2026-08-11) — Phase 4 of the 6-phase feature batch, ADDITIVE ONLY:
   NEW get_calls_made_today(), get_site_visits_scheduled_today(),
   get_site_visits_conducted_today(), get_follow_ups_scheduled_today(),
@@ -2886,6 +2903,23 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bulk_jobs_created ON bulk_jobs(created_at);")
 
+    # ── v2.53 — bulk_job_leads: per-job cls_id snapshot (Phase 5) ──
+    # Records the EXACT cls_ids a bulk job touched, at the moment it ran,
+    # independent of what happens to those leads afterward (reassigned
+    # again, stage-changed, even deleted) — so "Past Bulk Jobs" can offer
+    # a reliable "download affected leads" export per row regardless of
+    # current state. No FK enforcement on cls_id (SQLite FKs are off by
+    # default project-wide and a deleted lead shouldn't break the
+    # snapshot/export), only the job_id -> bulk_jobs FK.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bulk_job_leads (
+            job_id  INTEGER NOT NULL REFERENCES bulk_jobs(job_id),
+            cls_id  TEXT NOT NULL,
+            PRIMARY KEY (job_id, cls_id)
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bulk_job_leads_job ON bulk_job_leads(job_id);")
+
     # ── Phase B Telephony schema (v2.33) ──
     # Server-side call-recording matching: the Android app reports call-log
     # metadata (never files) to /api/telephony/report-calls; only numbers
@@ -5258,7 +5292,41 @@ def mark_lead_notification_read(cls_id):
         conn.close()
 
 
-def create_bulk_job(job_type, actor, filters_summary, to_owner, lead_count):
+def record_bulk_job_leads(job_id, cls_ids, conn=None):
+    """
+    (v2.53) Phase 5 — snapshots the exact cls_ids a bulk job touched,
+    into bulk_job_leads(job_id, cls_id). This is what lets "Past Bulk
+    Jobs" offer a reliable per-job "download affected leads" export
+    regardless of what happens to those leads afterward (reassigned
+    again, stage-changed, even deleted) — the snapshot is independent of
+    current lead state.
+
+    conn (optional, same reuse pattern as reassign_lead_owner() above):
+    omitted, opens its own connection and commits/closes it. Passed an
+    OPEN connection (create_bulk_job() does this — see below), reuses it
+    and does NOT commit or close; the caller owns the transaction, so
+    the job row and its snapshot land atomically together.
+
+    INSERT OR IGNORE on the (job_id, cls_id) primary key — a duplicate
+    cls_id in the input list (shouldn't happen, but matched_ids is
+    caller-built) is silently deduped rather than erroring.
+    """
+    owns_conn = conn is None
+    if owns_conn:
+        conn = _connect()
+    try:
+        conn.executemany(
+            "INSERT OR IGNORE INTO bulk_job_leads (job_id, cls_id) VALUES (?, ?)",
+            [(job_id, cls_id) for cls_id in cls_ids]
+        )
+        if owns_conn:
+            conn.commit()
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+def create_bulk_job(job_type, actor, filters_summary, to_owner, lead_count, cls_ids=None, conn=None):
     """
     (v2.28) Writes one row to bulk_jobs — called once per bulk-action
     run, after the action itself has committed. job_type is validated
@@ -5268,29 +5336,104 @@ def create_bulk_job(job_type, actor, filters_summary, to_owner, lead_count):
     the CALLER builds (e.g. "Project: Naishka, Stage: Prospect →
     reassigned to Devender Goud") — this function stores it as-is, no
     JSON encoding/decoding.
+
+    (v2.53) Phase 5 — two additions, both backward compatible with every
+    existing caller (none of which passed these or used the return value):
+      cls_ids (optional, list) — when given, this function ALSO snapshots
+      those cls_ids into bulk_job_leads via record_bulk_job_leads(),
+      reusing the SAME connection/transaction as the bulk_jobs INSERT
+      below, so a job row can never exist without its snapshot (or vice
+      versa) — the two either both commit or neither does. job_id only
+      exists once this INSERT runs, so this is the only place that
+      pairing can happen; app.py itself never holds a raw connection
+      (see cls_db.py's "all SQLite access stays centralized here" rule),
+      so this couldn't be split across two separate top-level calls
+      from the route without losing that atomicity.
+      conn (optional) — same reuse pattern as reassign_lead_owner().
+      Omitted (every existing caller): opens its own connection, commits,
+      closes it, exactly as before.
+
+    Returns the new job_id (previously returned nothing — every existing
+    caller already ignored the return value, so this is additive).
     """
     if job_type not in BULK_JOB_TYPES:
         raise ValueError(f"job_type must be one of: {', '.join(BULK_JOB_TYPES)}")
 
-    conn = _connect()
+    owns_conn = conn is None
+    if owns_conn:
+        conn = _connect()
     try:
-        conn.execute("""
+        cur = conn.execute("""
             INSERT INTO bulk_jobs (job_type, actor, filters_summary, to_owner, lead_count, created_at)
             VALUES (?,?,?,?,?,?)
         """, (job_type, actor, filters_summary, to_owner, lead_count, _now()))
-        conn.commit()
+        job_id = cur.lastrowid
+        if cls_ids:
+            record_bulk_job_leads(job_id, cls_ids, conn=conn)
+        if owns_conn:
+            conn.commit()
+        return job_id
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+def get_bulk_jobs():
+    """
+    (v2.28) Every bulk_jobs row, newest first — feeds the Settings >
+    Bulk Jobs history page.
+
+    (v2.53) Phase 5 — each row now also carries leads_snapshot_count
+    (COUNT of its bulk_job_leads rows, via LEFT JOIN so a pre-migration
+    job with zero snapshot rows still returns 0, not an excluded row).
+    Lets the template distinguish "has an exportable snapshot" from
+    "predates the bulk_job_leads migration, nothing to export" without a
+    second per-row query. Existing columns/behavior unchanged.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT j.*, COUNT(b.cls_id) AS leads_snapshot_count
+            FROM bulk_jobs j LEFT JOIN bulk_job_leads b ON b.job_id = j.job_id
+            GROUP BY j.job_id
+            ORDER BY j.created_at DESC, j.job_id DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
 
-def get_bulk_jobs():
-    """(v2.28) Every bulk_jobs row, newest first — feeds the Settings > Bulk Jobs history page."""
+def get_bulk_job_lead_rows(job_id):
+    """
+    (v2.53) Phase 5 — leads to export for one bulk_jobs row, resolved
+    from the bulk_job_leads SNAPSHOT (job_id, cls_id), not the leads'
+    current owner/stage — that's the whole point of the snapshot: it
+    stays a faithful "who did this job touch" record even after those
+    leads are reassigned again, stage-changed, or deleted. INNER JOIN
+    means a lead deleted since the job ran simply doesn't appear in the
+    export (nothing to show for it), not a crash or a blank row.
+
+    Same base column set as get_leads_matching()'s SELECT (crm_lead_no,
+    full_name, phone_raw, project_bucket, current_stage, lead_owner,
+    source, cls_created_at) so app.py's existing LEADS_EXPORT_COLUMNS
+    can be reused as-is for this export — no new column mapping needed.
+
+    Returns a plain list of row dicts, sorted by full_name.
+    """
     conn = _connect()
     try:
-        rows = conn.execute(
-            "SELECT * FROM bulk_jobs ORDER BY created_at DESC, job_id DESC"
-        ).fetchall()
-        return [dict(r) for r in rows]
+        rows = conn.execute("""
+            SELECT l.cls_id, l.full_name, l.phone_raw, l.project,
+                   l.current_stage, l.lead_owner, l.source, l.cls_created_at,
+                   l.crm_lead_no
+            FROM bulk_job_leads b JOIN leads l ON l.cls_id = b.cls_id
+            WHERE b.job_id = ?
+            ORDER BY l.full_name COLLATE NOCASE ASC
+        """, (job_id,)).fetchall()
+        result = [dict(r) for r in rows]
+        for r in result:
+            r["project_bucket"] = get_project_bucket(r["project"])
+        return result
     finally:
         conn.close()
 

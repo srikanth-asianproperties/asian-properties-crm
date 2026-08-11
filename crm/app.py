@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.45
+Version : 0.46
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,14 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.46 (2026-08-11) — Phase 5 of the 6-phase feature batch (requires
+  cls_db.py v2.53): settings_bulk_reassign_commit() now passes
+  cls_ids=matched_ids to create_bulk_job(), snapshotting the reassigned
+  leads into the new bulk_job_leads table atomically with the job row.
+  NEW GET /settings/bulk-jobs/<job_id>/export.xlsx
+  (settings_bulk_job_export_excel(), @admin_required) — per-bulk-job
+  Excel download, same shape as settings_export_leads_excel(), rows from
+  the bulk_job_leads snapshot via cls_db.get_bulk_job_lead_rows().
 v0.45 (2026-08-11) — Phase 4 of the 6-phase feature batch (requires
   cls_db.py v2.52): NEW GET /dashboard/today/<metric> (dashboard_today_
   drilldown()) — one route/template for all 5 Today's Performance tiles,
@@ -4153,7 +4161,11 @@ def settings_bulk_reassign_commit():
 
     actor = _actor()
     reassigned_count = cls_db.bulk_reassign_leads(matched_ids, to_owner, actor)
-    cls_db.create_bulk_job("bulk_reassign", actor, _bulk_filters_summary(f, to_owner), to_owner, reassigned_count)
+    # v0.46 — Phase 5: cls_ids=matched_ids snapshots exactly which leads
+    # this job touched into bulk_job_leads, atomically with the bulk_jobs
+    # row itself (see cls_db.py v2.53's create_bulk_job() changelog).
+    cls_db.create_bulk_job("bulk_reassign", actor, _bulk_filters_summary(f, to_owner), to_owner,
+                           reassigned_count, cls_ids=matched_ids)
 
     flash(f"Reassigned {reassigned_count} lead(s) to {to_owner}.", "success")
     return redirect(url_for("settings_bulk_jobs"))
@@ -4164,6 +4176,36 @@ def settings_bulk_reassign_commit():
 @admin_required
 def settings_bulk_jobs():
     return render_template("settings_bulk_jobs.html", jobs=cls_db.get_bulk_jobs())
+
+
+@app.route("/settings/bulk-jobs/<int:job_id>/export.xlsx")
+@login_required
+@admin_required
+def settings_bulk_job_export_excel(job_id):
+    """
+    v0.46 — Phase 5: per-bulk-job Excel export, same shape as
+    settings_export_leads_excel() (reuses LEADS_EXPORT_COLUMNS and
+    cls_reports.export_to_excel()). Rows come from the bulk_job_leads
+    SNAPSHOT (cls_db.get_bulk_job_lead_rows()), not the leads' current
+    owner/stage, so the download always reflects exactly what this job
+    touched at the time it ran. settings_bulk_jobs.html only shows this
+    link when leads_snapshot_count > 0 (jobs from before this migration
+    have none) — this route doesn't re-check that itself, since an
+    admin hitting the URL directly for an old job just gets a
+    near-empty workbook (header row only), not an error.
+    """
+    report = {
+        "title": f"Bulk Job #{job_id} — Leads",
+        "columns": LEADS_EXPORT_COLUMNS,
+        "rows": cls_db.get_bulk_job_lead_rows(job_id),
+    }
+    try:
+        buf = cls_reports.export_to_excel(report)
+    except RuntimeError as e:
+        flash(str(e), "error")
+        return redirect(url_for("settings_bulk_jobs"))
+    return send_file(buf, as_attachment=True, download_name=f"bulk-job-{job_id}-leads.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.route("/settings/users")
