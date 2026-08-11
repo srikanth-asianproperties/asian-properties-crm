@@ -172,6 +172,7 @@ INCLUDE_FILES = [
     "android_pilot/app/src/main/res/layout/activity_settings.xml",
     "android_pilot/app/src/main/res/drawable/circle_button_bg.xml",
 
+    "cls_attendance_photo.py",
     # --- AUTO_DISCOVER_INSERT_MARKER: do not remove or move this line ---
 ]
 
