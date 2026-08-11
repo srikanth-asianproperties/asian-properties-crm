@@ -1,9 +1,20 @@
-{# dashboard_pipeline.html (v0.8) — "Pipeline Analysis" tab. Non-
-   pressable tiles only (Srikanth's explicit spec). Stage tiles are a
-   LIVE snapshot of where leads sit right now, UNCHANGED by the date
+{# dashboard_pipeline.html (v0.9) — "Pipeline Analysis" tab. Stage tiles
+   are a LIVE snapshot of where leads sit right now, UNCHANGED by the date
    picker below — deliberately different from "Total Leads", labelled
    so the difference isn't hidden. See cls_db.
    get_stage_snapshot_counts()'s docstring for the reasoning.
+
+   v0.9 (2026-08-11) — Phase 4 of the 6-phase feature batch: stage tiles
+   are now clickable, each linking to leads_list filtered to that one
+   stage via the existing "stages" list param (app.py's
+   _parse_lead_filters()/leads_list() — no new param invented). Owner-
+   scoping is whatever leads_list() already applies for the logged-in
+   session (company-wide for admin/manager oversight, self-scoped for
+   salesperson) — nothing extra passed here. This REVERSES the v0.8-and-
+   earlier "non-pressable tiles only" decision above, confirmed with
+   Srikanth. "Total Leads" stays non-clickable — it's a date-ranged
+   aggregate across every stage, not a single filterable view, and Phase
+   4's spec only calls out the per-stage tiles.
 
    v0.7 — Tiles migrated from ad-hoc .card markup to the shared
    .stat-card / .stat-card-grid classes (base.html v0.12). "Total
@@ -81,12 +92,12 @@ function onPipelineDatePresetChange(sel){
   </div>
 
   {% for stage in all_stages %}
-  <div class="stat-card">
+  <a href="{{ url_for('leads_list', stages=stage) }}" class="stat-card">
     <div class="stat-card-header">{{ stage }}</div>
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-ink">{{ stage_counts[stage] }}</div>
     </div>
-  </div>
+  </a>
   {% endfor %}
 
 </div>

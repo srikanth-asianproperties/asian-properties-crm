@@ -2,11 +2,22 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.51
+Version : 2.52
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.52 (2026-08-11) — Phase 4 of the 6-phase feature batch, ADDITIVE ONLY:
+  NEW get_calls_made_today(), get_site_visits_scheduled_today(),
+  get_site_visits_conducted_today(), get_follow_ups_scheduled_today(),
+  get_follow_ups_completed_today() — row-level drill-downs behind the
+  Today's Performance tab's 5 stat tiles, each actor_email-scoped (like
+  get_todays_activity_counts(), which the tiles themselves already call),
+  backed by a shared private _activity_rows_today() helper. Deliberately
+  NOT reusing the existing owner-scoped get_site_visits_conducted()
+  (Export) for the Site Visits Conducted drill-down — different scoping
+  key (actor vs. lead_owner) that could disagree with that tile's own
+  count. Nothing existing removed or modified.
 v2.51 (2026-08-09) — Nine-item batch, ADDITIVE ONLY, nothing existing
   removed or modified except the four call sites named below:
     - get_today_attendance_overview(date_str): active-users query now
@@ -4328,6 +4339,105 @@ def get_todays_achievements(user_id):
             result["time_worked"] = "still working"
 
     return result
+
+
+# ─────────────────────────────────────────────────────────────
+# Today's Performance drill-downs (v2.52, Phase 4 of the 6-phase batch)
+# ─────────────────────────────────────────────────────────────
+# One small function per tile, each mirroring get_todays_activity_counts()'s
+# own scoping EXACTLY: activity_log rows for TODAY, filtered by
+# activity_type, optionally scoped to one actor_email (None = company-
+# wide). This is actor-based scoping (WHO performed the action, matched
+# by login email), deliberately NOT the owner-based scoping
+# (leads.lead_owner) used almost everywhere else in this file — it has
+# to match what the Today's Performance tile above each drill-down
+# actually counts, and that tile is actor-scoped. Concretely this means
+# get_site_visits_conducted() (owner-scoped, built for Export) is NOT
+# reused here even though it queries a very similar shape — reusing it
+# would let the drill-down list disagree with its own tile's number in
+# edge cases (e.g. a manager conducting a visit on a rep's lead). Each
+# function returns a list of dicts, one per matching activity_log row,
+# newest first: {cls_id, crm_lead_no, full_name, lead_owner, actor,
+# created_at, description}. description is whatever note text was
+# recorded against that action, if any (may be None).
+
+def _activity_rows_today(activity_type, actor_email):
+    """(v2.52, internal) Shared row-fetch behind the 5 Today's Performance
+    drill-down functions below — same query shape, only activity_type/
+    actor_email differ, so this stays a private helper rather than 5
+    copies of the same JOIN. Each public function keeps its own name/
+    docstring so callers and this module's Report-style call sites read
+    the same per-purpose way as everywhere else in this file."""
+    conn = _connect()
+    try:
+        today = _now()[:10]
+        query = """
+            SELECT a.cls_id, l.crm_lead_no, l.full_name, l.lead_owner,
+                   a.actor, a.created_at, a.description
+            FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
+            WHERE a.activity_type = ?
+              AND substr(a.created_at, 1, 10) = ?
+        """
+        params = [activity_type, today]
+        if actor_email:
+            query += " AND a.actor = ?"
+            params.append(actor_email)
+        query += " ORDER BY a.created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_calls_made_today(actor_email=None):
+    """(v2.52) Drill-down behind the Today's Performance "Calls Made"
+    tile — today's activity_log 'call_attempted' rows (see
+    log_call_tap()), actor-scoped to match that tile's own count."""
+    return _activity_rows_today("call_attempted", actor_email)
+
+
+def get_site_visits_scheduled_today(actor_email=None):
+    """(v2.52) Drill-down behind the Today's Performance "Site Visits
+    Scheduled" tile — today's activity_log 'site_visit_scheduled' rows,
+    actor-scoped to match that tile's own count."""
+    return _activity_rows_today("site_visit_scheduled", actor_email)
+
+
+def get_site_visits_conducted_today(actor_email=None):
+    """(v2.52) Drill-down behind the Today's Performance "Site Visits
+    Conducted" tile — today's activity_log 'site_visit_conducted' rows,
+    actor-scoped to match that tile's own count. NOT the same data
+    source as get_site_visits_conducted() (Export, owner-scoped) — see
+    this section's header comment for why."""
+    return _activity_rows_today("site_visit_conducted", actor_email)
+
+
+def get_follow_ups_scheduled_today(actor_email=None):
+    """(v2.52) Drill-down behind the Today's Performance "Follow-ups
+    Scheduled" tile — today's activity_log 'follow_up_scheduled' rows,
+    actor-scoped to match that tile's own count."""
+    return _activity_rows_today("follow_up_scheduled", actor_email)
+
+
+def get_follow_ups_completed_today(actor_email=None):
+    """(v2.52) Drill-down behind the Today's Performance "Follow-ups
+    Completed" tile — today's activity_log 'follow_up_completed' rows,
+    actor-scoped to match that tile's own count."""
+    return _activity_rows_today("follow_up_completed", actor_email)
+
+
+# Config-not-code: metric-key -> (display label, drill-down fetch
+# function), one entry per Today's Performance tile. Drives app.py's
+# single /dashboard/today/<metric> route rather than 5 near-identical
+# routes/if-branches. Must stay AFTER the 5 functions above since it
+# references them directly.
+TODAY_PERFORMANCE_METRICS = {
+    "calls_made":              {"label": "Calls Made",              "fetch": get_calls_made_today},
+    "site_visits_scheduled":   {"label": "Site Visits Scheduled",   "fetch": get_site_visits_scheduled_today},
+    "site_visits_conducted":   {"label": "Site Visits Conducted",   "fetch": get_site_visits_conducted_today},
+    "follow_ups_scheduled":    {"label": "Follow-ups Scheduled",    "fetch": get_follow_ups_scheduled_today},
+    "follow_ups_completed":    {"label": "Follow-ups Completed",    "fetch": get_follow_ups_completed_today},
+}
 
 
 def get_latest_stage_and_owner_changes():

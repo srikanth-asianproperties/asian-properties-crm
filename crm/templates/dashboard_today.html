@@ -1,14 +1,19 @@
-{# dashboard_today.html (v0.7) — "Today's Performance" tab. Small,
-   non-pressable number tiles only (Srikanth's explicit spec — these
-   are NOT clickable cards like the Stats tab). Deliberately no "talk
-   time" tile — see the banner below and cls_db.get_todays_activity_
-   counts()'s docstring for why.
+{# dashboard_today.html (v0.8) — "Today's Performance" tab. Deliberately
+   no "talk time" tile — see the banner below and cls_db.get_todays_
+   activity_counts()'s docstring for why.
+
+   v0.8 (2026-08-11) — Phase 4 of the 6-phase feature batch: all 5 tiles
+   are now clickable <a> cards, each linking to the new
+   /dashboard/today/<metric> drill-down (app.py v0.45's
+   dashboard_today_drilldown(), cls_db.py v2.52's per-tile actor-scoped
+   fetch functions). This REVERSES v0.7's "non-pressable tiles only"
+   decision below, confirmed with Srikanth. perf/company_wide context
+   vars and dashboard_today() itself are unchanged.
 
    v0.7 — Tiles migrated from ad-hoc .card markup to the shared
-   .stat-card / .stat-card-grid classes (base.html v0.12). Still <div>,
-   not <a> — non-pressable is a presentation-only difference from the
-   Stats tab, same shell. No caption text (stat-card-caption omitted).
-   Intro paragraph and outro banner unchanged. #}
+   .stat-card / .stat-card-grid classes (base.html v0.12). No caption
+   text (stat-card-caption omitted). Intro paragraph and outro banner
+   unchanged. #}
 {% extends "base.html" %}
 {% block title %}Today's Performance{% endblock %}
 
@@ -24,40 +29,40 @@
 
 <div class="stat-card-grid">
 
-  <div class="stat-card">
+  <a href="{{ url_for('dashboard_today_drilldown', metric='calls_made') }}" class="stat-card">
     <div class="stat-card-header">Calls Made</div>
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-ink">{{ perf.calls_attempted }}</div>
     </div>
-  </div>
+  </a>
 
-  <div class="stat-card">
+  <a href="{{ url_for('dashboard_today_drilldown', metric='site_visits_scheduled') }}" class="stat-card">
     <div class="stat-card-header">Site Visits Scheduled</div>
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-blue">{{ perf.site_visits_created }}</div>
     </div>
-  </div>
+  </a>
 
-  <div class="stat-card">
+  <a href="{{ url_for('dashboard_today_drilldown', metric='site_visits_conducted') }}" class="stat-card">
     <div class="stat-card-header">Site Visits Conducted</div>
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-green">{{ perf.site_visits_conducted }}</div>
     </div>
-  </div>
+  </a>
 
-  <div class="stat-card">
+  <a href="{{ url_for('dashboard_today_drilldown', metric='follow_ups_scheduled') }}" class="stat-card">
     <div class="stat-card-header">Follow-ups Scheduled</div>
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-blue">{{ perf.follow_ups_created }}</div>
     </div>
-  </div>
+  </a>
 
-  <div class="stat-card">
+  <a href="{{ url_for('dashboard_today_drilldown', metric='follow_ups_completed') }}" class="stat-card">
     <div class="stat-card-header">Follow-ups Completed</div>
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-green">{{ perf.follow_ups_completed }}</div>
     </div>
-  </div>
+  </a>
 
 </div>
 

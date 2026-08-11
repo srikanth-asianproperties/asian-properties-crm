@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.44
+Version : 0.45
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,14 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.45 (2026-08-11) — Phase 4 of the 6-phase feature batch (requires
+  cls_db.py v2.52): NEW GET /dashboard/today/<metric> (dashboard_today_
+  drilldown()) — one route/template for all 5 Today's Performance tiles,
+  dispatched via the new cls_db.TODAY_PERFORMANCE_METRICS config dict.
+  Same company_wide/actor-email scoping as dashboard_today() itself.
+  Pipeline Analysis's stage tiles (dashboard_pipeline.html) are now
+  clickable too, linking to the existing leads_list route's "stages"
+  filter param — no route/context change needed there, template-only.
 v0.44 (2026-08-11) — Phase 3 of the 6-phase feature batch: dashboard()
   now also computes today_attendance (cls_db.get_today_attendance_overview(),
   the SAME function settings_attendance_today() already calls — no new
@@ -2208,6 +2216,34 @@ def dashboard_today():
         active_tab="today",
         perf=perf,
         company_wide=company_wide,
+    )
+
+
+@app.route("/dashboard/today/<metric>")
+@login_required
+def dashboard_today_drilldown(metric):
+    """
+    v0.45 — Phase 4: drill-down list behind each of Today's Performance's
+    5 tiles. One route/template for all 5 (config-driven via cls_db.
+    TODAY_PERFORMANCE_METRICS) rather than 5 near-identical routes,
+    same "config not code" pattern as due_list()'s <kind> param. Same
+    company_wide/actor-email scoping as dashboard_today() itself, so a
+    tile's number and its drill-down list are always counting the exact
+    same activity_log rows.
+    """
+    if metric not in cls_db.TODAY_PERFORMANCE_METRICS:
+        abort(404)
+    config = cls_db.TODAY_PERFORMANCE_METRICS[metric]
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.effective_company_wide(user)
+    scope_email = None if company_wide else user["email"]
+    items = config["fetch"](actor_email=scope_email)
+    return render_template(
+        "dashboard_today_drilldown.html",
+        active_tab="today",
+        items=items,
+        label=config["label"],
+        metric=metric,
     )
 
 
