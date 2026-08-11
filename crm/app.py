@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.42
+Version : 0.43
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,14 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.43 (2026-08-11) — Phase 1 of the 6-phase feature batch: attendance_home()
+  now redirects an admin session straight to settings_attendance_today()
+  ("Who's Present Today") instead of rendering attendance.html's admin card,
+  so the nav drawer's "Attendance" link lands an admin directly on that view.
+  Checked via the literal role=='admin' string, matching attendance.html's
+  own gate. attendance.html's admin card had its "Who's Present Today"
+  button removed (Settings & Attendance button only) — see that template's
+  own changelog. No schema change, no cls_db.py change.
 v0.42 (2026-08-09) — Nine-item batch (requires cls_db.py v2.51):
   - settings_attendance_dashboard()'s `employees` list (the oversight
     filter dropdown) now excludes role='admin', matching cls_db.py
@@ -4800,8 +4808,22 @@ def attendance_home():
     Correction Request buttons. ?year=&month= pick the calendar month
     (defaults to the current month); invalid/missing values silently
     fall back to today rather than erroring.
+
+    v0.38 — Phase 1: an admin session hitting this route (i.e. the nav
+    drawer's "Attendance" link) now redirects straight to
+    settings_attendance_today() ("Who's Present Today") instead of
+    rendering this page's admin card. Checked as the LITERAL
+    role=='admin' string, matching attendance.html's own gate (not
+    OVERSIGHT_ROLES/can_view_all_leads) — manager is unaffected and
+    still gets the normal employee view below. The admin card in
+    attendance.html is left in place (Settings & Attendance button
+    only, per that template's own changelog) as a harmless fallback;
+    with this redirect in place it is not actually reachable via the
+    nav link.
     """
     user = cls_db.get_user_by_id(session["user_id"])
+    if user["role"] == "admin":
+        return redirect(url_for("settings_attendance_today"))
     today_dt = datetime.now()
     today = today_dt.strftime("%Y-%m-%d")
     try:

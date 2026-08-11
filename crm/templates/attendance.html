@@ -1,5 +1,12 @@
-{# attendance.html (v0.32) — Employee-facing Attendance page. APX
+{# attendance.html (v0.33) — Employee-facing Attendance page. APX
    Attendance v0.9 pilot, Build Order Step 2 (+ a Step 3 nav hook).
+
+   v0.33 — Phase 1 of the 6-phase feature batch (app.py v0.43): the admin
+   card's "Who's Present Today" button is removed — app.py's
+   attendance_home() now redirects an admin session straight to
+   settings_attendance_today() before this template ever renders for them,
+   so the card below is a harmless fallback only, kept in case that
+   redirect is ever reverted. "Settings & Attendance" button stays.
 
    v0.32 — Chunk C (app.py v0.37 / cls_db.py v2.46): this ENTIRE page's
    existing content (top "View My Calendar & Export" link, the "Today"
@@ -62,7 +69,6 @@
     Admins don't punch in/out — manage the team's attendance from here instead.
   </p>
   <div style="display:flex; gap:8px; flex-wrap:wrap;">
-    <a href="{{ url_for('settings_attendance_today') }}" class="btn btn-primary">Who's Present Today</a>
     <a href="{{ url_for('settings_attendance') }}" class="btn">Settings &amp; Attendance</a>
   </div>
 </div>
