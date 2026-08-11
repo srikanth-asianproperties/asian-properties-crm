@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.43
+Version : 0.44
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,12 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.44 (2026-08-11) — Phase 3 of the 6-phase feature batch: dashboard()
+  now also computes today_attendance (cls_db.get_today_attendance_overview(),
+  the SAME function settings_attendance_today() already calls — no new
+  query) when the logged-in user is admin (literal role=='admin' check),
+  None otherwise, for a new admin-only "Today's Attendance" card on
+  dashboard.html. No new route, no schema/cls_db.py change.
 v0.43 (2026-08-11) — Phase 1 of the 6-phase feature batch: attendance_home()
   now redirects an admin session straight to settings_attendance_today()
   ("Who's Present Today") instead of rendering attendance.html's admin card,
@@ -2061,6 +2067,16 @@ def dashboard():
     reengaged_count = cls_db.get_reengaged_count(days=7, owner=scope_owner)
     follow_up_due_count = len(cls_db.get_due_by_kind("follow_up", owner=scope_owner))
     site_visit_due_count = len(cls_db.get_due_by_kind("site_visit", owner=scope_owner))
+    # v0.44 — Phase 3: admin-only "Today's Attendance" card. Same literal
+    # role=='admin' check used throughout the attendance UI (not the looser
+    # can_view_all_leads()/OVERSIGHT_ROLES gate), and the SAME function
+    # settings_attendance_today() already calls — no second query for the
+    # same data. Only computed for admin so non-admin dashboard loads don't
+    # pay for a query they'll never render.
+    today_attendance = (
+        cls_db.get_today_attendance_overview(datetime.now().strftime("%Y-%m-%d"))
+        if user["role"] == "admin" else None
+    )
     return render_template(
         "dashboard.html",
         active_tab="stats",
@@ -2069,6 +2085,7 @@ def dashboard():
         reengaged_count=reengaged_count,
         follow_up_due_count=follow_up_due_count,
         site_visit_due_count=site_visit_due_count,
+        today_attendance=today_attendance,
     )
 
 

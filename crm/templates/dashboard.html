@@ -1,8 +1,18 @@
-{# dashboard.html (v0.14) — "Stats Overview" top-tab view, itself living
+{# dashboard.html (v0.15) — "Stats Overview" top-tab view, itself living
    inside the "Stats" tab of the 3-tab BOTTOM dashboard (Stats / Today's
    Performance / Pipeline Analysis). Bottom tab bar unchanged from v0.6.
    Kept at the /dashboard route/filename so every existing
    url_for('dashboard') link elsewhere still works.
+
+   v0.15 (2026-08-11) — Phase 3 of the 6-phase feature batch: NEW admin-only
+   "Today's Attendance" card (literal current_user.role == 'admin', same
+   check used throughout the attendance UI), placed after the Reengaged
+   caption, before the bottom tab bar — doesn't disturb the existing 4
+   stat-card grid or the Tomorrow's Reminders tile. Borderless 2-column
+   table (name, status), reusing app.py's new today_attendance context var
+   (cls_db.get_today_attendance_overview() — the same function/status
+   vocabulary settings_attendance_today.html already uses, including "Not
+   marked yet" for no row yet). Uses the existing .card class, no new CSS.
 
    v0.14 (2026-08-09) — Item 2: removed the "View all leads →" button
    (was directly above the bottom tab bar, linked to leads_list). The
@@ -101,6 +111,25 @@
   by phone/email to a prior lead) and haven't had any activity logged since —
   it clears the moment someone touches the lead.
 </p>
+
+{% if current_user.role == 'admin' %}
+<div class="card" style="margin-top:14px;">
+  <div class="field-label">Today's Attendance</div>
+  <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+    {% for row in today_attendance %}
+    <tr>
+      <td style="padding:5px 0; font-size:13px; border:none;">{{ row.full_name or row.email }}</td>
+      <td style="padding:5px 0; font-size:13px; border:none; text-align:right; color:var(--ink-soft);">
+        {% if row.not_marked %}Not marked yet{% else %}{{ row.status.replace('_', ' ')|title }}{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not today_attendance %}
+    <tr><td colspan="2" style="padding:5px 0; font-size:13px; border:none; color:var(--ink-soft);">No active employees.</td></tr>
+    {% endif %}
+  </table>
+</div>
+{% endif %}
 
 {% include "_dashboard_tabbar.html" %}
 {% endblock %}
