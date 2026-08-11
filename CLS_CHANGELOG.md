@@ -1,6 +1,11 @@
 # CLS/APX CRM — Changelog
 
 ## 2026-08-11
+- CLS_CHANGELOG.md — created this session (Phase 1's commit); each
+  phase below was appended as its own session completed, not batched
+  at the end. Phase 6 of the 6-phase feature batch — this closes out
+  the batch; see the "after all 6 phases" summary in that session for
+  final version numbers and open items.
 - bulk job history export (cls_db.py v2.53, app.py v0.46,
   settings_bulk_jobs.html v1.1) — new bulk_job_leads snapshot table:
   every bulk-reassign job now records the exact cls_ids it touched,
