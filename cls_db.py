@@ -2,11 +2,20 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.53
+Version : 2.54
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.54 (2026-08-14) — Added get_lead_by_crm_no() and
+  direct_set_stage_reconciliation() — one-time parallel-run reconciliation
+  support. Bypasses STAGE_TRANSITIONS deliberately for this one script
+  only — see cls_reconcile_apply.py docstring for why. ADDITIVE ONLY,
+  nothing existing removed or modified. direct_set_stage_reconciliation()
+  logs its activity_log row via the existing _log_activity() helper
+  (same atomic-with-the-write pattern update_lead_stage() already uses)
+  rather than a raw INSERT, so it can't drift from that table's real
+  column set.
 v2.53 (2026-08-11) — Phase 5 of the 6-phase feature batch. NEW
   bulk_job_leads table (init_db(), self-healing CREATE TABLE IF NOT
   EXISTS) — per-job cls_id snapshot. NEW record_bulk_job_leads(job_id,
@@ -3885,6 +3894,16 @@ def get_lead_by_id(cls_id):
         conn.close()
 
 
+def get_lead_by_crm_no(crm_lead_no):
+    """Lookup by the human-readable APX number — used by cls_reconcile_apply.py."""
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT * FROM leads WHERE crm_lead_no=?", (crm_lead_no,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def get_events_for_lead(cls_id):
     """All CAPI fire events for one lead, newest first (events_log)."""
     conn = _connect()
@@ -4723,6 +4742,29 @@ def update_lead_stage(cls_id, new_stage, actor, reason_code=None, reason_notes=N
 
         conn.commit()
         return True, f"Stage changed: {live_stage} → {new_stage}.{cancelled_note}"
+    finally:
+        conn.close()
+
+
+def direct_set_stage_reconciliation(cls_id, new_stage, actor, prev_value):
+    """
+    ONE-TIME reconciliation write — bypasses STAGE_TRANSITIONS deliberately.
+    Not a general-purpose function; called only by cls_reconcile_apply.py.
+    Logs to activity_log (via the shared _log_activity() helper, same
+    atomic-with-the-write pattern as update_lead_stage() above) with a
+    distinct activity_type ('reconciliation_correction') so it's never
+    mistaken for a salesperson's own click.
+    """
+    now = _now()
+    conn = _connect()
+    try:
+        conn.execute("""
+            UPDATE leads SET current_stage=?, stage_updated_at=?, cls_updated_at=?
+            WHERE cls_id=?
+        """, (new_stage, now, now, cls_id))
+        _log_activity(conn, cls_id, "reconciliation_correction", actor,
+                      prev_value=prev_value, new_value=new_stage)
+        conn.commit()
     finally:
         conn.close()
 
