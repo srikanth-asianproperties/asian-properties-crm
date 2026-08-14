@@ -2,11 +2,32 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.54
+Version : 2.55
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.55 (2026-08-14) — capi_fire_queue table + queue functions, for
+  inline CAPI firing redesign. Retires selldo_sync gate dependency
+  since Job B is permanently stopped. NEW (additive): capi_fire_queue
+  table (self-healing CREATE TABLE IF NOT EXISTS), MAX_QUEUE_ATTEMPTS
+  constant, queue_failed_fire(), get_due_retries(), clear_from_queue(),
+  bump_queue_attempt().
+
+  NOT purely additive — one existing function's return signature
+  changed, confirmed with Srikanth first: upsert_meta_lead() now
+  returns (cls_id, is_new_lead) instead of bare cls_id on all three
+  branches (was: identical `return cls_id` on every branch, giving
+  callers no way to tell a genuinely-new insert from a leadgen_id
+  refresh or a contact-match enrich). is_new_lead is True only on
+  branch 3 ("genuinely new lead — insert"), False on branches 1 and 2.
+  This mirrors the existing (cls_id, stage_changed) pattern
+  upsert_selldo_lead() already uses in this same file. Exactly one
+  production caller exists (meta_leads_fetcher.py:582, updated to
+  meta_leads_fetcher.py v1.8 in the same batch) plus this file's own
+  2 --selftest call sites (updated below). No other logic inside
+  upsert_meta_lead() changed — same three branches, same SQL, same
+  every-other-parameter behavior.
 v2.54 (2026-08-14) — Added get_lead_by_crm_no() and
   direct_set_stage_reconciliation() — one-time parallel-run reconciliation
   support. Bypasses STAGE_TRANSITIONS deliberately for this one script
@@ -2595,6 +2616,25 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_cls ON activity_log(cls_id);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);")
+
+    # v2.55 — capi_fire_queue: failure queue for the inline CAPI firing
+    # redesign. A lead lands here when fire_single_lead_event() (see
+    # cls_capi_core.py) fails synchronously from app.py's stage-change
+    # route or meta_leads_fetcher.py's new-lead insert. cls_capi_firer.py
+    # v3.0's default mode processes this queue on its own schedule.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS capi_fire_queue (
+            queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cls_id TEXT,
+            target_stage TEXT,
+            attempts INTEGER DEFAULT 0,
+            last_error TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            last_attempt_at TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_queue_status ON capi_fire_queue(status);")
 
     # ── Self-healing migration: call-recording columns (v2.33) ──
     # activity_type='call_recording' rows need 3 structured fields that
@@ -7819,7 +7859,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                   meta_ad_id, meta_ad_name, meta_platform,
                   now, cls_id))
             conn.commit()
-            return cls_id
+            return cls_id, False   # v2.55 — leadgen_id refresh, not a new lead
 
         # ── 2. No leadgen_id row — does a contact match exist? (enrich it) ──
         cls_id, tier = find_match(conn, phone_norm, email_norm)
@@ -7854,7 +7894,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                   meta_ad_id, meta_ad_name,
                   now, cls_id))
             conn.commit()
-            return cls_id
+            return cls_id, False   # v2.55 — contact-match enrich, not a new lead
 
         # ── 3. Genuinely new lead — insert. ──
         cls_id = str(uuid.uuid4())
@@ -7927,7 +7967,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                       created_at=_format_meta_created_time(meta_created_time))
 
         conn.commit()
-        return cls_id
+        return cls_id, True   # v2.55 — genuinely new lead
     finally:
         conn.close()
 
@@ -8498,6 +8538,73 @@ def mark_as_fired(cls_id, fired_stage):
                 last_fired_stage=?, last_fired_at=?, cls_updated_at=?
             WHERE cls_id=?
         """, (fired_stage, now, now, cls_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+MAX_QUEUE_ATTEMPTS = 8
+
+
+def queue_failed_fire(cls_id, target_stage, error):
+    """
+    Append one row to capi_fire_queue — called when fire_single_lead_
+    event() (cls_capi_core.py) fails from an inline call site (app.py's
+    stage-change route, meta_leads_fetcher.py's new-lead insert). Picked
+    up later by cls_capi_firer.py v3.0's default (queue-only) mode.
+    """
+    now = _now()
+    conn = _connect()
+    try:
+        conn.execute("""
+            INSERT INTO capi_fire_queue (cls_id, target_stage, attempts, last_error, status, created_at, last_attempt_at)
+            VALUES (?, ?, 1, ?, 'pending', ?, ?)
+        """, (cls_id, target_stage, str(error)[:500], now, now))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_due_retries():
+    """All pending capi_fire_queue rows — cls_capi_firer.py's default mode."""
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT queue_id, cls_id, target_stage, attempts
+            FROM capi_fire_queue WHERE status='pending'
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def clear_from_queue(queue_id):
+    """Remove a row after it fires successfully on retry."""
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM capi_fire_queue WHERE queue_id=?", (queue_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def bump_queue_attempt(queue_id, error):
+    """
+    Record a failed retry. Once attempts reaches MAX_QUEUE_ATTEMPTS the
+    row's status flips to 'failed_permanent' so get_due_retries() stops
+    picking it up — a lead that fails 8 times needs a human, not another
+    silent retry.
+    """
+    now = _now()
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT attempts FROM capi_fire_queue WHERE queue_id=?", (queue_id,)).fetchone()
+        new_attempts = (row["attempts"] if row else 0) + 1
+        new_status = "failed_permanent" if new_attempts >= MAX_QUEUE_ATTEMPTS else "pending"
+        conn.execute("""
+            UPDATE capi_fire_queue SET attempts=?, last_error=?, last_attempt_at=?, status=?
+            WHERE queue_id=?
+        """, (new_attempts, str(error)[:500], now, new_status, queue_id))
         conn.commit()
     finally:
         conn.close()
@@ -11044,12 +11151,12 @@ if __name__ == "__main__":
     print("\n--- Upsert scenario ---")
 
     # 1. Meta lead arrives first
-    c1 = upsert_meta_lead(
+    c1, c1_is_new = upsert_meta_lead(
         leadgen_id="TEST_LG_1001", form_id="933648612881057",
         project="Naishka", full_name="Test Buyer",
         phone_raw="+919876500001", email_raw="testbuyer@gmail.com",
         meta_created_time="2026-05-21 10:00:00")
-    print(f"  [OK] Meta lead upserted -> cls_id={c1[:8]}...")
+    print(f"  [{'OK' if c1_is_new else 'FAIL'}] Meta lead upserted -> cls_id={c1[:8]}... (is_new={c1_is_new})")
 
     # 2. Same person shows up in Sell.do at stage Prospect -> should MATCH
     c2, changed = upsert_selldo_lead(
@@ -11133,7 +11240,7 @@ if __name__ == "__main__":
     print("\n--- Hard stops ---")
 
     # 13. Create a test lead to opt out
-    c4 = upsert_meta_lead(
+    c4, _ = upsert_meta_lead(
         leadgen_id="TEST_LG_OPTOUT", form_id="933648612881057",
         project="Naishka", full_name="Opted Out Person",
         phone_raw="+919876500099", email_raw="optout@test.com",

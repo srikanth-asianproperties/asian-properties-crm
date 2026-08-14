@@ -2,11 +2,22 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.7
+Version : 1.8
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.8 (2026-08-14) — inline CAPI firing redesign. Requires cls_db.py
+  v2.55, whose upsert_meta_lead() now returns (cls_id, is_new_lead)
+  instead of bare cls_id (updated here at this file's one call site).
+  When is_new_lead is True (branch 3 — genuinely new lead, never branch
+  1's leadgen_id refresh or branch 2's contact-match enrich), the fresh
+  lead row is re-read via cls_db.get_lead_by_id() and fired synchronously
+  via cls_capi_core.fire_single_lead_event(), using the env dict this
+  run() already loaded. On failure, queued via cls_db.queue_failed_fire()
+  instead of blocking the pull loop — Meta being slow must never stop
+  the next lead in the same run from being pulled. NEW import
+  cls_capi_core at the top. Nothing else in this file changes.
 v1.7 (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 v1.6 (2026-07-30) : Capture Meta's "platform" field (e.g. "fb"/"ig"),
                     requires cls_db.py v2.32's new upsert_meta_lead(
@@ -137,6 +148,7 @@ import requests
 from datetime import datetime
 
 import cls_db   # the foundation layer — Step 1
+import cls_capi_core   # v1.8 — inline CAPI firing on genuinely-new-lead insert
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -579,7 +591,7 @@ def run():
             if not fields["leadgen_id"]:
                 continue
             try:
-                cls_db.upsert_meta_lead(
+                cls_id, is_new_lead = cls_db.upsert_meta_lead(
                     leadgen_id        = fields["leadgen_id"],
                     form_id           = form["form_id"],
                     project           = form["project"],
@@ -598,6 +610,19 @@ def run():
                     extra_answers      = fields.get("extra_answers") or None,
                 )
                 upserted += 1
+
+                # v1.8 — inline CAPI firing, genuinely-new leads only (never
+                # a leadgen_id refresh or a contact-match enrich — those
+                # leave current_stage untouched, so there is nothing new
+                # to fire).
+                if is_new_lead:
+                    try:
+                        fresh_lead = cls_db.get_lead_by_id(cls_id)
+                        fired, err = cls_capi_core.fire_single_lead_event(fresh_lead, env)
+                        if not fired:
+                            cls_db.queue_failed_fire(cls_id, fresh_lead["current_stage"], err)
+                    except Exception as e:
+                        cls_db.queue_failed_fire(cls_id, "Incoming", str(e))
             except Exception as e:
                 log(f"    upsert failed for lead {fields['leadgen_id']}: {e}",
                     "WARNING")
