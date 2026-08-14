@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.48
+Version : 0.49
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,19 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.49 (2026-08-14) — inline CAPI firing redesign. change_lead_stage()'s
+  existing body is UNCHANGED; added one block after flash() and before
+  the return redirect(...): on a successful stage change into one of
+  cls_capi_core.TARGET_STAGES, fires that lead's CAPI event synchronously
+  via cls_capi_core.fire_single_lead_event() (using this file's own
+  already-loaded _env dict, not a fresh load_env() call — same .env,
+  avoids re-reading the file from disk on every stage-change POST). On
+  any failure (fire returns False, or any exception), queues it via
+  cls_db.queue_failed_fire() instead of blocking the request — a
+  salesperson's stage change must never fail because Meta was slow or
+  down. NEW import cls_capi_core near the existing import cls_db.
+  Requires cls_db.py v2.55 (capi_fire_queue table + queue functions)
+  and cls_capi_core.py v1.0 (fire_single_lead_event()).
 v0.48 (2026-08-14) — added Facebook Login for Business required routes:
   OAuth redirect placeholder, deauthorize callback, data deletion callback
   (with signature verification), and deletion status stub page. No cls_db
@@ -1629,6 +1642,7 @@ from werkzeug.utils import secure_filename
 BASE_DIR = r"D:\CLS"
 sys.path.insert(0, BASE_DIR)
 import cls_db  # noqa: E402  (must follow the sys.path insert above)
+import cls_capi_core  # v0.49 — inline CAPI firing (fire_single_lead_event) for change_lead_stage()
 import cls_reports  # v0.6 — Reports section; lives in crm/ alongside app.py, no sys.path change needed
 import cls_attendance_photo  # v0.35 — APX Attendance Chunk A: map-thumbnail photo watermarking
 
@@ -3480,6 +3494,19 @@ def change_lead_stage(cls_id):
         reason_code=reason_code, reason_notes=reason_notes
     )
     flash(message, "success" if ok else "error")
+
+    # v0.49 — inline CAPI firing. On a successful stage change into a
+    # target stage, fire it to Meta synchronously; queue on any failure
+    # rather than let a Meta hiccup block the salesperson's request.
+    if ok and new_stage in cls_capi_core.TARGET_STAGES:
+        try:
+            fresh_lead = cls_db.get_lead_by_id(cls_id)
+            fired, err = cls_capi_core.fire_single_lead_event(fresh_lead, _env)
+            if not fired:
+                cls_db.queue_failed_fire(cls_id, new_stage, err)
+        except Exception as e:
+            cls_db.queue_failed_fire(cls_id, new_stage, str(e))
+
     return redirect(url_for("lead_detail", cls_id=cls_id))
 
 
