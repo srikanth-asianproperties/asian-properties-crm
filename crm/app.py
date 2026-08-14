@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.46
+Version : 0.48
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,56 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.48 (2026-08-14) — added Facebook Login for Business required routes:
+  OAuth redirect placeholder, deauthorize callback, data deletion callback
+  (with signature verification), and deletion status stub page. No cls_db
+  writes; data deletion route logs requests only, does not yet perform
+  actual deletion — that requires separate design work.
+  NEW GET /oauth/meta-callback — static landing page, no params processed,
+  no auth. Exists only because Meta's Tech Provider setup requires at
+  least one Valid OAuth Redirect URI on file.
+  NEW POST /webhooks/meta-deauthorize and NEW POST /webhooks/
+  meta-data-deletion — both verify Meta's signed_request via a new shared
+  helper, _verify_meta_signed_request() (base64url-decode + HMAC-SHA256
+  over the payload segment using META_LEADGEN_APP_SECRET, hmac.compare_
+  digest for the comparison — Meta's documented algorithm, factored once
+  rather than duplicated across the two routes). META_LEADGEN_APP_SECRET
+  read via the same _env dict/.env convention as v0.47's
+  META_WEBHOOK_VERIFY_TOKEN. Deauthorize just logs user_id on a valid
+  signature; data-deletion additionally generates a confirmation_code
+  (secrets.token_hex(8) — cryptographic, not random) and returns Meta's
+  required {"url", "confirmation_code"} JSON shape. Both return 400 on an
+  invalid/unverifiable signature.
+  NEW GET /data-deletion-status — reads the ?id= query param and shows a
+  stub "being processed" message with a contact address (reuses
+  sales1@asianbuild.in, the existing internal-mail address already used
+  elsewhere in this file — see v0.5's export-email changelog entry —
+  rather than inventing a new placeholder). The ?id= value is
+  html.escape()'d before being placed in the response: it's Flask string
+  output (no Jinja auto-escaping), so an unescaped reflected query param
+  here would be a straightforward reflected-XSS opening — added even
+  though the task spec didn't call it out explicitly, per this file's own
+  "prioritize safe/secure code" convention. Genuinely a stub: this route
+  does NOT look up or act on any real deletion record (none exists yet
+  in cls_db) — it exists only so the URL data-deletion webhook returns
+  resolves to something instead of a 404, ahead of real deletion-tracking
+  design.
+  All four routes deliberately have no @login_required — Meta's own
+  servers call these, not a browser session with a CRM login.
+v0.47 (2026-08-14) — added Meta leadgen webhook verification endpoint
+  (GET challenge-response + POST logging only, no cls.db writes).
+  NEW /webhooks/meta-leadgen (meta_leadgen_webhook(), GET+POST, no
+  @login_required — Meta's own servers call this, not a browser
+  session). GET performs the hub.mode/hub.verify_token/hub.challenge
+  handshake Meta App Review requires, comparing against
+  META_WEBHOOK_VERIFY_TOKEN (read via this file's _env dict, same
+  dotenv-loaded-not-os.environ convention as CRM_SECRET_KEY/CRM_HOST
+  above — NOT the CLS_APK_UPLOAD_SECRET-style real-OS-env-var
+  convention, since this token is meant to live in .env). POST just
+  logs the payload via _log() (this file's existing pythonw-safe
+  logging helper) and returns 200 — no cls_db writes yet; that's a
+  separate later task once routing design (this endpoint's eventual
+  role replacing Job A's polling) is finalized.
 v0.46 (2026-08-11) — Phase 5 of the 6-phase feature batch (requires
   cls_db.py v2.53): settings_bulk_reassign_commit() now passes
   cls_ids=matched_ids to create_bulk_job(), snapshotting the reassigned
@@ -1556,9 +1606,13 @@ v0.1  (July 2026) — first working version:
 
 import base64
 import calendar
+import hashlib
 import hmac
+import html
+import json
 import os
 import re
+import secrets
 import sys
 import time
 from datetime import datetime, timedelta
@@ -1685,6 +1739,22 @@ HOST = _env.get("CRM_HOST", "127.0.0.1").strip()
 # Waitress thread count — config-not-code, no file edit needed to tune it.
 # 4 is comfortable for a small sales team's request volume.
 WAITRESS_THREADS = int(_env.get("WAITRESS_THREADS", "4"))
+
+# v0.47 — Meta leadgen webhook verification token. Read from .env via
+# this file's own _env dict (same convention as CRM_SECRET_KEY/CRM_HOST
+# above), NOT os.environ directly — that pattern is reserved elsewhere
+# in this file for secrets deliberately kept OUT of .env (see
+# APK_UPLOAD_SECRET/APK_DOWNLOAD_SECRET above). This token belongs in
+# .env, so it follows the .env-sourced convention instead. Empty string
+# if unset — the route below fails closed (rejects verification) rather
+# than matching an unset token against an unset value.
+META_WEBHOOK_VERIFY_TOKEN = _env.get("META_WEBHOOK_VERIFY_TOKEN", "")
+
+# v0.48 — Meta app secret used to verify signed_request payloads on the
+# deauthorize/data-deletion callbacks below. Same "read from .env via
+# _env dict" convention as META_WEBHOOK_VERIFY_TOKEN above, for the same
+# reason (this is meant to live in .env, not as a real OS env var).
+META_LEADGEN_APP_SECRET = _env.get("META_LEADGEN_APP_SECRET", "")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -5610,6 +5680,144 @@ def download_apk():
         mimetype="application/vnd.android.package-archive",
         as_attachment=True, download_name="clspilot.apk"
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# META LEADGEN WEBHOOK  (v0.47)
+# ─────────────────────────────────────────────────────────────
+# Prerequisite for Meta App Review's webhook verification step, and a
+# future replacement path for Job A's (meta_leads_fetcher.py) polling.
+# GET is Meta's one-time (and re-run-on-demand) challenge-response
+# handshake; POST is what Meta calls going forward whenever a lead
+# comes in. Deliberately NOT @login_required — Meta's own servers call
+# this, not a browser session. Verification/logging ONLY: no cls_db
+# writes yet, on purpose — that's a separate, later task once routing
+# design (how a webhook-delivered lead maps onto cls_db's existing
+# Meta-lead upsert path) is finalized.
+
+@app.route("/webhooks/meta-leadgen", methods=["GET", "POST"])
+def meta_leadgen_webhook():
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+
+        if mode == "subscribe" and token == META_WEBHOOK_VERIFY_TOKEN:
+            _log("Meta webhook verification succeeded")
+            return challenge, 200
+        else:
+            _log("Meta webhook verification FAILED - token mismatch", "WARNING")
+            return "Verification failed", 403
+
+    # POST — logging only, no cls_db write (see module docstring above).
+    payload = request.get_json(silent=True) or {}
+    _log(f"Meta leadgen webhook received: {payload}")
+    return "OK", 200
+
+
+# ─────────────────────────────────────────────────────────────
+# FACEBOOK LOGIN FOR BUSINESS  (v0.48)
+# ─────────────────────────────────────────────────────────────
+# Four routes required to satisfy Meta's Tech Provider / App Review
+# checklist for "Facebook Login for Business": a Valid OAuth Redirect
+# URI, a deauthorize callback, a data deletion callback, and (since the
+# data deletion callback must point somewhere) a status page for it.
+# None of these touch real lead data or cls_db — see module changelog
+# above for the full reasoning on each.
+
+def _verify_meta_signed_request(signed_request, app_secret):
+    """
+    Verifies a Meta signed_request per Meta's documented algorithm:
+    "<base64url-sig>.<base64url-json-payload>", HMAC-SHA256 over the
+    raw payload segment using the app secret. Returns the decoded
+    payload dict if the signature checks out, else None. Shared by
+    both the deauthorize and data-deletion routes below so the
+    verification logic exists in exactly one place.
+    """
+    if not signed_request or not app_secret:
+        return None
+    try:
+        encoded_sig, payload = signed_request.split(".", 1)
+    except ValueError:
+        return None
+
+    def _b64url_decode(s):
+        padding = "=" * (-len(s) % 4)
+        return base64.urlsafe_b64decode(s + padding)
+
+    try:
+        sig = _b64url_decode(encoded_sig)
+        data = json.loads(_b64url_decode(payload))
+    except Exception:
+        return None
+
+    expected_sig = hmac.new(
+        app_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).digest()
+
+    if not hmac.compare_digest(sig, expected_sig):
+        return None
+
+    return data
+
+
+@app.route("/oauth/meta-callback", methods=["GET"])
+def meta_oauth_callback():
+    # No params processed, no auth — exists only because Meta's Tech
+    # Provider setup requires at least one Valid OAuth Redirect URI on
+    # file. Real OAuth logic, if ever needed, is a separate later task.
+    return "Login complete. You may close this window.", 200
+
+
+@app.route("/webhooks/meta-deauthorize", methods=["POST"])
+def meta_deauthorize_webhook():
+    signed_request = request.form.get("signed_request", "")
+    data = _verify_meta_signed_request(signed_request, META_LEADGEN_APP_SECRET)
+
+    if data is None:
+        _log("Meta deauthorize callback FAILED - invalid signed_request", "WARNING")
+        return "Invalid signed_request", 400
+
+    user_id = data.get("user_id", "")
+    _log(f"Meta deauthorize callback received for user_id={user_id}")
+    return "OK", 200
+
+
+@app.route("/webhooks/meta-data-deletion", methods=["POST"])
+def meta_data_deletion_webhook():
+    signed_request = request.form.get("signed_request", "")
+    data = _verify_meta_signed_request(signed_request, META_LEADGEN_APP_SECRET)
+
+    if data is None:
+        _log("Meta data-deletion callback FAILED - invalid signed_request", "WARNING")
+        return "Invalid signed_request", 400
+
+    user_id = data.get("user_id", "")
+    # secrets.token_hex(), not random — this code stands in for a real
+    # deletion record, so it needs to be unguessable, not just unique.
+    confirmation_code = secrets.token_hex(8)
+    _log(f"Meta data-deletion request received for user_id={user_id}, "
+         f"confirmation_code={confirmation_code}")
+
+    return jsonify({
+        "url": f"https://crm.asianbuild.in/data-deletion-status?id={confirmation_code}",
+        "confirmation_code": confirmation_code,
+    }), 200
+
+
+@app.route("/data-deletion-status", methods=["GET"])
+def data_deletion_status():
+    """
+    STUB — does not look up or act on any real deletion record (no such
+    tracking exists in cls_db yet). Exists only so the URL the
+    data-deletion callback hands back resolves to a real page instead
+    of a 404, ahead of actual deletion-tracking design (separate task).
+    """
+    deletion_id = html.escape(request.args.get("id", ""))
+    return (
+        f"Deletion request {deletion_id} is being processed. "
+        f"Contact us at sales1@asianbuild.in for status updates."
+    ), 200
 
 
 # ─────────────────────────────────────────────────────────────
