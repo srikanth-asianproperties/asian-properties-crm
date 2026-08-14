@@ -124,6 +124,13 @@ v0.49 (2026-08-14) — inline CAPI firing redesign. change_lead_stage()'s
   down. NEW import cls_capi_core near the existing import cls_db.
   Requires cls_db.py v2.55 (capi_fire_queue table + queue functions)
   and cls_capi_core.py v1.0 (fire_single_lead_event()).
+  PATCH (same v0.49, 2026-08-14): the CAPI-firing block above was
+  silent on both outcomes — found during live testing when a fire
+  neither succeeded nor queued, with nothing in crm_app_log.txt to show
+  why. Added _log() calls (this file's existing helper, same convention
+  as the webhook routes above) on both paths: a successful fire logs at
+  INFO, a queued failure (or exception) logs at WARNING with the error
+  text. No logic changed — same fire/queue behavior as before, now visible.
 v0.48 (2026-08-14) — added Facebook Login for Business required routes:
   OAuth redirect placeholder, deauthorize callback, data deletion callback
   (with signature verification), and deletion status stub page. No cls_db
@@ -3502,10 +3509,14 @@ def change_lead_stage(cls_id):
         try:
             fresh_lead = cls_db.get_lead_by_id(cls_id)
             fired, err = cls_capi_core.fire_single_lead_event(fresh_lead, _env)
-            if not fired:
+            if fired:
+                _log(f"CAPI fire OK: cls_id={cls_id} | {new_stage}")
+            else:
                 cls_db.queue_failed_fire(cls_id, new_stage, err)
+                _log(f"CAPI fire FAILED (queued): cls_id={cls_id} | {new_stage} | {err}", "WARNING")
         except Exception as e:
             cls_db.queue_failed_fire(cls_id, new_stage, str(e))
+            _log(f"CAPI fire EXCEPTION (queued): cls_id={cls_id} | {new_stage} | {e}", "WARNING")
 
     return redirect(url_for("lead_detail", cls_id=cls_id))
 
