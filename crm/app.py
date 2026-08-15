@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.49
+Version : 0.51
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,30 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.51 (2026-08-15) — Meta App Review screencast support — ads_read demo
+  (Ads Insights Preview), read-only Graph API call, no cls_db changes.
+  NEW META_SYSTEM_USER_TOKEN constant (.env-sourced, same convention as
+  META_WEBHOOK_VERIFY_TOKEN/META_LEADGEN_APP_SECRET). NEW route GET
+  /admin/ads-insights-preview (admin_ads_insights_preview(), same
+  @login_required + @admin_required pattern as
+  admin_webhook_test_leads()) — calls Meta's Insights API directly
+  (fields=impressions,spend,clicks,ctr,campaign_name,
+  date_preset=last_7d) against act_825098213089084, wrapped in
+  try/except so it can never 500; renders new template
+  ads_insights_preview.html with either the campaign rows or a plain
+  error message. Reuses cls_capi_core.GRAPH_API_VERSION (v23.0) rather
+  than a hardcoded version number. NEW top-level `import requests`.
+v0.50 (2026-08-15) — Meta App Review screencast support: isolated
+  test-lead viewer, no writes to production `leads` table, no
+  interaction with Job A/B/C. meta_leadgen_webhook()'s POST branch gains
+  ONE new line (wrapped in its own try/except, never blocks the 200 OK
+  back to Meta): cls_db.log_webhook_test_lead(payload). GET verification
+  logic untouched. NEW route GET /admin/webhook-test-leads
+  (admin_webhook_test_leads(), @login_required + @admin_required, same
+  pattern as settings_bulk_jobs()) renders new template
+  webhook_test_leads.html from cls_db.get_webhook_test_leads(). This is
+  v1.5+ scope (ahead of active v1.0 work), explicitly approved to build
+  now because it unblocks App Review's screencast requirement.
 v0.49 (2026-08-14) — inline CAPI firing redesign. change_lead_stage()'s
   existing body is UNCHANGED; added one block after flash() and before
   the return redirect(...): on a successful stage change into one of
@@ -1644,6 +1668,7 @@ from flask import (
     jsonify, g
 )
 from werkzeug.utils import secure_filename
+import requests  # v0.51 — Ads Insights Preview demo page's direct Graph API call
 
 # ── Import cls_db.py the same way every other CLS job does ──
 BASE_DIR = r"D:\CLS"
@@ -1776,6 +1801,13 @@ META_WEBHOOK_VERIFY_TOKEN = _env.get("META_WEBHOOK_VERIFY_TOKEN", "")
 # _env dict" convention as META_WEBHOOK_VERIFY_TOKEN above, for the same
 # reason (this is meant to live in .env, not as a real OS env var).
 META_LEADGEN_APP_SECRET = _env.get("META_LEADGEN_APP_SECRET", "")
+
+# v0.51 — Meta System User token for the ads_read Insights Preview demo
+# page (App Review screencast support). Same .env-sourced convention as
+# META_WEBHOOK_VERIFY_TOKEN/META_LEADGEN_APP_SECRET above. Empty string
+# if unset — the route below fails closed (renders an error message
+# instead of sending a blank access_token to Meta).
+META_SYSTEM_USER_TOKEN = _env.get("META_SYSTEM_USER_TOKEN", "")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -5747,10 +5779,70 @@ def meta_leadgen_webhook():
             _log("Meta webhook verification FAILED - token mismatch", "WARNING")
             return "Verification failed", 403
 
-    # POST — logging only, no cls_db write (see module docstring above).
+    # POST — logging, plus (v0.50) a best-effort write to the isolated
+    # webhook_test_leads table for App Review's screencast requirement.
+    # Never touches the real leads table / Job A/B/C.
     payload = request.get_json(silent=True) or {}
     _log(f"Meta leadgen webhook received: {payload}")
+    try:
+        cls_db.log_webhook_test_lead(payload)
+    except Exception as e:
+        _log(f"log_webhook_test_lead failed (non-fatal, webhook still returns 200): {e}", "WARNING")
     return "OK", 200
+
+
+@app.route("/admin/webhook-test-leads")
+@login_required
+@admin_required
+def admin_webhook_test_leads():
+    """
+    v0.50 — Meta App Review screencast support. Admin-only viewer for
+    webhook_test_leads (isolated table, see cls_db.py v2.56) so a
+    reviewer's test payload can be visually confirmed on screen. Read-only,
+    no interaction with the real leads table or Job A/B/C.
+    """
+    return render_template("webhook_test_leads.html", rows=cls_db.get_webhook_test_leads())
+
+
+@app.route("/admin/ads-insights-preview")
+@login_required
+@admin_required
+def admin_ads_insights_preview():
+    """
+    v0.51 — Meta App Review screencast support: ads_read demo page.
+    Read-only direct call to Meta's Graph API Insights endpoint — no
+    cls_db interaction, no caching/storage, fetched live on every load
+    (this is a demo page, not a production dashboard). Reuses
+    cls_capi_core.GRAPH_API_VERSION rather than hardcoding a version
+    number, since this codebase already hit one Graph API version
+    deprecation (v19.0) and upgraded past it. Never raises — any
+    failure (network, auth, rate limit, missing token) renders the
+    template with an error message instead of a 500.
+    """
+    campaigns = []
+    error = None
+    if not META_SYSTEM_USER_TOKEN:
+        error = "META_SYSTEM_USER_TOKEN is not set in .env"
+    else:
+        try:
+            resp = requests.get(
+                f"https://graph.facebook.com/{cls_capi_core.GRAPH_API_VERSION}/act_825098213089084/insights",
+                params={
+                    "fields": "impressions,spend,clicks,ctr,campaign_name",
+                    "date_preset": "last_7d",
+                    "access_token": META_SYSTEM_USER_TOKEN,
+                },
+                timeout=10,
+            )
+            result = resp.json()
+            if resp.status_code == 200 and "data" in result:
+                campaigns = result["data"]
+            else:
+                error = (result.get("error") or {}).get("message") or f"Unexpected response (HTTP {resp.status_code})"
+        except Exception as e:
+            error = str(e)
+
+    return render_template("ads_insights_preview.html", campaigns=campaigns, error=error)
 
 
 # ─────────────────────────────────────────────────────────────

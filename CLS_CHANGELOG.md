@@ -1,5 +1,26 @@
 # CLS/APX CRM — Changelog
 
+## 2026-08-15
+- Meta App Review screencast support — ads_read demo (Ads Insights
+  Preview), read-only Graph API call, no cls_db changes (app.py v0.51,
+  NEW ads_insights_preview.html v1.0). NEW admin-only route GET
+  /admin/ads-insights-preview — calls Meta's Insights API directly
+  (act_825098213089084, last 7 days, using cls_capi_core's existing
+  GRAPH_API_VERSION rather than a hardcoded version), wrapped in
+  try/except so it can never 500. NEW META_SYSTEM_USER_TOKEN constant,
+  .env-sourced (key confirmed present in D:\CLS\.env). No caching, no
+  storage, no writes — fetched live on each page load.
+- Meta App Review screencast support (cls_db.py v2.56, app.py v0.50,
+  NEW webhook_test_leads.html v1.0) — isolated test-lead viewer, no
+  writes to production `leads` table, no interaction with Job A/B/C.
+  NEW webhook_test_leads table (self-healing CREATE TABLE IF NOT
+  EXISTS), NEW cls_db.log_webhook_test_lead()/get_webhook_test_leads().
+  meta_leadgen_webhook()'s POST branch gains one try/except-wrapped
+  call to log_webhook_test_lead() — GET verification logic untouched.
+  NEW admin-only route GET /admin/webhook-test-leads. v1.5+ scope
+  (ahead of active v1.0 work), explicitly approved to build now to
+  unblock App Review's screencast requirement.
+
 ## 2026-08-11
 - CLS_CHANGELOG.md — created this session (Phase 1's commit); each
   phase below was appended as its own session completed, not batched

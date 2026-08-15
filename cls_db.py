@@ -2,11 +2,19 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.55
+Version : 2.56
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.56 (2026-08-15) — Meta App Review screencast support: isolated
+  test-lead viewer, no writes to production `leads` table, no
+  interaction with Job A/B/C. NEW (additive): webhook_test_leads table
+  (self-healing CREATE TABLE IF NOT EXISTS, init_db()), NEW
+  log_webhook_test_lead(raw_payload) — best-effort leadgen_id/form_id/
+  page_id extraction, never raises, stores the full raw payload — and
+  NEW get_webhook_test_leads(limit=50). This is the ONLY new write path
+  this version adds; nothing existing removed or modified.
 v2.55 (2026-08-14) — capi_fire_queue table + queue functions, for
   inline CAPI firing redesign. Retires selldo_sync gate dependency
   since Job B is permanently stopped. NEW (additive): capi_fire_queue
@@ -2635,6 +2643,26 @@ def init_db():
         );
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_queue_status ON capi_fire_queue(status);")
+
+    # v2.56 — webhook_test_leads: isolated landing table for Meta App
+    # Review's screencast requirement (v1.5+ Meta Lead Ads webhook work,
+    # done ahead of schedule solely to unblock App Review). Meta sends
+    # fake test payloads to the existing /webhooks/meta-leadgen POST
+    # branch during review — this table exists so those payloads have
+    # somewhere to land that is NOT the real leads table. No routing,
+    # no owner assignment, no CAPI firing touches this table; it is
+    # write-only from log_webhook_test_lead() and read-only from
+    # get_webhook_test_leads() below.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS webhook_test_leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            received_at TEXT NOT NULL,
+            leadgen_id TEXT,
+            form_id TEXT,
+            page_id TEXT,
+            raw_payload TEXT NOT NULL
+        );
+    """)
 
     # ── Self-healing migration: call-recording columns (v2.33) ──
     # activity_type='call_recording' rows need 3 structured fields that
@@ -8584,6 +8612,49 @@ def clear_from_queue(queue_id):
     try:
         conn.execute("DELETE FROM capi_fire_queue WHERE queue_id=?", (queue_id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def log_webhook_test_lead(raw_payload):
+    """
+    v2.56 — Meta App Review screencast support. Best-effort extraction of
+    leadgen_id/form_id/page_id from Meta's typical webhook shape
+    (entry[0].id as page_id, entry[0].changes[0].value.leadgen_id/form_id).
+    Never raises — a shape mismatch just means those 3 columns stay NULL,
+    since the full raw_payload is stored regardless and is what actually
+    matters for the screencast. Deliberately the ONLY write path into
+    webhook_test_leads; nothing else in this file touches this table.
+    """
+    leadgen_id = form_id = page_id = None
+    try:
+        entry = raw_payload.get("entry", [{}])[0]
+        page_id = entry.get("id")
+        change_value = entry.get("changes", [{}])[0].get("value", {})
+        leadgen_id = change_value.get("leadgen_id")
+        form_id = change_value.get("form_id")
+    except Exception:
+        pass
+
+    conn = _connect()
+    try:
+        conn.execute("""
+            INSERT INTO webhook_test_leads (received_at, leadgen_id, form_id, page_id, raw_payload)
+            VALUES (?, ?, ?, ?, ?)
+        """, (_now(), leadgen_id, form_id, page_id, json.dumps(raw_payload)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_webhook_test_leads(limit=50):
+    """All webhook_test_leads rows, newest first — feeds the App Review screencast viewer page."""
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT * FROM webhook_test_leads ORDER BY id DESC LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

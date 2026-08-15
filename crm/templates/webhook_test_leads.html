@@ -1,0 +1,49 @@
+{# webhook_test_leads.html (v1.0) — Meta App Review screencast support.
+   Admin-only viewer for cls_db.get_webhook_test_leads() (webhook_test_leads
+   table, cls_db.py v2.56). Isolated from the real leads table — this exists
+   purely so a reviewer's fake test payload can be visually confirmed on
+   screen during Meta's App Review screencast. Newest first, LIMIT 50,
+   no pagination — plain table, same style as settings_bulk_jobs.html. #}
+{% extends "base.html" %}
+{% block title %}Webhook Test Leads{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:10px; margin-bottom:6px;">Meta Webhook Test Leads</h2>
+<p style="color:var(--ink-soft); font-size:13px; margin-bottom:14px;">
+  Isolated log of payloads received at /webhooks/meta-leadgen. For App
+  Review verification only — never written to the real leads table.
+</p>
+
+{% if rows %}
+<div class="report-table-wrap" style="overflow-x:auto;">
+  <table class="report-table" style="width:100%; border-collapse:collapse;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Received</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Leadgen ID</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Form ID</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Page ID</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Raw Payload</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px; white-space:nowrap; vertical-align:top;">{{ row.received_at }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:top;">{{ row.leadgen_id or '—' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:top;">{{ row.form_id or '—' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:top;">{{ row.page_id or '—' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">
+          <pre style="white-space:pre-wrap; word-break:break-word; margin:0; font-size:12px; background:var(--gray); padding:8px; border-radius:6px;">{{ row.raw_payload }}</pre>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty-state">
+  <p>No webhook test leads received yet.</p>
+</div>
+{% endif %}
+{% endblock %}

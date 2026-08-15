@@ -1,0 +1,50 @@
+{# ads_insights_preview.html (v1.0) — Meta App Review screencast support.
+   Admin-only demo page for the ads_read permission — app.py's
+   admin_ads_insights_preview() fetches Meta's Insights API live on every
+   load (no caching/storage) and passes either `campaigns` (list of dicts)
+   or `error` (plain string). Same style as webhook_test_leads.html. #}
+{% extends "base.html" %}
+{% block title %}Ads Insights Preview{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:10px; margin-bottom:6px;">Ads Insights Preview</h2>
+<p style="color:var(--ink-soft); font-size:13px; margin-bottom:14px;">
+  Live read-only pull from Meta's Insights API (last 7 days). Demo page for
+  the ads_read permission — not a production dashboard, nothing cached.
+</p>
+
+{% if error %}
+<div class="card empty-state">
+  <p><strong>Could not load insights:</strong> {{ error }}</p>
+</div>
+{% elif campaigns %}
+<div class="report-table-wrap" style="overflow-x:auto;">
+  <table class="report-table" style="width:100%; border-collapse:collapse;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Campaign</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Impressions</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Clicks</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">Spend</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-soft); text-transform:uppercase;">CTR</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in campaigns %}
+      <tr>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ c.campaign_name or '—' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ c.impressions or '—' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ c.clicks or '—' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ c.spend or '—' }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px;">{{ c.ctr or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty-state">
+  <p>No campaign data returned for the last 7 days.</p>
+</div>
+{% endif %}
+{% endblock %}
