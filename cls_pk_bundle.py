@@ -131,6 +131,7 @@ INCLUDE_FILES = [
     "meta_leads_fetcher.py",
     "selldo_to_cls.py",
     "cls_capi_firer.py",
+    "cls_capi_core.py",
     "cls_email_drip.py",
     "cls_telegram_listener.py",
     "cls_watchdog.py",
