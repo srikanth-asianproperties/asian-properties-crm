@@ -1,6 +1,18 @@
-{# dashboard_today.html (v0.9) — "Today's Performance" tab. Deliberately
+{# dashboard_today.html (v0.10) — "Today's Performance" tab. Deliberately
    no "talk time" tile — see the banner below and cls_db.get_todays_
    activity_counts()'s docstring for why.
+
+   v0.10 (2026-08-16) — Task 3 Part B CORRECTION / REVERT: removes the
+   "Today's Agenda" block added in v0.9 (commit c33a36b). That was a
+   structural mistake — Srikanth's original spec was 4 SIBLING tabs on
+   the bottom tab bar (Stats / Today's Performance / Pipeline / Today's
+   Agenda), not Today's Agenda nested inside Today's Performance.
+   Today's Agenda moved to its own top-level tab — see
+   dashboard_agenda.html (new) and app.py's new dashboard_agenda()
+   route. This template is back to showing ONLY the 5 performance
+   tiles + intro paragraph + outro banner + _dashboard_tabbar include,
+   same as v0.8. perf/company_wide context vars and dashboard_today()
+   itself are otherwise unchanged.
 
    v0.9 (2026-08-16) — Task 3 Part B: new "Today's Agenda" block below
    the 5-tile stat-card-grid — two side-by-side lists (Site Visits /
@@ -9,6 +21,7 @@
    linking to lead_detail. Reuses the existing .card/.field-label
    classes (base.html) — no new CSS. Outro paragraph and
    _dashboard_tabbar include unchanged, just pushed down.
+   SUPERSEDED BY v0.10 ABOVE — kept here for history only.
 
    v0.8 (2026-08-11) — Phase 4 of the 6-phase feature batch: all 5 tiles
    are now clickable <a> cards, each linking to the new
@@ -71,39 +84,6 @@
       <div class="stat-card-number stat-num-green">{{ perf.follow_ups_completed }}</div>
     </div>
   </a>
-
-</div>
-
-<h3 style="margin-top:24px; margin-bottom:8px;">Today's Agenda</h3>
-<div style="display:flex; gap:16px; flex-wrap:wrap;">
-
-  <div style="flex:1; min-width:240px;">
-    <div class="field-label">Site Visits</div>
-    {% if todays_agenda.site_visits %}
-      {% for v in todays_agenda.site_visits %}
-      <a href="{{ url_for('lead_detail', cls_id=v.cls_id) }}" class="card" style="display:block; text-decoration:none; color:inherit; margin-top:8px; padding:10px;">
-        <div style="font-weight:600;">{{ v.full_name }}</div>
-        <div style="font-size:13px; color:var(--ink-soft);">{{ v.scheduled_at }}</div>
-      </a>
-      {% endfor %}
-    {% else %}
-      <p style="font-size:13px; color:var(--ink-soft); margin-top:6px;">Nothing scheduled today.</p>
-    {% endif %}
-  </div>
-
-  <div style="flex:1; min-width:240px;">
-    <div class="field-label">Followups</div>
-    {% if todays_agenda.follow_ups %}
-      {% for f in todays_agenda.follow_ups %}
-      <a href="{{ url_for('lead_detail', cls_id=f.cls_id) }}" class="card" style="display:block; text-decoration:none; color:inherit; margin-top:8px; padding:10px;">
-        <div style="font-weight:600;">{{ f.full_name }}</div>
-        <div style="font-size:13px; color:var(--ink-soft);">{{ f.scheduled_at }}</div>
-      </a>
-      {% endfor %}
-    {% else %}
-      <p style="font-size:13px; color:var(--ink-soft); margin-top:6px;">Nothing scheduled today.</p>
-    {% endif %}
-  </div>
 
 </div>
 

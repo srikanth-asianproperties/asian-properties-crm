@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.53
+Version : 0.54
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,21 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.54 (2026-08-16) — Task 3 Part B CORRECTION: Today's Agenda moved to
+  its own top-level tab. v0.53 nested Today's Agenda inside
+  dashboard_today() — a structural mistake; Srikanth's original spec
+  was 4 sibling bottom-bar tabs (Stats / Today's Performance / Pipeline
+  / Today's Agenda), not Agenda nested inside Today's Performance.
+  dashboard_today() reverted to its pre-v0.53 shape (scope_owner/
+  todays_agenda lines removed; scope_email/perf/company_wide logic for
+  the 5 performance tiles untouched). NEW route GET /dashboard/agenda
+  (dashboard_agenda()), same login_required + user/company_wide
+  resolution pattern as dashboard_pipeline(), computes its own
+  scope_owner (owner_match_name-based, same as the Stats tab) and
+  calls the UNCHANGED cls_db.get_todays_agenda() — that function needed
+  no changes, only its caller moved. Renders new template
+  dashboard_agenda.html. ADDITIVE ONLY except the v0.53 revert
+  described above — nothing else existing removed or modified.
 v0.53 (2026-08-16) — Task 3 Part B: Today's Agenda subsection + tab
   rename (cls_db.py v2.58 — see that file's changelog for
   get_todays_agenda()). dashboard_today() route gains a second, SEPARATE
@@ -2369,19 +2384,37 @@ def dashboard_today():
     company_wide = cls_db.effective_company_wide(user)
     scope_email = None if company_wide else user["email"]
     perf = cls_db.get_todays_activity_counts(actor_email=scope_email)
-    # v0.53 — Task 3 Part B: Today's Agenda is LEAD-scoped (which
-    # leads a salesperson currently owns), not actor-scoped like perf
-    # above (which activity_log rows they personally logged) — a
-    # separate scope_owner variable, same owner_match_name pattern
-    # dashboard() uses for its Stats-tab cards. Deliberately not
-    # reusing/repurposing scope_email for this.
-    scope_owner = None if company_wide else user.get("owner_match_name")
-    todays_agenda = cls_db.get_todays_agenda(owner=scope_owner)
     return render_template(
         "dashboard_today.html",
         active_tab="today",
         perf=perf,
         company_wide=company_wide,
+    )
+
+
+@app.route("/dashboard/agenda")
+@login_required
+def dashboard_agenda():
+    """
+    v0.54 — Task 3 Part B CORRECTION: 4th dashboard tab — Today's
+    Agenda. Moved out of dashboard_today() (where it was wrongly
+    nested in commit c33a36b) into its own top-level tab, matching
+    Srikanth's original spec of 4 sibling tabs on the bottom bar.
+
+    Site visits and follow-ups scheduled for TODAY specifically,
+    lead-owner-scoped same as the Stats tab's cards (scope_owner,
+    owner_match_name-based) — NOT actor-email-scoped like Today's
+    Performance's scope_email, since this is about which leads a
+    salesperson currently owns, not which activity_log rows they
+    personally logged.
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.effective_company_wide(user)
+    scope_owner = None if company_wide else user.get("owner_match_name")
+    todays_agenda = cls_db.get_todays_agenda(owner=scope_owner)
+    return render_template(
+        "dashboard_agenda.html",
+        active_tab="agenda",
         todays_agenda=todays_agenda,
     )
 
