@@ -1,4 +1,13 @@
-{# lead_detail.html v12 (2026-08-09) — Item 3: every activity-log branch's
+{# lead_detail.html v13 (2026-08-16) — Task 3 Part A, Change 4: new
+   {% elif %} branch for activity_type 'lead_reengaged' (🔄, same \n ->
+   <br> rendering as the 'lead_entered' branch above it) — without it,
+   the row fell through to the generic {% else %} and showed the raw
+   activity_type string, same class of bug v9 fixed for lead_entered.
+   Also added 'lead_reengaged': 'other' to ACTIVITY_BUCKETS, same
+   bucket as 'lead_entered'. Requires cls_db.py v2.57's new
+   upsert_meta_lead() branch-2 logging for this row to ever appear.
+
+   lead_detail.html v12 (2026-08-09) — Item 3: every activity-log branch's
    static label fragment (e.g. "Stage changed:", "Reassigned:", "Site
    visit scheduled for", "Follow-up completed", "Property details
    updated", "Called (tapped from CRM)") is now wrapped in <strong>,
@@ -220,6 +229,7 @@
   'assignment_change'      : 'assignment_change',
   'contact_info_updated'   : 'contact_info',
   'lead_entered'           : 'other',
+  'lead_reengaged'         : 'other',
   'call_recording'         : 'call_recording',
 } %}
 
@@ -616,6 +626,8 @@
             {% else %}
             <div>🆕 {{ a.description|replace('\n', '<br>')|safe if a.description else '' }}</div>
             {% endif %}
+          {% elif a.activity_type == 'lead_reengaged' %}
+            <div>🔄 {{ a.description|replace('\n', '<br>')|safe if a.description else '' }}</div>
           {% elif a.activity_type == 'call_recording' %}
             <div>
               📞{% if a.direction and a.direction|upper == 'INCOMING' %} ↙{% elif a.direction and a.direction|upper == 'OUTGOING' %} ↗{% endif %} <strong>Call recording</strong>{% if a.duration_seconds is not none %} — {{ (a.duration_seconds // 60) }}:{{ '%02d'|format(a.duration_seconds % 60) }}{% endif %}

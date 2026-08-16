@@ -1,0 +1,45 @@
+{# no_future_activity_list.html (v1, 2026-08-16) — Task 3 Part A, Change 2.
+   List behind the dashboard's new "No Future Activity" card. Mirrors
+   new_enquiries_list.html's markup (same lead-card-list/lead-card
+   classes, full lead rows). Criteria: open-pipeline lead (not
+   Unqualified/Lost/Booked) with no scheduled site visit and no
+   scheduled follow-up — see cls_db.get_no_future_activity_leads(). #}
+{% extends "base.html" %}
+{% block title %}No Future Activity{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:0;">No Future Activity <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ leads|length }})</span></h2>
+
+<p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:0;">
+  Still open in the pipeline with nothing scheduled — no site visit, no
+  follow-up. A lead drops off this list the moment either one is scheduled.
+</p>
+
+{% if leads %}
+<div class="lead-card-list">
+  {% for lead in leads %}
+  <a href="{{ url_for('lead_detail', cls_id=lead.cls_id) }}" class="lead-card">
+    <div class="lead-card-head">
+      <span class="lead-card-no">#{{ lead.crm_lead_no or '—' }}</span>
+      <span class="lead-card-name">{{ lead.full_name or '(no name)' }}</span>
+      <span class="badge stage-{{ (lead.current_stage or 'other')|replace(' ', '') }}">
+        {{ lead.current_stage or 'Unknown' }}
+      </span>
+    </div>
+    <div class="lead-card-grid">
+      <span class="lc-field"><span class="lc-label">Created</span> {{ lead.cls_created_at }}</span>
+      {% if lead.lead_owner %}<span class="lc-field"><span class="lc-label">Owner</span> {{ lead.lead_owner }}</span>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty-state">
+  <p><strong>Nothing here right now — every open lead has something scheduled.</strong></p>
+</div>
+{% endif %}
+
+<div style="margin-top:24px;">
+  <a href="{{ url_for('dashboard') }}" class="btn">← Back to Dashboard</a>
+</div>
+{% endblock %}

@@ -2,11 +2,51 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.56
+Version : 2.57
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.57 (2026-08-16) — Task 3 Part A: dashboard metrics, lead_reengaged
+  logging, New Enquiries bug fix. Job B (selldo_to_cls.py) is
+  permanently retired as of 2026-08-15 — Job A (upsert_meta_lead()) is
+  the only automated lead-entry path now.
+    - BUG FIX: get_new_enquiries_count()/get_new_enquiries_leads() —
+      silent undercounting since v2.28. The WHERE clause's "zero
+      activity_log rows" test relied on an assumption that stopped
+      being true the moment v2.28 gave upsert_meta_lead()'s branch 3
+      a 'lead_entered' activity_log row on every genuinely-new insert;
+      after that, "zero activity_log rows" could never be true for new
+      intake, so the count silently degraded toward 0. Replaced with
+      reengaged_at IS NULL — the same new-vs-repeat distinction
+      upsert_meta_lead() already draws via _apply_reengagement_marker().
+      Both functions' signatures unchanged, only the WHERE clause.
+    - NEW: get_no_future_activity_count(owner=None) /
+      get_no_future_activity_leads(owner=None) — open-pipeline leads
+      (current_stage not in RESET_STAGES_ON_REENGAGEMENT, reused
+      rather than a new literal tuple) with no scheduled site visit and
+      no scheduled follow-up. Live-computed, same posture as
+      get_reengaged_count().
+    - NEW: get_missed_calls_count(owner=None) / get_missed_calls_list
+      (owner=None) — call_log_staging MISSED rows with no later
+      OUTGOING call to the same matched_cls_id. Scoped via the lead's
+      CURRENT lead_owner (not call_log_staging.user_id) so a missed
+      call always shows against whoever owns the lead right now, even
+      after reassignment.
+    - NEW: upsert_meta_lead()'s branch 2 (contact-match/enrich path)
+      now logs one 'lead_reengaged' activity_log row immediately after
+      _apply_reengagement_marker(), using the SAME `now` variable
+      already stamped onto reengaged_at (not a fresh _now() call) —
+      required so get_reengaged_count()/get_reengaged_leads()' "cleared
+      the moment created_at > reengaged_at" rule doesn't immediately
+      clear a lead off the Reengaged card just because this row exists.
+      _apply_reengagement_marker() itself is unchanged (still just
+      stamps reengaged_at/resets stage) — its signature was deliberately
+      NOT expanded to take phone_raw/email_raw/meta_campaign_name, so
+      the log call lives in upsert_meta_lead() where those are already
+      in scope; see that helper's docstring for the reasoning.
+  ADDITIVE ONLY except the Change 1 WHERE-clause fix described above —
+  nothing else existing removed or modified.
 v2.56 (2026-08-15) — Meta App Review screencast support: isolated
   test-lead viewer, no writes to production `leads` table, no
   interaction with Job A/B/C. NEW (additive): webhook_test_leads table
@@ -4031,15 +4071,24 @@ def get_new_enquiries_count(days=7, owner=None):
     logged) — the v1.9 definition still counted those as "new," which
     overstated genuinely untouched inbound. Now counts current_stage=
     'Incoming' AND zero rows in activity_log for that cls_id — i.e.
-    no human action has EVER been taken on it. Integration ingestion
-    (Job A/B upserts) writes no activity_log rows, so "zero activity_
-    log rows" reliably means "untouched since it arrived." The moment
-    ANY activity is logged against it (log_call_tap's 'call_attempted'
-    is the most common first touch, but a note/stage-change/site-visit
-    would too), it drops off this count — even though it may still be
-    sitting at current_stage='Incoming' (nobody has moved the stage
-    yet, just looked at it). `days` is kept as an unused parameter so
-    existing call sites don't need updating.
+    no human action has EVER been taken on it. `days` is kept as an
+    unused parameter so existing call sites don't need updating.
+
+    v2.57 BUG FIX (Task 3 Part A) — silent undercounting since v2.28:
+    the v2.11 "zero activity_log rows" clause assumed integration
+    ingestion writes no activity_log rows. That stopped being true in
+    v2.28, when upsert_meta_lead()'s branch 3 (genuinely new lead, no
+    phone/email match) started writing exactly ONE activity_log row
+    (activity_type='lead_entered', actor='system') at the moment of
+    insertion. From v2.28 onward, "zero activity_log rows" could never
+    be true for any lead created through normal intake, so this count
+    silently degraded toward 0 for all new leads. Replaced with
+    reengaged_at IS NULL — the same distinction upsert_meta_lead()
+    already draws: branch 3 (genuinely new) leaves reengaged_at NULL,
+    branch 2 (contact match) stamps it via _apply_reengagement_marker().
+    So "reengaged_at IS NULL" means exactly "never identified as a
+    repeat contact" — i.e. genuinely new, regardless of activity_log
+    contents.
 
     owner (v2.31): optional, default None (existing behavior, unchanged
     — dashboard() previously called this with zero args). Pass a
@@ -4051,7 +4100,7 @@ def get_new_enquiries_count(days=7, owner=None):
         query = """
             SELECT COUNT(*) c FROM leads l
             WHERE l.current_stage='Incoming'
-              AND NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.cls_id = l.cls_id)
+              AND l.reengaged_at IS NULL
         """
         params = []
         if owner:
@@ -4066,10 +4115,13 @@ def get_new_enquiries_count(days=7, owner=None):
 def get_new_enquiries_leads(owner=None):
     """
     (v2.11) List-returning counterpart to get_new_enquiries_count()
-    above — SAME criteria (current_stage='Incoming' AND zero activity_
-    log rows), just returning rows instead of a count, so the dashboard
-    card can link through to an actual filtered list. Mirrors
-    get_reengaged_leads()'s shape.
+    above — SAME criteria, just returning rows instead of a count, so
+    the dashboard card can link through to an actual filtered list.
+    Mirrors get_reengaged_leads()'s shape.
+
+    v2.57 BUG FIX (Task 3 Part A) — same reengaged_at IS NULL fix as
+    get_new_enquiries_count() above; see that function's docstring for
+    the full explanation of the silent-undercounting bug this replaces.
 
     owner (v2.31): optional, default None (existing behavior, unchanged
     — new_enquiries_list() previously called this with zero args). Pass
@@ -4080,13 +4132,165 @@ def get_new_enquiries_leads(owner=None):
         query = """
             SELECT * FROM leads l
             WHERE l.current_stage='Incoming'
-              AND NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.cls_id = l.cls_id)
+              AND l.reengaged_at IS NULL
         """
         params = []
         if owner:
             query += " AND l.lead_owner = ?"
             params.append(owner)
         query += " ORDER BY l.cls_created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_no_future_activity_count(owner=None):
+    """
+    (v2.57, Task 3 Part A) NEW — counts open-pipeline leads (not
+    Unqualified/Lost/Booked — reuses RESET_STAGES_ON_REENGAGEMENT, the
+    existing "dead enough" stage set, rather than a new literal tuple)
+    that have no scheduled site visit AND no scheduled follow-up open
+    against them right now. Live-computed at query time (NOT EXISTS
+    against site_visits/follow_ups with status='scheduled'), same
+    posture as get_reengaged_count()'s live computation — no stored
+    "cleared" flag to drift out of sync.
+
+    owner: optional, default None. Pass a lead_owner to scope to one
+    salesperson's own leads, same convention as every other dashboard
+    count function in this file.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT COUNT(*) c FROM leads l
+            WHERE l.current_stage NOT IN ({placeholders})
+              AND NOT EXISTS (
+                  SELECT 1 FROM site_visits v
+                  WHERE v.cls_id = l.cls_id AND v.status = 'scheduled'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM follow_ups f
+                  WHERE f.cls_id = l.cls_id AND f.status = 'scheduled'
+              )
+        """.format(placeholders=",".join("?" for _ in RESET_STAGES_ON_REENGAGEMENT))
+        params = list(RESET_STAGES_ON_REENGAGEMENT)
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        row = conn.execute(query, params).fetchone()
+        return row["c"]
+    finally:
+        conn.close()
+
+
+def get_no_future_activity_leads(owner=None):
+    """
+    (v2.57, Task 3 Part A) List-returning counterpart to
+    get_no_future_activity_count() above — SAME criteria, just
+    returning rows instead of a count, so the dashboard card can link
+    through to an actual filtered list. Mirrors get_new_enquiries_leads()'s
+    shape.
+
+    owner: optional, default None. Pass a lead_owner to scope to one
+    salesperson's own leads.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT * FROM leads l
+            WHERE l.current_stage NOT IN ({placeholders})
+              AND NOT EXISTS (
+                  SELECT 1 FROM site_visits v
+                  WHERE v.cls_id = l.cls_id AND v.status = 'scheduled'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM follow_ups f
+                  WHERE f.cls_id = l.cls_id AND f.status = 'scheduled'
+              )
+        """.format(placeholders=",".join("?" for _ in RESET_STAGES_ON_REENGAGEMENT))
+        params = list(RESET_STAGES_ON_REENGAGEMENT)
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        query += " ORDER BY l.cls_created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_missed_calls_count(owner=None):
+    """
+    (v2.57, Task 3 Part A) NEW — counts missed calls with no later
+    outgoing call back to the same matched lead. A call only counts if
+    it matched a lead (matched_cls_id IS NOT NULL) — unmatched numbers
+    are never persisted anywhere in call_log_staging beyond the staging
+    row itself (see call_log_staging's own schema note), so there's
+    nothing to join back to a lead here anyway.
+
+    Deliberately scoped via leads.lead_owner (the CURRENT owner), not
+    call_log_staging.user_id (whoever's phone the call landed on) — a
+    missed call always shows against whoever owns the lead right now,
+    even if it was reassigned after the call came in.
+
+    owner: optional, default None. Pass a lead_owner to scope to one
+    salesperson's own leads.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT COUNT(*) c FROM call_log_staging m
+            JOIN leads l ON l.cls_id = m.matched_cls_id
+            WHERE m.direction = 'MISSED'
+              AND m.matched_cls_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM call_log_staging o
+                  WHERE o.matched_cls_id = m.matched_cls_id
+                    AND o.direction = 'OUTGOING'
+                    AND o.call_timestamp > m.call_timestamp
+              )
+        """
+        params = []
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        row = conn.execute(query, params).fetchone()
+        return row["c"]
+    finally:
+        conn.close()
+
+
+def get_missed_calls_list(owner=None):
+    """
+    (v2.57, Task 3 Part A) List-returning counterpart to
+    get_missed_calls_count() above — SAME criteria, returning
+    call_timestamp, raw_phone, full_name, cls_id, crm_lead_no ordered
+    newest-first.
+
+    owner: optional, default None. Pass a lead_owner to scope to one
+    salesperson's own leads.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT m.call_timestamp, m.raw_phone, l.full_name, l.cls_id, l.crm_lead_no
+            FROM call_log_staging m
+            JOIN leads l ON l.cls_id = m.matched_cls_id
+            WHERE m.direction = 'MISSED'
+              AND m.matched_cls_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM call_log_staging o
+                  WHERE o.matched_cls_id = m.matched_cls_id
+                    AND o.direction = 'OUTGOING'
+                    AND o.call_timestamp > m.call_timestamp
+              )
+        """
+        params = []
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        query += " ORDER BY m.call_timestamp DESC"
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -7576,6 +7780,15 @@ def _apply_reengagement_marker(conn, cls_id, prev_stage, now):
     _auto_cancel_open_schedules() — deliberately skipped since Booked
     leads essentially never have anything open scheduled; revisit if
     that assumption turns out to be wrong in practice.
+
+    v2.57: does NOT itself write an activity_log row. upsert_meta_lead()
+    logs the 'lead_reengaged' row immediately after calling this helper
+    instead, because that description needs phone_raw/email_raw/
+    meta_campaign_name — none of which this helper's signature carries,
+    and this signature is deliberately not being expanded to take them.
+    A future caller of this helper is responsible for its own
+    'lead_reengaged' logging the same way, using the SAME `now` passed
+    in here.
     """
     if prev_stage in RESET_STAGES_ON_REENGAGEMENT:
         conn.execute("""
@@ -7902,6 +8115,31 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                 "SELECT current_stage FROM leads WHERE cls_id=?", (cls_id,)
             ).fetchone()
             _apply_reengagement_marker(conn, cls_id, prev_row["current_stage"] if prev_row else None, now)
+
+            # v2.57 — Task 3 Part A, Change 4: log a lead_reengaged
+            # activity_log row at the SAME `now` used to stamp
+            # reengaged_at above (not a fresh _now() call) — a second,
+            # slightly later timestamp here would make
+            # get_reengaged_count()/get_reengaged_leads() (which clear a
+            # lead the moment created_at > reengaged_at) immediately
+            # drop this lead off the Reengaged card, which is wrong: a
+            # system-generated re-entry record isn't a human touching
+            # the lead. Same labeled multi-line block convention as
+            # branch 3's lead_entered description below (label: value
+            # per line, blank fields omitted).
+            reengage_parts = [("Lead Source", "Facebook Lead Ads")]
+            if meta_campaign_name:
+                reengage_parts.append(("Campaign Name", meta_campaign_name))
+            if phone_raw:
+                reengage_parts.append(("Lead Contact", phone_raw))
+            if email_raw:
+                reengage_parts.append(("Lead Email", email_raw))
+            reengage_description = (
+                "Lead Re-Engaged — previously enquired, submitted a new enquiry.\n"
+                + "\n".join(f"{label}: {value}" for label, value in reengage_parts)
+            )
+            _log_activity(conn, cls_id, "lead_reengaged", "system",
+                          description=reengage_description, created_at=now)
 
             # An existing row (likely selldo_only) is the same person.
             # Stamp the leadgen_id onto it — this is the back-fill case.

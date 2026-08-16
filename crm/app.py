@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.51
+Version : 0.52
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,18 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.52 (2026-08-16) — Task 3 Part A: dashboard metrics, lead_reengaged
+  logging, New Enquiries bug fix (cls_db.py v2.57 — see that file's
+  changelog for the get_new_enquiries_count()/leads() bug-fix detail
+  and the new lead_reengaged activity logging). NEW: dashboard() route
+  gains 2 context vars, no_future_activity_count/missed_calls_count,
+  computed with the SAME scope_owner already resolved for the
+  existing 4 cards. NEW routes GET /dashboard/no-future-activity
+  (no_future_activity_list()) and GET /dashboard/missed-calls
+  (missed_calls_list()), same @login_required + scope_owner pattern as
+  due_list()/new_enquiries_list(); render new templates
+  no_future_activity_list.html and missed_calls_list.html. ADDITIVE
+  ONLY — nothing existing removed or modified.
 v0.51 (2026-08-15) — Meta App Review screencast support — ads_read demo
   (Ads Insights Preview), read-only Graph API call, no cls_db changes.
   NEW META_SYSTEM_USER_TOKEN constant (.env-sourced, same convention as
@@ -2206,6 +2218,10 @@ def dashboard():
     reengaged_count = cls_db.get_reengaged_count(days=7, owner=scope_owner)
     follow_up_due_count = len(cls_db.get_due_by_kind("follow_up", owner=scope_owner))
     site_visit_due_count = len(cls_db.get_due_by_kind("site_visit", owner=scope_owner))
+    # v0.52 — Task 3 Part A, Change 2/3: 2 new stat-cards, same
+    # scope_owner gate already resolved above for the other 4 cards.
+    no_future_activity_count = cls_db.get_no_future_activity_count(owner=scope_owner)
+    missed_calls_count = cls_db.get_missed_calls_count(owner=scope_owner)
     # v0.44 — Phase 3: admin-only "Today's Attendance" card. Same literal
     # role=='admin' check used throughout the attendance UI (not the looser
     # can_view_all_leads()/OVERSIGHT_ROLES gate), and the SAME function
@@ -2224,6 +2240,8 @@ def dashboard():
         reengaged_count=reengaged_count,
         follow_up_due_count=follow_up_due_count,
         site_visit_due_count=site_visit_due_count,
+        no_future_activity_count=no_future_activity_count,
+        missed_calls_count=missed_calls_count,
         today_attendance=today_attendance,
     )
 
@@ -2506,6 +2524,42 @@ def new_enquiries_list():
     scope_owner = None if company_wide else user.get("owner_match_name")
     leads = cls_db.get_new_enquiries_leads(owner=scope_owner)
     return render_template("new_enquiries_list.html", leads=leads)
+
+
+@app.route("/dashboard/no-future-activity")
+@login_required
+def no_future_activity_list():
+    """
+    v0.52 — Task 3 Part A, Change 2: filtered list behind the
+    dashboard's new "No Future Activity" card. Same criteria as
+    cls_db.get_no_future_activity_count(): open-pipeline leads (not
+    Unqualified/Lost/Booked) with no scheduled site visit or follow-up.
+
+    Same scope_owner gate as every other dashboard drill-down route.
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.effective_company_wide(user)
+    scope_owner = None if company_wide else user.get("owner_match_name")
+    leads = cls_db.get_no_future_activity_leads(owner=scope_owner)
+    return render_template("no_future_activity_list.html", leads=leads)
+
+
+@app.route("/dashboard/missed-calls")
+@login_required
+def missed_calls_list():
+    """
+    v0.52 — Task 3 Part A, Change 3: filtered list behind the
+    dashboard's new "Missed Calls" card. Same criteria as
+    cls_db.get_missed_calls_count(): a missed call with no later
+    outgoing call back to the same matched lead.
+
+    Same scope_owner gate as every other dashboard drill-down route.
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    company_wide = cls_db.effective_company_wide(user)
+    scope_owner = None if company_wide else user.get("owner_match_name")
+    calls = cls_db.get_missed_calls_list(owner=scope_owner)
+    return render_template("missed_calls_list.html", calls=calls)
 
 
 # ─────────────────────────────────────────────────────────────

@@ -1,8 +1,16 @@
-{# dashboard.html (v0.15) — "Stats Overview" top-tab view, itself living
+{# dashboard.html (v0.16) — "Stats Overview" top-tab view, itself living
    inside the "Stats" tab of the 3-tab BOTTOM dashboard (Stats / Today's
    Performance / Pipeline Analysis). Bottom tab bar unchanged from v0.6.
    Kept at the /dashboard route/filename so every existing
    url_for('dashboard') link elsewhere still works.
+
+   v0.16 (2026-08-16) — Task 3 Part A, Change 2/3: 2 new stat-cards, "No
+   Future Activity" and "Missed Calls", added to the existing 4-card
+   grid (same stat-card/stat-card-grid markup, stat-num-amber color
+   reused — no new CSS). Link to new routes no_future_activity_list /
+   missed_calls_list (app.py v0.52), context vars no_future_activity_
+   count/missed_calls_count from the unchanged dashboard() scope_owner
+   gate.
 
    v0.15 (2026-08-11) — Phase 3 of the 6-phase feature batch: NEW admin-only
    "Today's Attendance" card (literal current_user.role == 'admin', same
@@ -91,6 +99,22 @@
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-amber">{{ site_visit_due_count }}</div>
       <div class="stat-card-caption">Due today or overdue &middot; tap to view</div>
+    </div>
+  </a>
+
+  <a href="{{ url_for('no_future_activity_list') }}" class="stat-card">
+    <div class="stat-card-header">No Future Activity</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-amber">{{ no_future_activity_count }}</div>
+      <div class="stat-card-caption">No follow-up or visit scheduled &middot; tap to view</div>
+    </div>
+  </a>
+
+  <a href="{{ url_for('missed_calls_list') }}" class="stat-card">
+    <div class="stat-card-header">Missed Calls</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-amber">{{ missed_calls_count }}</div>
+      <div class="stat-card-caption">Pending callback &middot; tap to view</div>
     </div>
   </a>
 
