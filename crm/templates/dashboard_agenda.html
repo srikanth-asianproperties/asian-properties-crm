@@ -1,14 +1,25 @@
-{# dashboard_agenda.html (v1, 2026-08-16) — Task 3 Part B CORRECTION.
-   4th top-level dashboard tab — "Today's Agenda". Was originally built
-   nested inside dashboard_today.html (commit c33a36b, v0.9) — that was
-   a structural mistake; this is the corrected standalone tab, same
-   base pattern as dashboard_pipeline.html (extends base.html, includes
+{# dashboard_agenda.html (v1.1, 2026-08-16) — 4th top-level dashboard
+   tab — "Today's Agenda". Was originally built nested inside
+   dashboard_today.html (commit c33a36b, v0.9) — that was a structural
+   mistake; this is the corrected standalone tab, same base pattern as
+   dashboard_pipeline.html (extends base.html, includes
    _dashboard_tabbar.html at the bottom with active_tab="agenda").
    Content is the SAME two-column Site Visits / Followups block that
    was removed from dashboard_today.html — cls_db.get_todays_agenda()
-   itself is unchanged, only its caller (app.py's new
-   dashboard_agenda() route) and this template are new. Reuses the
-   existing .card/.field-label classes (base.html) — no new CSS. #}
+   itself is unchanged, only its caller (app.py's dashboard_agenda()
+   route) and this template are new.
+
+   v1.1 (2026-08-16) — polish: "Site Visits"/"Followups" column
+   headings switched from the small, muted .field-label class (meant
+   for form-field captions, not section headings) to an inline
+   font-weight:700/font-size:16px style — reads as a clear step up
+   from the 13px body/caption text on this page, but stays well below
+   the h2 "Today's Agenda" title's ~24px default size. Verified
+   visually via the preview server, not just eyeballed. Inline style
+   matches this template's existing convention (no new CSS class for a
+   2-line change). {% if %}/{% for %} list-rendering logic, empty-state
+   text, flex layout, and the _dashboard_tabbar include are all
+   otherwise unchanged. #}
 {% extends "base.html" %}
 {% block title %}Today's Agenda{% endblock %}
 
@@ -21,7 +32,7 @@
 <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:14px;">
 
   <div style="flex:1; min-width:240px;">
-    <div class="field-label">Site Visits</div>
+    <div style="font-weight:700; font-size:16px; margin-bottom:4px;">Site Visits</div>
     {% if todays_agenda.site_visits %}
       {% for v in todays_agenda.site_visits %}
       <a href="{{ url_for('lead_detail', cls_id=v.cls_id) }}" class="card" style="display:block; text-decoration:none; color:inherit; margin-top:8px; padding:10px;">
@@ -35,7 +46,7 @@
   </div>
 
   <div style="flex:1; min-width:240px;">
-    <div class="field-label">Followups</div>
+    <div style="font-weight:700; font-size:16px; margin-bottom:4px;">Followups</div>
     {% if todays_agenda.follow_ups %}
       {% for f in todays_agenda.follow_ups %}
       <a href="{{ url_for('lead_detail', cls_id=f.cls_id) }}" class="card" style="display:block; text-decoration:none; color:inherit; margin-top:8px; padding:10px;">

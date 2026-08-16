@@ -1,10 +1,21 @@
-{# _dashboard_tabbar.html (v0.8) — shared bottom icon tab bar for the
-   4 dashboard pages (Stats / Today's Performance / Pipeline Analysis /
-   Today's Agenda). Included (not extended) by dashboard.html,
-   dashboard_today.html, dashboard_pipeline.html, dashboard_agenda.html
-   (new) — each passes active_tab so the current tab renders
-   highlighted. One file so the pages can't visually drift apart from
-   each other over time.
+{# _dashboard_tabbar.html (v0.9) — shared bottom icon tab bar for the
+   4 dashboard pages (Stats / Today's Performance / Today's Agenda /
+   Pipeline Analysis). Included (not extended) by dashboard.html,
+   dashboard_today.html, dashboard_agenda.html, dashboard_pipeline.html
+   — each passes active_tab so the current tab renders highlighted.
+   One file so the pages can't visually drift apart from each other
+   over time.
+
+   v0.9 (2026-08-16) — Today's Agenda polish: reordered the Agenda tab
+   block to sit BETWEEN Today's Performance and Pipeline (was after
+   Pipeline, last of the 4) — new bottom-bar order is Stats / Today's
+   Performance / Today's Agenda / Pipeline. Also renamed its visible
+   label text "Agenda" -> "Today's Agenda", matching the title
+   attribute that already said this (same pattern as the earlier
+   "Today" -> "Today's Performance" rename). active_tab logic, hrefs,
+   and icon svgs untouched — only block order and this one label
+   changed. Re-verified via preview-server render check at 375px: all
+   4 tabs still sit on one row in the new order, no overflow/wrapping.
 
    v0.8 (2026-08-16) — Task 3 Part B CORRECTION: NEW 4th tab, "Agenda"
    (title="Today's Agenda", active_tab == 'agenda'), linking to the new
@@ -41,12 +52,12 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
     Today's Performance
   </a>
+  <a class="action-btn{% if active_tab == 'agenda' %} active{% endif %}" href="{{ url_for('dashboard_agenda') }}" title="Today's Agenda">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/></svg>
+    Today's Agenda
+  </a>
   <a class="action-btn{% if active_tab == 'pipeline' %} active{% endif %}" href="{{ url_for('dashboard_pipeline') }}" title="Pipeline Analysis">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18M6 12h12M10 19h4"/></svg>
     Pipeline
-  </a>
-  <a class="action-btn{% if active_tab == 'agenda' %} active{% endif %}" href="{{ url_for('dashboard_agenda') }}" title="Today's Agenda">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/></svg>
-    Agenda
   </a>
 </div>
