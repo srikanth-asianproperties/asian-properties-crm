@@ -1,6 +1,14 @@
-{# dashboard_today.html (v0.8) — "Today's Performance" tab. Deliberately
+{# dashboard_today.html (v0.9) — "Today's Performance" tab. Deliberately
    no "talk time" tile — see the banner below and cls_db.get_todays_
    activity_counts()'s docstring for why.
+
+   v0.9 (2026-08-16) — Task 3 Part B: new "Today's Agenda" block below
+   the 5-tile stat-card-grid — two side-by-side lists (Site Visits /
+   Followups) from the new todays_agenda context var (app.py v0.53,
+   cls_db.get_todays_agenda()), each a scheduled-today lead card
+   linking to lead_detail. Reuses the existing .card/.field-label
+   classes (base.html) — no new CSS. Outro paragraph and
+   _dashboard_tabbar include unchanged, just pushed down.
 
    v0.8 (2026-08-11) — Phase 4 of the 6-phase feature batch: all 5 tiles
    are now clickable <a> cards, each linking to the new
@@ -63,6 +71,39 @@
       <div class="stat-card-number stat-num-green">{{ perf.follow_ups_completed }}</div>
     </div>
   </a>
+
+</div>
+
+<h3 style="margin-top:24px; margin-bottom:8px;">Today's Agenda</h3>
+<div style="display:flex; gap:16px; flex-wrap:wrap;">
+
+  <div style="flex:1; min-width:240px;">
+    <div class="field-label">Site Visits</div>
+    {% if todays_agenda.site_visits %}
+      {% for v in todays_agenda.site_visits %}
+      <a href="{{ url_for('lead_detail', cls_id=v.cls_id) }}" class="card" style="display:block; text-decoration:none; color:inherit; margin-top:8px; padding:10px;">
+        <div style="font-weight:600;">{{ v.full_name }}</div>
+        <div style="font-size:13px; color:var(--ink-soft);">{{ v.scheduled_at }}</div>
+      </a>
+      {% endfor %}
+    {% else %}
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:6px;">Nothing scheduled today.</p>
+    {% endif %}
+  </div>
+
+  <div style="flex:1; min-width:240px;">
+    <div class="field-label">Followups</div>
+    {% if todays_agenda.follow_ups %}
+      {% for f in todays_agenda.follow_ups %}
+      <a href="{{ url_for('lead_detail', cls_id=f.cls_id) }}" class="card" style="display:block; text-decoration:none; color:inherit; margin-top:8px; padding:10px;">
+        <div style="font-weight:600;">{{ f.full_name }}</div>
+        <div style="font-size:13px; color:var(--ink-soft);">{{ f.scheduled_at }}</div>
+      </a>
+      {% endfor %}
+    {% else %}
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:6px;">Nothing scheduled today.</p>
+    {% endif %}
+  </div>
 
 </div>
 

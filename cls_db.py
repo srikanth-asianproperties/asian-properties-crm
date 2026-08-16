@@ -2,11 +2,21 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.57
+Version : 2.58
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.58 (2026-08-16) — Task 3 Part B: Today's Agenda subsection. NEW
+  get_todays_agenda(owner=None) — site visits and follow-ups scheduled
+  for TODAY specifically (DATE(scheduled_at) = DATE('now'), status=
+  'scheduled' only), returned as {"site_visits": [...], "follow_ups":
+  [...]} for the new Today's Agenda block on dashboard_today.html.
+  Deliberately separate from get_due_today()/get_due_by_kind() (which
+  are <=today, overdue-inclusive) — copied their query structure/join
+  pattern directly, only the date comparison changed (<= to =), so the
+  two stay easy to compare. ADDITIVE ONLY — nothing existing removed
+  or modified.
 v2.57 (2026-08-16) — Task 3 Part A: dashboard metrics, lead_reengaged
   logging, New Enquiries bug fix. Job B (selldo_to_cls.py) is
   permanently retired as of 2026-08-15 — Job A (upsert_meta_lead()) is
@@ -7077,6 +7087,61 @@ def get_due_by_kind(kind, owner=None):
     through to get_due_today(owner=owner).
     """
     return [item for item in get_due_today(owner=owner) if item["kind"] == kind]
+
+
+def get_todays_agenda(owner=None):
+    """
+    (v2.58, Task 3 Part B) Site visits and follow-ups scheduled for
+    TODAY specifically (DATE match, not <=), status='scheduled' only.
+    This is deliberately DIFFERENT from get_due_today()/get_due_by_kind()
+    above, which are <=today (overdue-inclusive) — Today's Agenda should
+    also show a visit scheduled for LATER today, not just overdue ones.
+    Same query structure/column selection/join pattern as get_due_today()
+    otherwise, just the WHERE date comparison swapped from <= to =, so
+    the two stay easy to compare.
+
+    Returns {"site_visits": [...], "follow_ups": [...]} — two separate
+    lists (not interleaved like get_due_today()'s combined list),
+    because the template renders them under two separate headings
+    side by side.
+
+    owner: optional, default None (company-wide) — same convention as
+    get_due_today(owner=None)/get_stage_snapshot_counts(owner=None).
+    Pass a lead_owner string to scope to one salesperson's own leads.
+    """
+    conn = _connect()
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        visit_query = """
+            SELECT v.visit_id, v.cls_id, v.scheduled_at, v.notes,
+                   l.full_name, l.crm_lead_no
+            FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE v.status = 'scheduled' AND DATE(v.scheduled_at) = DATE(?)
+        """
+        visit_params = [today]
+        if owner:
+            visit_query += " AND l.lead_owner = ?"
+            visit_params.append(owner)
+        visit_query += " ORDER BY v.scheduled_at ASC"
+        site_visits = [dict(r) for r in conn.execute(visit_query, visit_params).fetchall()]
+
+        followup_query = """
+            SELECT f.followup_id, f.cls_id, f.scheduled_at, f.notes,
+                   l.full_name, l.crm_lead_no
+            FROM follow_ups f JOIN leads l ON l.cls_id = f.cls_id
+            WHERE f.status = 'scheduled' AND DATE(f.scheduled_at) = DATE(?)
+        """
+        followup_params = [today]
+        if owner:
+            followup_query += " AND l.lead_owner = ?"
+            followup_params.append(owner)
+        followup_query += " ORDER BY f.scheduled_at ASC"
+        follow_ups = [dict(r) for r in conn.execute(followup_query, followup_params).fetchall()]
+
+        return {"site_visits": site_visits, "follow_ups": follow_ups}
+    finally:
+        conn.close()
 
 
 # ─────────────────────────────────────────────────────────────

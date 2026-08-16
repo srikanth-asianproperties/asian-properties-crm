@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.52
+Version : 0.53
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,15 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.53 (2026-08-16) — Task 3 Part B: Today's Agenda subsection + tab
+  rename (cls_db.py v2.58 — see that file's changelog for
+  get_todays_agenda()). dashboard_today() route gains a second, SEPARATE
+  scope variable, scope_owner (owner_match_name-based, same as
+  dashboard()'s Stats-tab cards) alongside the existing actor-email-
+  based scope_email — Today's Agenda is lead-scoped, not actor-scoped,
+  so it can't reuse scope_email. New todays_agenda context var passed
+  into the existing dashboard_today.html render. ADDITIVE ONLY —
+  nothing existing removed or modified.
 v0.52 (2026-08-16) — Task 3 Part A: dashboard metrics, lead_reengaged
   logging, New Enquiries bug fix (cls_db.py v2.57 — see that file's
   changelog for the get_new_enquiries_count()/leads() bug-fix detail
@@ -2360,11 +2369,20 @@ def dashboard_today():
     company_wide = cls_db.effective_company_wide(user)
     scope_email = None if company_wide else user["email"]
     perf = cls_db.get_todays_activity_counts(actor_email=scope_email)
+    # v0.53 — Task 3 Part B: Today's Agenda is LEAD-scoped (which
+    # leads a salesperson currently owns), not actor-scoped like perf
+    # above (which activity_log rows they personally logged) — a
+    # separate scope_owner variable, same owner_match_name pattern
+    # dashboard() uses for its Stats-tab cards. Deliberately not
+    # reusing/repurposing scope_email for this.
+    scope_owner = None if company_wide else user.get("owner_match_name")
+    todays_agenda = cls_db.get_todays_agenda(owner=scope_owner)
     return render_template(
         "dashboard_today.html",
         active_tab="today",
         perf=perf,
         company_wide=company_wide,
+        todays_agenda=todays_agenda,
     )
 
 

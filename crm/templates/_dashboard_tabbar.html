@@ -1,9 +1,14 @@
-{# _dashboard_tabbar.html (v0.6) — shared bottom icon tab bar for the
+{# _dashboard_tabbar.html (v0.7) — shared bottom icon tab bar for the
    3 dashboard pages (Stats / Today's Performance / Pipeline Analysis).
    Included (not extended) by dashboard.html, dashboard_today.html,
    dashboard_pipeline.html — each passes active_tab so the current tab
    renders highlighted. One file so the 3 pages can't visually drift
    apart from each other over time.
+
+   v0.7 (2026-08-16) — Task 3 Part B, Change 1: visible label text on
+   the middle tab changed "Today" -> "Today's Performance", matching
+   the title="Today's Performance" attribute that was already there.
+   active_tab logic, href, and icon svg untouched.
 
    Reuses the SAME .action-bar / .action-btn classes already defined
    in base.html for lead_detail.html's bottom action bar, so this
@@ -21,7 +26,7 @@
   </a>
   <a class="action-btn{% if active_tab == 'today' %} active{% endif %}" href="{{ url_for('dashboard_today') }}" title="Today's Performance">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
-    Today
+    Today's Performance
   </a>
   <a class="action-btn{% if active_tab == 'pipeline' %} active{% endif %}" href="{{ url_for('dashboard_pipeline') }}" title="Pipeline Analysis">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18M6 12h12M10 19h4"/></svg>
