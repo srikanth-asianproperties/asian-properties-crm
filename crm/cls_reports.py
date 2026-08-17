@@ -2,7 +2,7 @@
 =============================================================
 cls_reports.py — Asian Properties CRM (APX) | v0.6.1 Reports Enhancements
 =============================================================
-Version : 1.3
+Version : 1.4
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -85,6 +85,47 @@ don't print reliably, and the underlying table is the honest fallback.
 
 CHANGELOG
 ---------
+v1.4 (2026-08-17) — Monday Weekly Report, new Weekly Reports entry.
+  NEW _build_monday_weekly_report() + "monday-weekly-report" REPORTS
+  entry, added to the existing Weekly Reports category (after
+  "weekend-site-visits"). Reads the SAME cls_db functions the Telegram
+  script cls_monday_weekly_report.py uses — get_monday_weekly_report_
+  stats() (v2.60, company totals) and get_monday_weekly_report_by_owner()
+  (v2.61, per-salesperson) — so numbers here always match what Telegram
+  sent for the same week. Two views (Summary + Per Salesperson), same
+  "views" shape "weekend-site-visits" already established. Unlike that
+  report, this one IS date-range-driven ("date_default": "last_week")
+  since week_start/week_end are plain params, not a hardcoded "always
+  upcoming weekend" query — resolve_date_range()/default_range_for()
+  already handle any QUICK_RANGES key generically, no new plumbing
+  needed there.
+    - BUG FIX (found while wiring this in, not a pre-existing symptom):
+      "last_week" was already a valid REPORT_DATE_PRESETS key (used by
+      the picker widget's dropdown, added in v1.2) but was NEVER in the
+      separate QUICK_RANGES dict that default_range_for() indexes for a
+      report's fallback default — so setting "date_default": "last_week"
+      on any REPORTS entry would have raised an uncaught KeyError the
+      first time that report was opened with no ?from=&to=/preset query
+      param (i.e. every normal click from the landing page). Fixed by
+      registering QUICK_RANGES["last_week"] = _last_week_range as a
+      statement placed directly after _last_week_range()'s own def
+      (not inside the QUICK_RANGES dict literal above, which executes
+      before that function exists in the file — doing it there raises
+      NameError at import time instead). No other REPORTS entry uses
+      "last_week" as its date_default today, so this fix changes no
+      existing report's behavior — additive only.
+  Non-admin scoping done at the Python layer (filter the by-owner list
+  down to current_user["owner_match_name"]) rather than a new SQL owner
+  param, since get_monday_weekly_report_by_owner() has none — documented
+  in the builder's own docstring. Deliberately NOT reconciled with
+  weekly-leads-received/weekly-site-visits-conducted/weekly-site-visits-
+  scheduled (different, activity_log actor-attributed definition) —
+  Srikanth confirmed 2026-08-17 differing numbers for the same week
+  across these reports is expected, not a bug; see this report's
+  "caveat" text. ADDITIVE ONLY except the QUICK_RANGES fix described
+  above — nothing else existing removed or modified. app.py UNCHANGED —
+  the existing generic report_view() route already handles any
+  REPORTS-registered id.
 v1.3 (2026-08-17) — Weekend Site Visits report, new Weekly Reports entry.
   NEW _build_weekend_site_visits() + "weekend-site-visits" REPORTS entry,
   added to the existing Weekly Reports category. Reads
@@ -400,6 +441,13 @@ def _last_week_range():
     last_monday = this_monday - timedelta(days=7)
     last_sunday = last_monday + timedelta(days=6)
     return last_monday.strftime("%Y-%m-%d"), last_sunday.strftime("%Y-%m-%d")
+
+
+# v1.4: registered into QUICK_RANGES here (not in the dict literal above,
+# which executes before this function is defined) so "date_default":
+# "last_week" (Monday Weekly Report) resolves correctly via
+# default_range_for() the same way every other QUICK_RANGES key does.
+QUICK_RANGES["last_week"] = _last_week_range
 
 
 def _last_month_range():
@@ -784,6 +832,74 @@ def _build_weekend_site_visits(current_user, **kwargs):
     return {"columns": [], "rows": [], "views": views}
 
 
+def _build_monday_weekly_report(current_user, date_from=None, date_to=None, **kwargs):
+    """
+    (v1.4) "Monday Weekly Report" — Weekly Reports entry. Reads
+    cls_db.get_monday_weekly_report_stats() (company totals) and
+    get_monday_weekly_report_by_owner() (per-salesperson), the SAME
+    functions cls_monday_weekly_report.py (the Telegram script) uses —
+    numbers here will always match what Telegram sent for the same
+    week. Deliberately NOT reconciled with the existing weekly-leads-
+    received/weekly-site-visits-conducted/weekly-site-visits-scheduled
+    reports, which use a different (activity_log actor-attributed)
+    definition — Srikanth confirmed 2026-08-17 this may show different
+    numbers than those 3 reports for the same week, and that's expected,
+    not a bug.
+
+    Non-admin: rows filtered to the logged-in user's own
+    owner_match_name via the by-owner breakdown (no separate scoped
+    query needed) — same "owner_filterable" convention as every other
+    report here, just implemented at the Python layer instead of SQL
+    since get_monday_weekly_report_by_owner() has no owner param.
+    Admin (cls_db.can_view_all_leads): full company summary + every
+    salesperson's row, unfiltered.
+    """
+    by_owner = cls_db.get_monday_weekly_report_by_owner(date_from, date_to)
+
+    if not cls_db.can_view_all_leads(current_user["role"]):
+        name = current_user.get("owner_match_name")
+        by_owner = [r for r in by_owner if r["owner"] == name]
+        own = by_owner[0] if by_owner else {
+            "leads_generated": 0, "site_visits_scheduled": 0,
+            "site_visits_conducted": 0, "bookings_total": 0,
+        }
+        summary_rows = [
+            {"metric": "Leads Generated", "value": own["leads_generated"]},
+            {"metric": "Site Visits Scheduled", "value": own["site_visits_scheduled"]},
+            {"metric": "Site Visits Conducted", "value": own["site_visits_conducted"]},
+            {"metric": "Bookings (Total)", "value": own["bookings_total"]},
+        ]
+    else:
+        stats = cls_db.get_monday_weekly_report_stats(date_from, date_to)
+        summary_rows = [
+            {"metric": "Leads Generated", "value": stats["leads_generated"]},
+            {"metric": "Site Visits Scheduled", "value": stats["site_visits_scheduled"]},
+            {"metric": "Site Visits Conducted", "value": stats["site_visits_conducted"]},
+            {"metric": "Bookings — Weekdays", "value": stats["bookings_weekday"]},
+            {"metric": "Bookings — Weekend", "value": stats["bookings_weekend"]},
+            {"metric": "Total Bookings", "value": stats["bookings_total"]},
+        ]
+
+    views = [
+        {
+            "title": "Summary",
+            "columns": [("metric", "Metric"), ("value", "Value")],
+            "rows": summary_rows,
+        },
+        {
+            "title": "Per Salesperson",
+            "columns": [
+                ("owner", "Salesperson"), ("leads_generated", "Leads"),
+                ("site_visits_scheduled", "Scheduled"),
+                ("site_visits_conducted", "Conducted"),
+                ("bookings_total", "Bookings"),
+            ],
+            "rows": by_owner,
+        },
+    ]
+    return {"columns": [], "rows": [], "views": views}
+
+
 # ── Lead Stage Analysis (Requirement 4) ──
 
 def _build_lead_stage_analysis(current_user, date_from=None, date_to=None, **kwargs):
@@ -1021,6 +1137,18 @@ REPORTS = [
         "template": "report_view_charts.html",
     },
     {
+        "id": "monday-weekly-report", "title": "Monday Weekly Report",
+        "description": "Leads, site visits, and bookings for the most recently completed Monday-Sunday week, company-wide and per salesperson.",
+        "cadence": "Weekly (Mon)", "admin_only": False, "owner_filterable": True,
+        "caveat": (
+            "Site Visits Scheduled/Conducted use a different definition than the "
+            "other Weekly Reports (direct site_visits dates, not activity_log) — "
+            "numbers may not match those reports for the same week."
+        ),
+        "build": _build_monday_weekly_report, "date_default": "last_week",
+        "template": "report_view_charts.html",
+    },
+    {
         "id": "lead-stage-analysis", "title": "Lead Stage Analysis",
         "description": "Lead counts by stage — broken down by owner, project, and campaign — plus site visits by campaign, for the selected period.",
         "cadence": "Monthly", "admin_only": False, "owner_filterable": True,
@@ -1094,7 +1222,7 @@ CATEGORIES = [
     ]},
     {"name": "Weekly Reports", "report_ids": [
         "weekly-leads-received", "weekly-site-visits-conducted", "weekly-site-visits-scheduled",
-        "weekend-site-visits",
+        "weekend-site-visits", "monday-weekly-report",
     ]},
     {"name": "Pipeline Analysis", "report_ids": [
         "conversion-funnel", "project-pipeline", "lead-stage-analysis", "hit-rate", "first-response",
