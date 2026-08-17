@@ -2,11 +2,21 @@
 =============================================================
 cls_monday_weekly_report.py  —  CLS Monday Morning Weekly Report
 =============================================================
-Version : 1.0
+Version : 1.1
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.1 (2026-08-17) — Per-salesperson breakdown. Appends a "Per
+  Salesperson" section to the Telegram message, sourced from the new
+  cls_db.get_monday_weekly_report_by_owner() (cls_db.py v2.61). Owners
+  with all-zero activity for the week are skipped from the list (not
+  every inactive user printed every week); if literally every owner is
+  zero, one fallback line is shown instead of an empty section — same
+  "never skip sending silently" posture as the v1.0 zero-visits case.
+  build_message() split into build_company_section()/
+  build_owner_section() for locality; main()'s send/log/write_job_
+  result plumbing is unchanged.
 v1.0 (2026-08-17) — Initial version. Automated 5-metric weekly summary
   (leads generated, site visits scheduled, site visits conducted,
   bookings weekday/weekend) for the most recently completed Mon-Sun
@@ -22,11 +32,11 @@ WHAT THIS SCRIPT DOES
 Every Monday morning (Task Scheduler, see run_cls_monday_weekly_
 report.bat), computes the most recently completed Mon-Sun week and
 sends Srikanth a Telegram message (HTML parse_mode, same as
-cls_watchdog.py) with the 5 headline numbers plus a computed Total
-Bookings line. Falls back to a Brevo email if Telegram is unavailable
-— same primary/fallback pattern cls_watchdog.py's run() uses, reusing
-its load_env()/send_telegram()/send_brevo_alert() rather than
-duplicating that logic.
+cls_watchdog.py) with the 5 company-wide headline numbers, a computed
+Total Bookings line, and a per-salesperson breakdown. Falls back to a
+Brevo email if Telegram is unavailable — same primary/fallback pattern
+cls_watchdog.py's run() uses, reusing its load_env()/send_telegram()/
+send_brevo_alert() rather than duplicating that logic.
 
 USAGE
 -----
@@ -89,13 +99,14 @@ def _last_week_range():
     return week_start, week_end
 
 
-def build_message(stats, week_start, week_end):
+def build_company_section(stats, week_start, week_end):
     """
-    Builds the HTML-formatted Telegram message. Returns a string.
+    Builds the company-wide totals portion of the HTML-formatted
+    Telegram message. Returns a list of lines.
     """
     date_range = f"{week_start.strftime('%a, %b %d')} – {week_end.strftime('%a, %b %d')}"
 
-    lines = [
+    return [
         f"📊 <b>Weekly Report — {date_range}</b>",
         "",
         f"🧲 Leads Generated: <b>{stats['leads_generated']}</b>",
@@ -107,6 +118,41 @@ def build_message(stats, week_start, week_end):
         f"Total Bookings: <b>{stats['bookings_total']}</b>",
     ]
 
+
+def build_owner_section(owner_rows):
+    """
+    Builds the per-salesperson breakdown portion of the HTML-formatted
+    Telegram message. Returns a list of lines. Owners with all-zero
+    activity for the week are skipped; if every owner is zero, one
+    fallback line is shown instead of an empty section — same "never
+    skip sending silently" posture as the company section's zero case.
+    """
+    active_rows = [
+        r for r in owner_rows
+        if r["leads_generated"] or r["site_visits_scheduled"]
+        or r["site_visits_conducted"] or r["bookings_total"]
+    ]
+
+    lines = ["", "👥 <b>Per Salesperson</b>"]
+    if not active_rows:
+        lines.append("No salesperson activity this week.")
+        return lines
+
+    for r in active_rows:
+        lines.append(
+            f"👤 {r['owner']} — Leads: {r['leads_generated']} | "
+            f"Scheduled: {r['site_visits_scheduled']} | "
+            f"Conducted: {r['site_visits_conducted']} | "
+            f"Bookings: {r['bookings_total']}"
+        )
+
+    return lines
+
+
+def build_message(stats, owner_rows, week_start, week_end):
+    """Builds the full HTML-formatted Telegram message. Returns a string."""
+    lines = build_company_section(stats, week_start, week_end)
+    lines += build_owner_section(owner_rows)
     return "\n".join(lines)
 
 
@@ -121,13 +167,15 @@ def main():
 
     week_start, week_end = _last_week_range()
     stats = cls_db.get_monday_weekly_report_stats(week_start.isoformat(), week_end.isoformat())
-    message = build_message(stats, week_start, week_end)
+    owner_rows = cls_db.get_monday_weekly_report_by_owner(week_start.isoformat(), week_end.isoformat())
+    message = build_message(stats, owner_rows, week_start, week_end)
     log(f"Week {week_start.isoformat()} - {week_end.isoformat()}: "
         f"leads={stats['leads_generated']}, "
         f"visits_scheduled={stats['site_visits_scheduled']}, "
         f"visits_conducted={stats['site_visits_conducted']}, "
         f"bookings_weekday={stats['bookings_weekday']}, "
-        f"bookings_weekend={stats['bookings_weekend']}")
+        f"bookings_weekend={stats['bookings_weekend']}, "
+        f"owners_with_activity={sum(1 for r in owner_rows if r['leads_generated'] or r['site_visits_scheduled'] or r['site_visits_conducted'] or r['bookings_total'])}")
 
     env = cls_watchdog.load_env()
     bot_token = env.get("TELEGRAM_BOT_TOKEN", "")

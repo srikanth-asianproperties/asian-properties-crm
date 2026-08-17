@@ -2,11 +2,23 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.60
+Version : 2.61
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.61 (2026-08-17) — Monday Weekly Report: per-salesperson breakdown. NEW
+  get_monday_weekly_report_by_owner(week_start, week_end) — companion
+  to get_monday_weekly_report_stats() (v2.60), same 4 underlying
+  metrics (leads generated, site visits scheduled/conducted, bookings)
+  but grouped by CURRENT lead_owner instead of summed company-wide.
+  Bookings shown as a single combined total per owner, not split
+  weekday/weekend — Srikanth confirmed 2026-08-17 that split only
+  matters at company level. Owner attribution is today's lead_owner,
+  same convention as get_bookings_by_owner_for_period()/get_leads_by_
+  owner_for_period() (events aren't ownership-snapshotted at the time
+  they occurred). For cls_monday_weekly_report.py's new Per Salesperson
+  section. ADDITIVE ONLY — nothing existing removed or modified.
 v2.60 (2026-08-17) — Monday Morning Weekly Report. NEW
   get_monday_weekly_report_stats(week_start, week_end) — 5 headline
   numbers (leads generated, site visits scheduled, site visits
@@ -6750,6 +6762,85 @@ def get_monday_weekly_report_stats(week_start, week_end):
             "bookings_weekend": bookings_weekend,
             "bookings_total": bookings_weekday + bookings_weekend,
         }
+    finally:
+        conn.close()
+
+
+def get_monday_weekly_report_by_owner(week_start, week_end):
+    """
+    (v2.61) Monday Morning Weekly Report — PER-SALESPERSON breakdown,
+    companion to get_monday_weekly_report_stats() (company-wide totals).
+
+    Same 4 metrics as the company version, minus the weekday/weekend
+    booking split (shown as a single combined bookings_total per
+    owner — Srikanth confirmed 2026-08-17 the weekday/weekend split
+    only matters at company level, not per person).
+
+    Owner attribution is CURRENT lead_owner (today's ownership), same
+    convention as get_bookings_by_owner_for_period() and
+    get_leads_by_owner_for_period() — activity_log/site_visits don't
+    snapshot ownership at event time, so this intentionally reflects
+    today's assignment, not owner-at-event-time.
+
+    Returns a list of dicts, one per owner (blank/NULL owner grouped
+    as 'Unassigned'), sorted by leads_generated desc:
+        [{"owner": "Devender Goud", "leads_generated": 12,
+          "site_visits_scheduled": 8, "site_visits_conducted": 5,
+          "bookings_total": 1}, ...]
+    Every owner that appears in ANY of the 4 metrics gets one row with
+    all 4 keys present (defaulting to 0), not four separate partial rows.
+    """
+    conn = _connect()
+    try:
+        start_ts = f"{week_start} 00:00:00"
+        end_ts = f"{week_end} 23:59:59"
+
+        leads_rows = conn.execute("""
+            SELECT COALESCE(NULLIF(TRIM(lead_owner), ''), 'Unassigned') AS owner, COUNT(*) c
+            FROM leads WHERE cls_created_at >= ? AND cls_created_at <= ?
+            GROUP BY owner
+        """, (start_ts, end_ts)).fetchall()
+
+        scheduled_rows = conn.execute("""
+            SELECT COALESCE(NULLIF(TRIM(l.lead_owner), ''), 'Unassigned') AS owner, COUNT(*) c
+            FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE v.created_at >= ? AND v.created_at <= ?
+            GROUP BY owner
+        """, (start_ts, end_ts)).fetchall()
+
+        conducted_rows = conn.execute("""
+            SELECT COALESCE(NULLIF(TRIM(l.lead_owner), ''), 'Unassigned') AS owner, COUNT(*) c
+            FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE v.status='conducted' AND v.conducted_at >= ? AND v.conducted_at <= ?
+            GROUP BY owner
+        """, (start_ts, end_ts)).fetchall()
+
+        bookings_rows = conn.execute("""
+            SELECT COALESCE(NULLIF(TRIM(l.lead_owner), ''), 'Unassigned') AS owner, COUNT(*) c
+            FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
+            WHERE a.activity_type='stage_change' AND a.new_value='Booked'
+            AND a.created_at >= ? AND a.created_at <= ?
+            GROUP BY owner
+        """, (start_ts, end_ts)).fetchall()
+
+        merged = {}
+
+        def _add(rows, key):
+            for r in rows:
+                merged.setdefault(r["owner"], {
+                    "owner": r["owner"], "leads_generated": 0,
+                    "site_visits_scheduled": 0, "site_visits_conducted": 0,
+                    "bookings_total": 0,
+                })[key] = r["c"]
+
+        _add(leads_rows, "leads_generated")
+        _add(scheduled_rows, "site_visits_scheduled")
+        _add(conducted_rows, "site_visits_conducted")
+        _add(bookings_rows, "bookings_total")
+
+        result = list(merged.values())
+        result.sort(key=lambda r: r["leads_generated"], reverse=True)
+        return result
     finally:
         conn.close()
 
