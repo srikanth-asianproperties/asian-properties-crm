@@ -2,11 +2,21 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.58
+Version : 2.59
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.59 (2026-08-17) — Weekend Site Visits Report. NEW
+  get_weekend_site_visits(owner_match_name=None) — site visits scheduled
+  for the upcoming Saturday+Sunday, same query shape and owner-scoping
+  convention as get_site_visits_for_tomorrow() (v2.14), just swapping
+  the date filter for SQLite's 'weekday 6' modifier (jumps to the next
+  Saturday, or stays put if today IS Saturday) so it returns the
+  correct weekend regardless of which day it's run on. No Sell.do-side
+  check needed — Sell.do was fully retired 2026-08-15 (see v2.57's
+  changelog), so site_visits is the sole, authoritative source for
+  scheduling now. ADDITIVE ONLY — nothing existing removed or modified.
 v2.58 (2026-08-16) — Task 3 Part B: Today's Agenda subsection. NEW
   get_todays_agenda(owner=None) — site visits and follow-ups scheduled
   for TODAY specifically (DATE(scheduled_at) = DATE('now'), status=
@@ -6594,6 +6604,52 @@ def get_site_visits_for_tomorrow(owner_match_name=None):
             query += " AND l.lead_owner = ?"
             params.append(owner_match_name)
         query += " ORDER BY v.scheduled_at ASC"
+
+        rows = conn.execute(query, params).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["phone_e164"] = "91" + (d["phone_norm"] or "")
+            results.append(d)
+        return results
+    finally:
+        conn.close()
+
+
+def get_weekend_site_visits(owner_match_name=None):
+    """
+    (v2.59) Site visits scheduled for the upcoming weekend (Saturday +
+    Sunday), grouped implicitly by lead_owner for the caller to break
+    down. Uses SQLite's 'weekday 6' modifier: jumps forward to the next
+    Saturday (or stays on today if today IS Saturday), so this works
+    correctly regardless of which day it's run on — Friday run shows
+    tomorrow+Sunday, Saturday run shows today+tomorrow.
+
+    When owner_match_name is given, scoped to that salesperson's own
+    leads only (leads.lead_owner) — same scoping convention as
+    get_site_visits_for_tomorrow().
+
+    Returns a list of dicts: visit_id, cls_id, full_name, phone_raw,
+    phone_norm, phone_e164, project, lead_owner, scheduled_at, notes.
+    Sorted by lead_owner, then scheduled_at ascending — ready for a
+    caller to group-by lead_owner without a separate sort step.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT v.visit_id, v.cls_id, l.full_name, l.phone_raw, l.phone_norm,
+                   l.project, l.lead_owner, v.scheduled_at, v.notes
+            FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
+            WHERE v.status = 'scheduled'
+              AND DATE(v.scheduled_at) BETWEEN
+                  DATE('now', 'localtime', 'weekday 6')
+                  AND DATE('now', 'localtime', 'weekday 6', '+1 day')
+        """
+        params = []
+        if owner_match_name is not None:
+            query += " AND l.lead_owner = ?"
+            params.append(owner_match_name)
+        query += " ORDER BY l.lead_owner ASC, v.scheduled_at ASC"
 
         rows = conn.execute(query, params).fetchall()
         results = []

@@ -2,7 +2,7 @@
 =============================================================
 cls_reports.py — Asian Properties CRM (APX) | v0.6.1 Reports Enhancements
 =============================================================
-Version : 1.2
+Version : 1.3
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -85,6 +85,22 @@ don't print reliably, and the underlying table is the honest fallback.
 
 CHANGELOG
 ---------
+v1.3 (2026-08-17) — Weekend Site Visits report, new Weekly Reports entry.
+  NEW _build_weekend_site_visits() + "weekend-site-visits" REPORTS entry,
+  added to the existing Weekly Reports category. Reads
+  cls_db.get_weekend_site_visits() (v2.59) — always "the upcoming
+  Saturday+Sunday", never a Srikanth-selectable range, so this uses the
+  existing "date_default": "live" exemption (same mechanism as Pipeline
+  Funnel Snapshot/Score Distribution/Owner-wise Workload) rather than
+  inventing a new no-date-picker path. Two views (Summary + Detail),
+  same "views" shape Lead Stage Analysis already established — "columns":
+  [], "rows": [], "views": [...] — and "template": "report_view_charts.html"
+  since that's the only template that renders report.views (neither view
+  carries a "chart" key, which report_view_charts.html already treats as
+  optional per view). Same oversight-scoping pattern as every other
+  Weekly Reports builder (cls_db.can_view_all_leads(current_user["role"])
+  decides company-wide vs current_user["owner_match_name"]).
+
 v1.2 (July 2026) — 3 scoped tasks from Srikanth, all additive.
 
   TASK 1 — date-range picker dropdown. NEW REPORT_DATE_PRESETS (11 keys,
@@ -714,6 +730,60 @@ def _build_weekly_site_visits_scheduled(current_user, date_from=None, date_to=No
     return {"columns": columns, "rows": rows}
 
 
+def _format_scheduled_at(value):
+    """
+    (v1.3) Same 12-hour display convention as app.py's "ampm" Jinja
+    filter (which report_view_charts.html's generic table doesn't
+    apply per-column) — reproduced here rather than imported to avoid
+    a cls_reports -> app import (app.py already imports cls_reports,
+    not the other way around). Only site_visits.scheduled_at's
+    "YYYY-MM-DD HH:MM" shape is relevant here, but both formats
+    ampm_filter() handles are kept so this stays a drop-in match.
+    """
+    if not value:
+        return value
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(value, fmt).strftime("%a, %b %d, %I:%M %p")
+        except ValueError:
+            continue
+    return value
+
+
+def _build_weekend_site_visits(current_user, **kwargs):
+    oversight = cls_db.can_view_all_leads(current_user["role"])
+    visits = cls_db.get_weekend_site_visits(
+        owner_match_name=None if oversight else current_user["owner_match_name"])
+
+    counts = {}
+    for v in visits:
+        counts[v["lead_owner"]] = counts.get(v["lead_owner"], 0) + 1
+    summary_view = {
+        "columns": [("owner", "Salesperson"), ("count", "Visits This Weekend")],
+        "rows": [{"owner": owner, "count": count} for owner, count in counts.items()],
+    }
+
+    detail_view = {
+        "columns": [
+            ("owner", "Salesperson"), ("name", "Lead Name"), ("phone", "Phone"),
+            ("project", "Project"), ("scheduled", "Scheduled"),
+        ],
+        "rows": [
+            {
+                "owner": v["lead_owner"], "name": v["full_name"], "phone": v["phone_raw"],
+                "project": v["project"], "scheduled": _format_scheduled_at(v["scheduled_at"]),
+            }
+            for v in visits
+        ],
+    }
+
+    views = [
+        {"title": "Summary", **summary_view},
+        {"title": "Detail", **detail_view},
+    ]
+    return {"columns": [], "rows": [], "views": views}
+
+
 # ── Lead Stage Analysis (Requirement 4) ──
 
 def _build_lead_stage_analysis(current_user, date_from=None, date_to=None, **kwargs):
@@ -944,6 +1014,13 @@ REPORTS = [
         "mobile_transpose": True,
     },
     {
+        "id": "weekend-site-visits", "title": "Weekend Site Visits",
+        "description": "Site visits scheduled for the upcoming Saturday and Sunday, by salesperson.",
+        "cadence": "Weekly (Fri)", "admin_only": False, "owner_filterable": True,
+        "caveat": None, "build": _build_weekend_site_visits, "date_default": "live",
+        "template": "report_view_charts.html",
+    },
+    {
         "id": "lead-stage-analysis", "title": "Lead Stage Analysis",
         "description": "Lead counts by stage — broken down by owner, project, and campaign — plus site visits by campaign, for the selected period.",
         "cadence": "Monthly", "admin_only": False, "owner_filterable": True,
@@ -1017,6 +1094,7 @@ CATEGORIES = [
     ]},
     {"name": "Weekly Reports", "report_ids": [
         "weekly-leads-received", "weekly-site-visits-conducted", "weekly-site-visits-scheduled",
+        "weekend-site-visits",
     ]},
     {"name": "Pipeline Analysis", "report_ids": [
         "conversion-funnel", "project-pipeline", "lead-stage-analysis", "hit-rate", "first-response",
