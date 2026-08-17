@@ -2,11 +2,24 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.59
+Version : 2.60
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.60 (2026-08-17) — Monday Morning Weekly Report. NEW
+  get_monday_weekly_report_stats(week_start, week_end) — 5 headline
+  numbers (leads generated, site visits scheduled, site visits
+  conducted, bookings weekday/weekend) for the most recently completed
+  Mon-Sun week, for the new cls_monday_weekly_report.py ops script.
+  site_visits_scheduled deliberately uses site_visits.created_at
+  (scheduling activity within the week), not scheduled_at, so it pairs
+  with site_visits_conducted as a same-week funnel (Decision A,
+  confirmed by Srikanth 2026-08-17). bookings_weekday/weekend reuse the
+  EVENT-count definition (activity_log stage_change -> Booked) already
+  established by get_booking_summary_totals() (v2.31) — same reasoning,
+  just split by strftime('%w', created_at) instead of summed. ADDITIVE
+  ONLY — nothing existing removed or modified.
 v2.59 (2026-08-17) — Weekend Site Visits Report. NEW
   get_weekend_site_visits(owner_match_name=None) — site visits scheduled
   for the upcoming Saturday+Sunday, same query shape and owner-scoping
@@ -6658,6 +6671,85 @@ def get_weekend_site_visits(owner_match_name=None):
             d["phone_e164"] = "91" + (d["phone_norm"] or "")
             results.append(d)
         return results
+    finally:
+        conn.close()
+
+
+def get_monday_weekly_report_stats(week_start, week_end):
+    """
+    (v2.60) Monday Morning Weekly Report — 5 headline numbers for the
+    most recently completed Mon-Sun week. week_start/week_end are
+    'YYYY-MM-DD' strings (Monday and Sunday of that week, inclusive).
+
+    leads_generated       : leads.cls_created_at in range.
+    site_visits_scheduled : site_visits.created_at in range — SCHEDULING
+                             ACTIVITY this week (Decision A, confirmed by
+                             Srikanth 2026-08-17). Deliberately NOT
+                             scheduled_at, so this pairs with
+                             site_visits_conducted as a same-week
+                             scheduled->conducted funnel, not a mix of
+                             old + new appointments.
+    site_visits_conducted : site_visits.status='conducted' AND
+                             conducted_at in range.
+    bookings_weekday /
+    bookings_weekend       : EVENT count — activity_log rows where
+                             activity_type='stage_change' AND
+                             new_value='Booked', a.created_at in range
+                             (SAME definition as get_booking_summary_
+                             totals()'s "bookings" — Decision 3 there:
+                             deliberately NOT current_stage='Booked',
+                             so a lead that unwinds and rebooks in-week
+                             counts once per event, not zero or twice).
+                             Split by SQLite strftime('%w', created_at):
+                             '1'-'5' = weekday, '0'/'6' = weekend.
+    """
+    conn = _connect()
+    try:
+        start_ts = f"{week_start} 00:00:00"
+        end_ts = f"{week_end} 23:59:59"
+
+        leads_generated = conn.execute(
+            "SELECT COUNT(*) c FROM leads WHERE cls_created_at >= ? AND cls_created_at <= ?",
+            (start_ts, end_ts)
+        ).fetchone()["c"]
+
+        site_visits_scheduled = conn.execute(
+            "SELECT COUNT(*) c FROM site_visits WHERE created_at >= ? AND created_at <= ?",
+            (start_ts, end_ts)
+        ).fetchone()["c"]
+
+        site_visits_conducted = conn.execute(
+            "SELECT COUNT(*) c FROM site_visits WHERE status='conducted' "
+            "AND conducted_at >= ? AND conducted_at <= ?",
+            (start_ts, end_ts)
+        ).fetchone()["c"]
+
+        bookings_weekday = conn.execute(
+            "SELECT COUNT(*) c FROM activity_log "
+            "WHERE activity_type='stage_change' AND new_value='Booked' "
+            "AND created_at >= ? AND created_at <= ? "
+            "AND strftime('%w', created_at) IN ('1','2','3','4','5')",
+            (start_ts, end_ts)
+        ).fetchone()["c"]
+
+        bookings_weekend = conn.execute(
+            "SELECT COUNT(*) c FROM activity_log "
+            "WHERE activity_type='stage_change' AND new_value='Booked' "
+            "AND created_at >= ? AND created_at <= ? "
+            "AND strftime('%w', created_at) IN ('0','6')",
+            (start_ts, end_ts)
+        ).fetchone()["c"]
+
+        return {
+            "week_start": week_start,
+            "week_end": week_end,
+            "leads_generated": leads_generated,
+            "site_visits_scheduled": site_visits_scheduled,
+            "site_visits_conducted": site_visits_conducted,
+            "bookings_weekday": bookings_weekday,
+            "bookings_weekend": bookings_weekend,
+            "bookings_total": bookings_weekday + bookings_weekend,
+        }
     finally:
         conn.close()
 
