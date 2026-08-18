@@ -47,7 +47,7 @@ v2.59 (2026-08-17) — Weekend Site Visits Report. NEW
   the date filter for SQLite's 'weekday 6' modifier (jumps to the next
   Saturday, or stays put if today IS Saturday) so it returns the
   correct weekend regardless of which day it's run on. No Sell.do-side
-  check needed — Sell.do was fully retired 2026-08-15 (see v2.57's
+  check needed — Sell.do was fully retired 2026-08-18 (see v2.57's
   changelog), so site_visits is the sole, authoritative source for
   scheduling now. ADDITIVE ONLY — nothing existing removed or modified.
 v2.58 (2026-08-16) — Task 3 Part B: Today's Agenda subsection. NEW
@@ -62,7 +62,7 @@ v2.58 (2026-08-16) — Task 3 Part B: Today's Agenda subsection. NEW
   or modified.
 v2.57 (2026-08-16) — Task 3 Part A: dashboard metrics, lead_reengaged
   logging, New Enquiries bug fix. Job B (selldo_to_cls.py) is
-  permanently retired as of 2026-08-15 — Job A (upsert_meta_lead()) is
+  permanently retired as of 2026-08-18 — Job A (upsert_meta_lead()) is
   the only automated lead-entry path now.
     - BUG FIX: get_new_enquiries_count()/get_new_enquiries_leads() —
       silent undercounting since v2.28. The WHERE clause's "zero
