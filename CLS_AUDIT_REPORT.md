@@ -454,3 +454,258 @@ Files read in full or in depth: `meta_leads_fetcher.py` (Job A, 746), `selldo_to
    the exact wrong-DB incident CLAUDE.md already records.
 3. **P2-5 — guard Job A's `print()` (and unify the guard everywhere).** Job A is the only
    unguarded job with no wrapper pinning its interpreter — a first-line silent-death risk.
+
+---
+
+# PASS 3 — Auto-discovered scripts, config, android_pilot, `.bat`/Task Scheduler
+
+Files read in full: `cls_reconcile_apply.py` (retrieved from git HEAD — **deleted from the
+working tree**), `meta_field_dump.py`, `send_template_preview.py`, `upload_elevation.py`,
+`upload_images_to_brevo.py`, `cls_flags.json`, all 9 `run_*.bat` / `restart_crm_server.bat`
+wrappers, and the `android_pilot/` sources (`AndroidManifest.xml`, `app/build.gradle`,
+`Shared.kt`, `MainActivity.kt` WebView/bridge setup, plus greps across all Kotlin/XML).
+Live **Task Scheduler** was enumerated read-only (`Get-ScheduledTask`) to establish each
+job's *actual* action vs. its wrapper. Verified none of the five untracked scripts are
+imported anywhere, and that `direct_set_stage_reconciliation` has no caller besides the
+now-deleted reconcile script and is not route-reachable.
+
+## Compliance confirmed (no action)
+
+- **`cls_flags.json` is config-not-code compliant** — it is a *state* file (five job→timestamp
+  entries), touched **only** through `cls_db.set_flag/get_flag/is_flag_fresh`. No script reads
+  or writes it directly, and nothing hardcodes a flag value to bypass it. It is a single shared
+  file, correctly unaffected by the CLS1/CLS2 split.
+- **Android has no hardcoded secrets.** Grep for tokens/keys/`http://`/JWT/`EAAA` across all
+  Kotlin found none. The bearer token is stored in `EncryptedSharedPreferences` (AES256, Keystore
+  MasterKey), sent only as an `Authorization: Bearer` header over HTTPS, and never placed in a URL.
+  `local.properties` is git-ignored and untracked (SDK path only).
+- **Android WebView posture is sound.** `javaScriptEnabled=true` but the WebView only ever loads
+  the fixed HTTPS origin `https://crm.asianbuild.in` (no cleartext — `usesCleartextTraffic=false`);
+  `addJavascriptInterface` exposes exactly three `@JavascriptInterface`-annotated methods and
+  `minSdk=26` sits well above the pre-4.2 reflection-bridge vulnerability; `shouldOverrideUrlLoading`
+  routes non-http(s) schemes out to the OS. No `setAllowFileAccess`/`allowUniversalAccess` enabled.
+- **Android permissions are documented and justified.** Each permission carries an inline comment
+  tying it to a specific feature; `ACCESS_BACKGROUND_LOCATION`/`POST_NOTIFICATIONS` are deliberately
+  pre-declared but not yet runtime-requested, which the comments state — compliant, not clutter.
+
+---
+
+## Findings
+
+### P3-1 — `CLS_Job_D_EmailDrip` scheduled task runs entirely on the frozen `C:\CLS` drive
+- **File:** Task Scheduler task `CLS_Job_D_EmailDrip` → `C:\CLS\run_cls_email_drip.bat`
+- **Line:** that wrapper contains `set CLS_DB_PATH=C:\CLS\CLS2.db` + `cd /d C:\CLS` + `python cls_email_drip.py`
+- **Category:** Doctrine Violation (drive migration) / Idempotency-adjacent
+- **Severity:** High (latent behind `DRIP_PAUSED`)
+- **What you found:** The live Task Scheduler action for Job D points at the **frozen `C:\CLS`
+  backup** (frozen since the 2026-08-03 D:\ migration), not `D:\CLS\run_cls_email_drip.bat`. So if
+  Job D were un-paused it would execute the **frozen copy** of `cls_email_drip.py` against the
+  **frozen `C:\CLS\CLS2.db`** — old code, old data, on a drive CLAUDE.md says is a read-only rollback
+  point. The `D:\CLS\run_cls_email_drip.bat` wrapper (correctly on D:\, targeting `D:\CLS\CLS2.db`)
+  exists but is **not** what the scheduler calls.
+- **Why it matters:** This stacks directly on Pass-2 **P2-1** (Job D's hardcoded `cls.db` bounce
+  writer) and **P2-9** (stale one-time tools): the entire Job D activation path is booby-trapped.
+  Un-pausing Job D today runs stale code against a stale DB and writes bounces to a phantom `cls.db`
+  — none of it visible to the live system. Job D cannot be safely re-enabled until this task is
+  repointed to the D:\ wrapper *and* P2-1 is fixed.
+- **Suggested direction:** Repoint the `CLS_Job_D_EmailDrip` action to `D:\CLS\run_cls_email_drip.bat`,
+  and treat P2-1 + P2-9 + P3-1 as a single "before Job D ever un-pauses" checklist.
+
+### P3-2 — Scheduled tasks bypass their `.bat` wrappers → live monitoring reads the wrong DB
+- **File:** Task Scheduler (`APX CRM Server`, `CLS Telegram Listener`, `CLS Telecaller Report`,
+  `CLS Daily Backup`) vs. the `run_*.bat` wrappers
+- **Line:** `APX CRM Server` → `pythonw.exe D:\CLS\crm\app.py` (not `run_app.bat`);
+  `CLS Telegram Listener` → `pythonw.exe D:\CLS\cls_telegram_listener.py` (not
+  `run_cls_telegram_listener.bat`); `CLS Telecaller Report` → `D:\CLS\cls_telecaller_report.py`;
+  `CLS Daily Backup` → `D:\CLS\cls_backup.py` — none set `CLS_DB_PATH`
+- **Category:** Doctrine Violation (the exact documented 2026-07-26 footgun)
+- **Severity:** High
+- **What you found:** Four live tasks invoke the interpreter/script **directly**, bypassing the
+  wrapper that sets `CLS_DB_PATH` — precisely the failure mode CLAUDE.md documents as the cause of
+  the 2026-07-26 wrong-DB incident. With no `CLS_DB_PATH`, `cls_db.py` silently falls back to its
+  default (**CLS1.db**). Consequences: (a) **`CLS Telegram Listener` actually runs against CLS1**,
+  even though `run_cls_telegram_listener.bat` and CLAUDE.md both say CLS2 — so the `/stats` `/today`
+  `/pending` bot answers from CLS1 (live) while **`CLS_Watchdog` (which *does* use its wrapper) reads
+  CLS2** (frozen). The two monitoring tools disagree with each other and neither matches the
+  wrapper's stated intent. (b) `APX CRM Server` works only by coincidence (default == its intended
+  CLS1); a future default change would silently move the whole CRM to the wrong DB with no error.
+  (Note: this **de-risks Pass-2 P2-5's Job A worry** — `CLS_JobA_MetaFetch` runs `python … >> log 2>&1`,
+  i.e. real `python.exe` with stdout redirected to a file, so Job A does **not** run under `pythonw`
+  today and its unguarded `log()` will not crash on a None stdout. The guard is still worth adding
+  defensively, but the live risk is lower than P2-5 assumed.)
+- **Why it matters:** Monitoring that reads a frozen DB (watchdog) reports stale numbers and can miss
+  a real CLS1 problem, while the listener reports live numbers — an operator comparing the two gets
+  contradictory health signals. And every bypassed task is one default-value change away from the
+  documented silent wrong-DB incident. This is the operational counterpart to Pass-2 P2-2/P2-3.
+- **Suggested direction:** Point every task's action at its `run_*.bat` wrapper (never the bare
+  interpreter), then settle P2-2's "which DB should monitoring read now that Job B is stopped"
+  decision once and make the watchdog + listener wrappers agree. Reconcile CLAUDE.md to match.
+
+### P3-3 — All four untracked one-off scripts hardcode the frozen `C:\CLS` drive
+- **File:** `meta_field_dump.py` (`BASE_DIR=r"C:\CLS"`, `:81`), `send_template_preview.py`
+  (`BASE_DIR="C:\\CLS"`, `:11`), `upload_elevation.py` (`dotenv_values("C:\\CLS\\.env")`, `:4`),
+  `upload_images_to_brevo.py` (`BASE_DIR="C:\\CLS"`, `:11`)
+- **Category:** Dead Code / Doctrine Violation (drive migration)
+- **Severity:** Medium
+- **What you found:** None of these four are scheduled or imported anywhere (verified) — they are
+  one-time diagnostics/setup tools. All four still read `.env` from **`C:\CLS`** (the frozen backup),
+  and two also **write output** there (`meta_field_dump` writes its JSON to `C:\CLS`, its docstring
+  still says so). Re-running any of them today loads the **frozen, possibly rotated** credentials
+  from `C:\CLS\.env` and — for `meta_field_dump`/`upload_*` — hits live external APIs (Meta Graph,
+  Brevo) with them, or (for `send_template_preview`) sends 8 real emails.
+- **Why it matters:** These are untracked, not in the PK bundle, and silently pinned to a drive the
+  project has moved off of. They are dead weight that, if ever re-run, use stale secrets and target
+  the wrong location — a low-probability but real footgun, and clutter that obscures what's actually
+  live.
+- **Suggested direction:** Archive or delete all four as retired one-offs (their jobs are done — the
+  Brevo URLs are already pasted into `cls_email_drip.py`, the field dump already informed Job A).
+  If any is worth keeping as a re-runnable diagnostic, repoint `BASE_DIR`/`.env` to `D:\CLS`.
+
+### P3-4 — Orphaned stage-bypass function left in the deterministic core after its caller was deleted
+- **File:** `cls_db.py`
+- **Function/Line:** `direct_set_stage_reconciliation()` `5066-5086`
+- **Category:** Idempotency Risk / Doctrine (Chekhov's gun in the deterministic core)
+- **Severity:** Medium
+- **What you found:** `cls_reconcile_apply.py` (its **only** caller) has been **deleted from the
+  working tree** (git status `D`), but `direct_set_stage_reconciliation` remains permanently in the
+  shared library. It writes `current_stage` directly with a raw `UPDATE`, **deliberately bypassing
+  `STAGE_TRANSITIONS`**, and does **not** touch `last_fired_stage`. It is not reachable from any
+  route (verified — no other reference anywhere), so it is not a live web exposure — but it is a
+  loaded, callable one-way-rule bypass sitting in the exact module the doctrine says must stay
+  deterministic, now with no legitimate caller and no dated "paused" framing (the docstring still
+  says "called only by cls_reconcile_apply.py", which no longer exists).
+- **Why it matters:** A stage-writing function that skips the transition guard is precisely the kind
+  of capability the "determinism at the core" rule exists to fence off. Left orphaned, it invites a
+  future caller to reach for it as a convenient "just set the stage" shortcut, silently defeating
+  `STAGE_TRANSITIONS` and desyncing from `last_fired_stage`/CAPI state.
+- **Suggested direction:** Either restore `cls_reconcile_apply.py` and update the docstring, or
+  retire the function under a dated `# PAUSED — one-time 2026-08-14 reconciliation complete` block
+  (paused-not-deleted) so it is clearly not general-purpose. Confirm the 41 corrections were applied
+  before removing the caller for good.
+
+### P3-5 — `run_cls_weekend_visits_report.bat` has a trailing space in `CLS_DB_PATH`; both report wrappers omit `@echo off`/`cd`
+- **File:** `run_cls_weekend_visits_report.bat`, `run_cls_monday_weekly_report.bat`
+- **Line:** weekend: `set CLS_DB_PATH=D:\CLS\CLS1.db·` (a literal trailing space before CRLF) and a
+  final line with no trailing newline; monday: `set CLS_DB_PATH=D:\CLS\CLS1.db` then `pythonw.exe cls_monday_weekly_report.py`
+- **Category:** Code Quality / Future Scale Risk
+- **Severity:** Low
+- **What you found:** In `cmd`, `set VAR=value ` keeps the trailing space, so the weekend wrapper
+  exports `CLS_DB_PATH` as `"D:\CLS\CLS1.db "` (trailing space). It works today only because Windows'
+  file layer strips trailing spaces from path components — a fragile accident, not a guarantee.
+  Separately, both report wrappers differ from the house style of the other seven wrappers: no
+  `@echo off`, no `cd /d D:\CLS`, and a bare `pythonw.exe` (relying on PATH). They run correctly only
+  because their Task Scheduler "Start in" is set to `D:\CLS`; a task re-created without that field
+  would fail to find the script.
+- **Why it matters:** Silent fragility. If Windows path-normalization behavior ever changed, or the
+  Start-in field were lost, these two reports would break with an unhelpful error — and the trailing
+  space could, in a stricter future context, create a phantom `CLS1.db ` file.
+- **Suggested direction:** Trim the trailing space; bring both wrappers to the standard form
+  (`@echo off` / `set CLS_DB_PATH=...` with no trailing whitespace / `cd /d D:\CLS` / interpreter),
+  matching the other seven.
+
+### P3-6 — `upload_elevation.py` is redundant, undocumented dead code
+- **File:** `upload_elevation.py` (whole file, 13 lines)
+- **Category:** Dead Code
+- **Severity:** Low
+- **What you found:** A docstring-less, header-less 13-line script that uploads a single image
+  (`elevation.jpeg`) to Brevo — fully superseded by `upload_images_to_brevo.py`, whose `IMAGES`
+  list already includes `elevation` as its first entry. It also does `env["BREVO_API_KEY"]` with a
+  bare subscript (KeyError if the key is absent) and an unguarded `print`. Untracked, unimported,
+  not scheduled.
+- **Why it matters:** Pure clutter that duplicates a subset of another script and violates the
+  "version header + changelog" convention. No production impact, but it is exactly the "dead weight
+  vs. active use" call this pass exists to make: it is dead.
+- **Suggested direction:** Delete it (its function lives in `upload_images_to_brevo.py`).
+
+### P3-7 — `send_template_preview.py` couples a live-email one-off to the paused Job D module
+- **File:** `send_template_preview.py`
+- **Function/Line:** `from cls_email_drip import (TEMPLATES, SENDER_CONFIG, _wrap_email, _build_img_context, NAISHKA_IMAGE_URLS)` `:35`; unguarded `print()` throughout
+- **Category:** Code Quality / Dead Code
+- **Severity:** Low
+- **What you found:** This one-off preview sender imports five internals (including two underscore-
+  private helpers) from `cls_email_drip.py` and sends **8 real emails** via Brevo to a hardcoded
+  address. It is tightly coupled to Job D's private API, so any rename inside the paused
+  `cls_email_drip.py` silently breaks it; and it hardcodes `C:\CLS` (see P3-3). Its `print()`s are
+  unguarded, tolerable only because it is always run interactively.
+- **Why it matters:** A retired, drive-stale, side-effecting (sends live email) tool that depends on
+  the internals of a paused module — fragile and easy to run by mistake.
+- **Suggested direction:** Archive with the other P3-3 one-offs; if kept as a live preview tool,
+  repoint to `D:\CLS` and depend on a stable public surface rather than `_`-private helpers.
+
+### P3-8 — Android: `allowBackup="true"` on an app that stores a bearer token; no release build config
+- **File:** `android_pilot/app/src/main/AndroidManifest.xml` (`:33`), `android_pilot/app/build.gradle` (`buildTypes { debug { } }`)
+- **Category:** Security / Code Quality
+- **Severity:** Low
+- **What you found:** The `<application>` sets `allowBackup="true"` while the app stores a bearer
+  token in `EncryptedSharedPreferences`. Because the encryption MasterKey lives in the Android
+  Keystore (which auto-backup does **not** export), any backed-up ciphertext is undecryptable on a
+  different device — so the exposure is largely self-mitigating — but best practice for a
+  credential-bearing app is `allowBackup="false"` or explicit `fullBackupContent` rules that exclude
+  the secure prefs. Separately, `build.gradle` defines only a `debug {}` build type — no `release`
+  block, no `minifyEnabled`/R8, no signing config. Sideload is the intended distribution (per
+  CLAUDE.md), so this is not a blocker, but there is currently no shrink/obfuscation or release-signing story.
+- **Why it matters:** Low, but it is the one place the Android app's otherwise-strong credential
+  hygiene is slightly loose, and the missing release config will need to exist before any signed
+  distribution build.
+- **Why it matters (DPDP):** `READ_CALL_LOG` + `READ_PHONE_STATE` + `READ_MEDIA_AUDIO` (recording-
+  folder scanning) + `ACCESS_FINE/BACKGROUND_LOCATION` + `CAMERA` (attendance selfies) collect
+  personal data. Per CLAUDE.md this triggers DPDP obligations — call-log/recording **consent** in
+  particular — that must be confirmed before the telephony/attendance features go live. These
+  permissions would also gate a Play Store listing, but sideload is the intended path.
+- **Suggested direction:** Set `allowBackup="false"` (or add backup-exclusion rules for the secure
+  prefs); add a `release` build type with signing + R8 before any distribution build; and hold a
+  DPDP consent review before telephony/attendance ship (flagged, not a code fix).
+
+---
+
+## Pass 3 Summary
+
+- **Findings by severity:** High 2 · Medium 2 · Low 4 (8 total). Zero Critical (P3-1 is a latent
+  Critical held behind the Job-D pause, rated High).
+- **Theme:** Pass 3's debt is almost entirely **operational/environmental drift**, not core logic.
+  The live code is clean (flags, WebView, credential storage, no hardcoded secrets all compliant);
+  the problems are the **frozen `C:\CLS` drive** still referenced by Job D's task and four untracked
+  one-offs, and **Task Scheduler actions bypassing their wrappers** so the running DB target drifts
+  from what the wrappers/docs say. The auto-discovered untracked scripts are, with one exception
+  (`cls_reconcile_apply.py`, already deleted), retired dead weight.
+- **Cross-pass note:** Pass 3 *lowers* the live severity of Pass-2 **P2-5** for Job A (it runs under
+  real `python.exe` with file-redirected stdout, not `pythonw`), and *raises* the urgency of the
+  Job D cluster (P2-1 + P2-9 + P3-1 are one interlocking activation trap).
+
+**Top 3 priorities from Pass 3:**
+1. **P3-1 — repoint `CLS_Job_D_EmailDrip` off the frozen `C:\CLS` drive** (and treat it as one unit
+   with P2-1/P2-9 before Job D ever un-pauses).
+2. **P3-2 — point every scheduled task at its `.bat` wrapper** and resolve the watchdog-vs-listener
+   DB-target contradiction; this is the documented wrong-DB footgun, live right now in monitoring.
+3. **P3-4 — retire or re-home `direct_set_stage_reconciliation`** so an orphaned stage-transition
+   bypass isn't left loaded in the deterministic core.
+
+---
+
+# Overall Priority Ranking (all Critical & High findings, across all 3 passes)
+
+Ranked in the order I would tackle them. (No Critical findings surfaced; the two "latent Critical"
+items — P2-1, P3-1 — are the Job D cluster and top the list because they are one flag-flip from
+going live and touch external reputation/compliance.)
+
+1. **P2-1 (High / latent Critical) — Job D bounce writer opens a hardcoded, non-existent `cls.db`
+   via raw `sqlite3`.** *Why first:* it crashes Job D on its first real action the moment it un-pauses,
+   or silently writes bounces to a phantom DB — degrading Brevo sender reputation / spam compliance.
+   Cheap fix (a `cls_db` helper), and it is a hard doctrine violation.
+2. **P3-1 (High / latent Critical) — Job D's scheduled task runs on the frozen `C:\CLS` drive.**
+   *Why second:* same subsystem as #1 and part of the same "before Job D un-pauses" gate; fixing P2-1
+   in `D:\CLS` is pointless while the scheduler still executes the frozen `C:\CLS` copy. Do #1 and #2
+   together, plus P2-9's stale `setup_task_scheduler.py`.
+3. **P3-2 (High) — scheduled tasks bypass their `.bat` wrappers; monitoring reads the wrong/frozen
+   DB.** *Why third:* this is live *now* (watchdog on frozen CLS2 vs. listener on live CLS1), it is
+   the exact wrong-DB incident CLAUDE.md documents, and it produces contradictory health signals that
+   erode trust in the whole monitoring layer. Pairs with P2-2/P2-3.
+4. **F1 (High) — missing indexes on `leads(current_stage)`, `(cls_created_at)`, `(lead_owner)`.**
+   *Why fourth:* the biggest *everyday* pain (the 1–2 min list load generalized to the whole dashboard
+   and reports), and the cheapest high-leverage fix — a single self-healing migration. Ranked below
+   the Job D / wrong-DB items only because those risk *incorrect data / external spend*, whereas this
+   is *slowness* the team already lives with. It would be a defensible #1 on pure daily impact.
+
+*(High findings deferred to their own passes for detail: P2-2/P2-3 monitoring & Job-C doc drift feed
+into P3-2 above; all Medium/Low findings — F2–F8, P2-4/P2-6/P2-8/P2-9, P3-3/P3-4/P3-5/P3-6/P3-7/P3-8 —
+are documented in their respective pass sections and not repeated here.)*
