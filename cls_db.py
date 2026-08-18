@@ -2,11 +2,50 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.66
+Version : 2.67
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.67 (2026-08-18) — F2 Phase 3: read-side SQL filtering on
+  project_bucket. Every function that used to derive project_bucket
+  per-row in Python via get_project_bucket() (after F2 Phase 1/2 made
+  it a real, kept-in-sync leads column) now reads/filters it straight
+  from SQL instead:
+    - _build_lead_filter_where() gained project=None — when given,
+      appends "AND project_bucket = ?" to the shared WHERE clause used
+      by get_leads_page() and get_leads_matching(). None (default) is a
+      no-op, so no other caller/behavior changes.
+    - get_leads_page() / get_leads_matching() — project_bucket now
+      SELECTed directly and the filter passed into
+      _build_lead_filter_where(); removed the old fetch-everything,
+      attach-project_bucket-per-row-in-Python, then filter-in-Python
+      pattern entirely.
+    - get_lead_by_id() — removed a redundant get_project_bucket() call;
+      its SELECT * already returns the stored column.
+    - get_bulk_job_lead_rows() — project_bucket now SELECTed directly
+      (l.project_bucket) instead of computed per row after the fetch.
+    - get_project_pipeline() — SELECTs project_bucket directly instead
+      of project, uses it as the GROUP BY key with no per-row
+      get_project_bucket() call.
+    - get_stage_breakdown() — _STAGE_BREAKDOWN_GROUP_COLUMNS["project"]
+      now points at "project_bucket" instead of "project"; the
+      group_by=="project" branch uses the already-bucketed value
+      directly (falsy-value fallback kept, defensive only — the column
+      is never expected to be NULL/blank given F2 Phase 1/2 backfill +
+      sync).
+  Rationale: SQL-level filtering + idx_leads_project_bucket (added
+  F2 Phase 1) index usage instead of full-table-scan-then-filter in
+  Python — same motivation as the F1 index audit. No external function
+  signature or parameter changed; every caller (app.py routes,
+  templates) sees identical call shape and identical result shape.
+  Verified via a throwaway-copy comparison against the OLD Python-side
+  filtering logic for get_leads_page()/get_leads_matching(), both with
+  and without a project filter — exact row-for-row match; see session
+  notes. ADDITIVE/REFACTOR ONLY — no schema change, ordinary behavior
+  for every caller is byte-for-byte unchanged. F2 is now complete (all
+  3 phases: stored column, alias-change recompute, read-side SQL
+  filtering).
 v2.66 (2026-08-18) — F2 Phase 2: recompute leads.project_bucket on alias
   add/delete. NEW _recompute_all_project_buckets() — full pass over every
   DISTINCT leads.project value, bucket computed via get_project_bucket()
@@ -3786,7 +3825,8 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
                              campaign=None, campaigns=None, source=None,
                              sub_source=None, budget=None, configuration=None,
                              property_type=None, facing=None,
-                             search_all_owners=False, stages=None, owners=None):
+                             search_all_owners=False, stages=None, owners=None,
+                             project=None):
     """
     (v2.28) The WHERE-clause builder shared by get_leads_page() and
     get_leads_matching() — extracted out of get_leads_page() verbatim
@@ -3794,10 +3834,14 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
     Bulk Export) can match the SAME leads a filter screen would show,
     without a second copy of this logic drifting out of sync.
 
-    Deliberately does NOT take `project` — that filter is applied in
-    Python after fetching (the bucket name is DERIVED via
-    get_project_bucket(), not a stored column), identically in both
-    callers. See get_leads_page()'s own note on this.
+    project (v2.67, F2 Phase 3): exact match on the STORED leads.
+    project_bucket column. Before v2.67 this filter couldn't live here
+    because the bucket was DERIVED (get_project_bucket()) rather than a
+    real column — both callers instead fetched everything and filtered
+    in Python afterward. Now that project_bucket is a stored, kept-in-
+    sync column (F2 Phase 1/2), it filters in SQL like every other
+    param here. None (the default) applies no filter — unchanged
+    behavior for any caller that doesn't pass it.
 
     campaigns (v2.28, list, optional): NEW OR-LIKE multi-select across
     leads.campaign, same pattern as configuration/property_type/facing
@@ -3907,6 +3951,10 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
         where.append("budget = ?")
         params.append(budget)
 
+    if project:
+        where.append("project_bucket = ?")
+        params.append(project)
+
     for col_name, selected in (
         ("configuration", configuration),
         ("property_type", property_type),
@@ -3930,7 +3978,9 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
     Paginated, filterable lead list for the CRM's /leads screen.
 
     stage       : exact current_stage match (e.g. "Prospect"), or None for all
-    project     : matches the BUCKETED project (get_project_bucket), or None for all
+    project     : matches the BUCKETED project (leads.project_bucket,
+                  v2.67+ a stored column kept in sync — see F2 Phase
+                  1-3), or None for all
     search      : matches full_name, phone_norm, or email_norm (substring)
     owner       : v1.7 — exact (case-insensitive) match on leads.lead_owner.
                   Used two ways: an admin's optional "view this person's
@@ -3983,10 +4033,12 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
              age_days (v2.28) — see that changelog entry / docstring
              note below the pagination slice.
 
-    Note: project filtering happens in Python after fetching, because
-    the bucket name is DERIVED (get_project_bucket), not a stored column.
-    At CLS's current scale (~3k leads) this is simple and fast; if the
-    table grows an order of magnitude, this is the first place to revisit.
+    Note (v2.67, F2 Phase 3): project filtering now happens in SQL
+    (project_bucket = ?, via _build_lead_filter_where()) against the
+    stored, kept-in-sync leads.project_bucket column, same as every
+    other filter here — no more fetch-everything-then-filter-in-Python.
+    project_bucket is also SELECTed directly rather than recomputed
+    per row.
     """
     conn = _connect()
     try:
@@ -3997,12 +4049,13 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
             budget=budget, configuration=configuration,
             property_type=property_type, facing=facing,
             search_all_owners=search_all_owners, stages=stages,
+            project=project,
         )
         order_sql = SORT_OPTIONS.get(sort_by, SORT_OPTIONS["recent"])
 
         all_rows = conn.execute(f"""
             SELECT cls_id, full_name, phone_raw, phone_norm, email_raw,
-                   project, current_stage, lead_owner, source,
+                   project, project_bucket, current_stage, lead_owner, source,
                    stage_updated_at, cls_updated_at, cls_created_at, crm_lead_no
             FROM leads
             WHERE {where_sql}
@@ -4010,11 +4063,6 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
         """, params).fetchall()
 
         rows = [dict(r) for r in all_rows]
-        for r in rows:
-            r["project_bucket"] = get_project_bucket(r["project"])
-
-        if project:
-            rows = [r for r in rows if r["project_bucket"] == project]
 
         total = len(rows)
         total_pages = max(1, (total + per_page - 1) // per_page)
@@ -4072,6 +4120,10 @@ def get_leads_matching(stage=None, project=None, search=None, owner=None,
     Returns a plain list of row dicts, sorted by full_name — bulk
     screens list/preview matched leads, they don't need get_leads_page()'s
     "most recent" default ordering.
+
+    project filtering (v2.67, F2 Phase 3): now applied in SQL via
+    _build_lead_filter_where()'s project_bucket = ? clause, same as
+    get_leads_page() — see that function's note.
     """
     conn = _connect()
     try:
@@ -4081,11 +4133,11 @@ def get_leads_matching(stage=None, project=None, search=None, owner=None,
             campaigns=campaigns, source=source, sub_source=sub_source,
             budget=budget, configuration=configuration,
             property_type=property_type, facing=facing,
-            stages=stages, owners=owners,
+            stages=stages, owners=owners, project=project,
         )
         all_rows = conn.execute(f"""
             SELECT cls_id, full_name, phone_raw, phone_norm, email_raw,
-                   project, current_stage, lead_owner, source,
+                   project, project_bucket, current_stage, lead_owner, source,
                    stage_updated_at, cls_updated_at, cls_created_at, crm_lead_no
             FROM leads
             WHERE {where_sql}
@@ -4093,11 +4145,6 @@ def get_leads_matching(stage=None, project=None, search=None, owner=None,
         """, params).fetchall()
 
         rows = [dict(r) for r in all_rows]
-        for r in rows:
-            r["project_bucket"] = get_project_bucket(r["project"])
-
-        if project:
-            rows = [r for r in rows if r["project_bucket"] == project]
 
         return rows
     finally:
@@ -4208,15 +4255,20 @@ def get_activity_log_export(date_from=None, date_to=None, cls_id=None, owner=Non
 
 
 def get_lead_by_id(cls_id):
-    """Full lead row for the /leads/<cls_id> detail screen, or None."""
+    """
+    Full lead row for the /leads/<cls_id> detail screen, or None.
+
+    (v2.67, F2 Phase 3) project_bucket used to be recomputed here via
+    get_project_bucket() after the fetch; SELECT * already returns the
+    stored, kept-in-sync leads.project_bucket column (F2 Phase 1/2), so
+    that recompute was dead code and has been removed.
+    """
     conn = _connect()
     try:
         row = conn.execute("SELECT * FROM leads WHERE cls_id=?", (cls_id,)).fetchone()
         if not row:
             return None
-        lead = dict(row)
-        lead["project_bucket"] = get_project_bucket(lead["project"])
-        return lead
+        return dict(row)
     finally:
         conn.close()
 
@@ -5929,21 +5981,22 @@ def get_bulk_job_lead_rows(job_id):
     can be reused as-is for this export — no new column mapping needed.
 
     Returns a plain list of row dicts, sorted by full_name.
+
+    (v2.67, F2 Phase 3) project_bucket is now SELECTed directly from the
+    stored, kept-in-sync leads.project_bucket column instead of being
+    recomputed per row via get_project_bucket() after the fetch.
     """
     conn = _connect()
     try:
         rows = conn.execute("""
             SELECT l.cls_id, l.full_name, l.phone_raw, l.project,
-                   l.current_stage, l.lead_owner, l.source, l.cls_created_at,
-                   l.crm_lead_no
+                   l.project_bucket, l.current_stage, l.lead_owner,
+                   l.source, l.cls_created_at, l.crm_lead_no
             FROM bulk_job_leads b JOIN leads l ON l.cls_id = b.cls_id
             WHERE b.job_id = ?
             ORDER BY l.full_name COLLATE NOCASE ASC
         """, (job_id,)).fetchall()
-        result = [dict(r) for r in rows]
-        for r in result:
-            r["project_bucket"] = get_project_bucket(r["project"])
-        return result
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -9902,11 +9955,12 @@ def get_source_performance(date_from=None, date_to=None):
 def get_project_pipeline(owner=None, date_from=None, date_to=None):
     """
     (v2.12) Report #4 — Project-wise Pipeline. Cross-tab of project
-    (bucketed through the existing get_project_bucket() so Sell.do's
-    spacing/dash variants and comma-joined multi-project strings
-    collapse into one row per real project, same as every other
-    project-facing view in this file) x current_stage, optionally
-    scoped to one salesperson's owned leads.
+    bucket (v2.67, F2 Phase 3: read straight from the stored, kept-in-
+    sync leads.project_bucket column — was previously computed per row
+    via get_project_bucket(); same collapsing of Sell.do's spacing/dash
+    variants and comma-joined multi-project strings into one row per
+    real project, just read from the column instead of recomputed) x
+    current_stage, optionally scoped to one salesperson's owned leads.
 
     owner : lead_owner to scope to (salesperson's own view). None =
             every lead (admin/manager view).
@@ -9923,7 +9977,7 @@ def get_project_pipeline(owner=None, date_from=None, date_to=None):
     """
     conn = _connect()
     try:
-        query = "SELECT project, current_stage FROM leads"
+        query = "SELECT project_bucket, current_stage FROM leads"
         clauses = []
         params = []
         if owner:
@@ -9940,7 +9994,7 @@ def get_project_pipeline(owner=None, date_from=None, date_to=None):
 
     result = {}
     for r in rows:
-        bucket = get_project_bucket(r["project"])
+        bucket = r["project_bucket"]
         entry = result.setdefault(bucket, {stage: 0 for stage in ALL_STAGES})
         entry["total"] = entry.get("total", 0)
         stage = r["current_stage"]
@@ -10526,7 +10580,7 @@ def get_leads_received_by_owner(date_from, date_to, owner=None):
 
 _STAGE_BREAKDOWN_GROUP_COLUMNS = {
     "owner": "lead_owner",
-    "project": "project",
+    "project": "project_bucket",
     "campaign": "campaign",
 }
 
@@ -10552,11 +10606,12 @@ def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None):
         group_by — e.g. group_by="project" with owner set shows one
         salesperson's own project-wise breakdown).
 
-    "project" grouping runs raw project values through the existing
-    get_project_bucket() collapse; "campaign" grouping runs raw
-    campaign values through _campaign_bucket() (blank/NULL ->
-    "Unknown/Manual" — see this module's v2.13 HONESTY NOTE on why
-    that bucket currently holds almost everything).
+    "project" grouping (v2.67, F2 Phase 3) reads the stored, kept-in-
+    sync leads.project_bucket column directly — previously ran raw
+    leads.project values through get_project_bucket() per row; "campaign"
+    grouping still runs raw campaign values through _campaign_bucket()
+    (blank/NULL -> "Unknown/Manual" — see this module's v2.13 HONESTY
+    NOTE on why that bucket currently holds almost everything).
 
     Returns a dict keyed by group value, each value a dict keyed by
     every stage in ALL_STAGES (all present, 0 if empty) plus "total":
@@ -10587,7 +10642,11 @@ def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None):
     for r in rows:
         raw = r["raw_group"]
         if group_by == "project":
-            key = get_project_bucket(raw)
+            # project_bucket is a stored, kept-in-sync column (F2 Phase
+            # 1/2) — no per-row recompute needed. Defensive fallback
+            # only, mirroring get_project_bucket()'s own falsy-input
+            # handling, in case a row somehow predates backfill.
+            key = raw if raw else "(unknown)"
         elif group_by == "campaign":
             key = _campaign_bucket(raw)
         else:
