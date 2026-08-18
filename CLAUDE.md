@@ -1,6 +1,6 @@
 # CLAUDE.md
 <!--
-Version: 1.3
+Version: 1.4
 Changelog:
   v1.0 (baseline, pre-existing) — original CLAUDE.md content, no version tracking.
   v1.1 (2026-07-28) — added mandatory "Session Closeout" section (Srikanth-requested):
@@ -24,6 +24,32 @@ Changelog:
                        with brief factual retirement notes. Historical/explanatory
                        content about why the CLS1/CLS2 split happened and how Job B
                        worked while it was live is preserved, not deleted.
+  v1.4 (2026-08-18) — Corrected the Architecture/pipeline section to match
+                       current live behavior, verified against each file's
+                       own live version header/changelog rather than
+                       written from memory. Fixes a stale flag-gate
+                       description for Job C that the v1.3 Job B cleanup
+                       pass missed: cls_capi_firer.py is actually v3.0
+                       (2026-08-14 full rewrite) — queue-based
+                       (capi_fire_queue), with the old Job B/selldo_sync
+                       flag gate (plus SELLDO_FLAG_MAX_AGE_MIN and --force)
+                       removed outright, not merely stale. Documented the
+                       new inline CAPI firing added the same day in
+                       meta_leads_fetcher.py v1.8 and crm/app.py (both fire
+                       synchronously via new shared module cls_capi_core.py
+                       v1.0, queuing failures instead of blocking). Marked
+                       Job D (cls_email_drip.py v1.5) as currently PAUSED/
+                       inactive rather than "independent but live". Added
+                       cls_weekend_visits_report.py as an out-of-chain ops
+                       script (deliberately not labeled "Job E" — follows
+                       that file's own docstring, which explicitly declines
+                       the label). Flagged, but did not fix (scope-limited
+                       to this section): Job C's .bat wrapper now targets
+                       CLS1.db, contradicting the CLS2.db target still
+                       documented in the database-split/Commands/PWA
+                       sections; and a 2026-08-15 vs 2026-08-18 discrepancy
+                       in Job B's documented retirement date between this
+                       file and cls_db.py's own changelog.
 -->
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -126,39 +152,55 @@ Each job writes to its own `D:\CLS\*_log.txt` (e.g. `meta_leads_log.txt`, `selld
 
 ## Architecture
 
-### The pipeline (Job B retired 2026-08-18 — see note below)
+### The pipeline (current live design, as of 2026-08-18 — CAPI firing rewritten 2026-08-14, Job B retired 2026-08-18)
 
-Jobs run hourly (10:00–18:00) via Windows Task Scheduler and hand off through **completion flags** stored via `cls_db.set_flag()`/`get_flag()`/`is_flag_fresh()` (persisted in `cls_flags.json`, a single shared file unaffected by the CLS1/CLS2 split), not direct chaining.
+**Job B (`selldo_to_cls.py`) was formally retired 2026-08-18** — its Task Scheduler entry was removed and the Sell.do subscription cancelled. It no longer runs and no longer sets the `selldo_sync` flag. (`cls_db.py`'s own v2.57/v2.59 changelog entries describe Sell.do as "fully retired 2026-08-15" — a few days earlier than the date above; that may reflect two different milestones — functional vs. formal/administrative retirement — but the discrepancy hasn't been reconciled, flagging rather than resolving it here.)
 
-**Job B (`selldo_to_cls.py`) was formally retired 2026-08-18** — its Task Scheduler entry was removed and the Sell.do subscription cancelled. It no longer runs and no longer sets the `selldo_sync` flag. The diagram below (originally titled "The A→B→C→D pipeline") is kept as historical/reference documentation of how the pipeline worked while Job B was live, including why the CLS2.db split existed and how Job B fed it — it does not describe the current live pipeline. Job C's wait on a fresh `selldo_sync` flag is a known stale dependency left over from Job B's retirement and has not yet been re-evaluated; that's an open follow-up, not something this documentation update fixes.
+The old hourly, flag-gated A→B→C→D batch chain no longer describes how CAPI events actually fire. A separate rewrite on **2026-08-14** (`meta_leads_fetcher.py` v1.8, `crm/app.py` v0.49+, new `cls_capi_core.py` v1.0, `cls_db.py` v2.55) moved CAPI firing to be **synchronous and inline** at the two moments a lead actually changes state, with Job C reduced to a safety-net queue processor. This rewrite already fully removed Job C's old wait on Job B's `selldo_sync` flag (the gate check, `SELLDO_FLAG_MAX_AGE_MIN`, and the `--force` flag were deleted outright, not left stale) — notably, this happened *before* Job B's formal 2026-08-18 retirement above, so Job C's flag-gate was already dead code by the time Job B itself was switched off.
 
 ```
-[Job A] meta_leads_fetcher.py   Pulls Meta Lead Ads leads -> CLS1.db (with leadgen_id), sets 'meta_fetch' flag
+[Job A] meta_leads_fetcher.py   v1.8 (2026-08-14) — Pulls Meta Lead Ads leads -> CLS1.db, sets 'meta_fetch'
+    |                           flag as before. That flag is currently UNCONSUMED by anything downstream —
+    |                           its historical consumer was Job B (retired), and Job C (below) doesn't
+    |                           check any flag either. NEW in v1.8: on a genuinely NEW lead (not a
+    |                           leadgen_id refresh or contact-match enrich), also fires that lead's CAPI
+    |                           event SYNCHRONOUSLY via cls_capi_core.fire_single_lead_event() before this
+    |                           run continues — on failure, queues it into cls_db.capi_fire_queue instead
+    |                           of blocking the rest of the pull.
     |
+[CRM app] crm/app.py            v0.54 (currently) — change_lead_stage() fires CAPI SYNCHRONOUSLY the moment
+    |                           a lead's stage changes into cls_capi_core.TARGET_STAGES: same
+    |                           fire_single_lead_event() call, same queue-on-failure fallback as Job A
+    |                           above. This route and Job A are the two live entry points that feed
+    |                           cls_db.capi_fire_queue — CAPI firing is no longer something only a
+    |                           scheduled job does.
     v
-[Job B] selldo_to_cls.py        RETIRED 2026-08-18 — historical description only, does not run anymore.
-    |                           Logged into Sell.do via Playwright, exported CSV via Gmail polling, matched
-    |                           rows onto CLS2.db leads by phone/email, wrote current_stage into CLS2.db.
-    |                           Set 'selldo_sync' flag.
-    |                           Its former gate on Job A's 'meta_fetch' flag was PAUSED (commented out,
-    |                           not deleted) before retirement — CLS2 had become a self-contained Sell.do
-    |                           mirror that no longer depended on Job A's output. See "database split"
-    |                           section above.
-    v
-[Job C] cls_capi_firer.py       Waits for a fresh Job B 'selldo_sync' flag (15-min slack: B ran :10, C runs
-    |                           :25; --force bypasses the gate) — this wait is now permanently stale since
-    |                           Job B's retirement and needs review. Job C still reads CLS2.db. Fires
-    |                           stage-change events to Meta Conversions API (CAPI) for match-quality-scored
-    |                           ad optimization. Calls cls_dashboard.generate_dashboard() and
-    |                           cls_snapshot.push_snapshot() at the end of every run (snapshot failures are
-    |                           always swallowed — must never block CAPI firing).
-    v
-[Job D] cls_email_drip.py       Independent of the A-B-C flag chain (own 10:00/12:00/14:00/16:00/18:00
-                                schedule via setup_task_scheduler.py). Reads/writes CLS2.db. Sends staged
-                                nurture emails via Brevo, syncs bounces, respects email_bounced/opted_out flags.
+[Job C] cls_capi_firer.py       v3.0 (2026-08-14, FULL REWRITE) — no longer a full-table-scan cron, no
+                                longer flag-gated on anything Job-B-related (see above — that dependency
+                                is fully removed, not just stale). Two independent modes:
+                                  - default (scheduled) — drains cls_db.capi_fire_queue, i.e. only the
+                                    leads that failed to fire inline above; fast-exits with a single log
+                                    line if the queue is empty.
+                                  - --catchup (manual only, not on the schedule) — one-time full-table
+                                    scan (cls_db.get_unfired_leads()) for recovering leads that were never
+                                    queued at all (e.g. this redesign's own cutover).
+                                Still calls cls_dashboard.generate_dashboard() and cls_snapshot.push_
+                                snapshot() after any run that actually had work to do (skipped on the fast
+                                empty-queue exit) — snapshot failures are still always swallowed, must
+                                never block CAPI firing. Reads CLS_DB_PATH the normal way; run_cls_capi_
+                                firer.bat currently sets this to CLS1.db, NOT CLS2.db — this contradicts
+                                the CLS2.db target documented for Job C in the database-split, Commands,
+                                and PWA sections elsewhere in this file. That's a real discrepancy, flagged
+                                here but not corrected elsewhere this session — needs a follow-up pass.
+
+[Job D] cls_email_drip.py       v1.5 — PAUSED as of 2026-08-04. Task Scheduler task is disabled, and
+                                run() also self-guards (logs a warning and exits immediately) if launched
+                                manually by accident. NOT currently part of the live schedule — treat as
+                                inactive infrastructure, not a running job, until re-enabled (steps are in
+                                the file's own changelog).
 ```
 
-`cls_telecaller_report.py` (weekend cron) and `cls_watchdog.py`/`cls_telegram_listener.py` (monitoring, both targeting CLS2.db via their `.bat` wrappers) read their target database but sit outside this chain.
+`cls_weekend_visits_report.py` (v1.0, 2026-08-17) is a separate Friday-afternoon ops script, independent of everything above: reads CLS1.db (`run_cls_weekend_visits_report.bat`), pulls the coming weekend's scheduled site visits, and sends Srikanth a per-salesperson Telegram breakdown (Brevo email fallback if Telegram is down). Its own docstring explicitly opts out of the Job-lettering convention — it logs to `job_results.txt` as `"Weekend Site Visits Report"`, not `"Job E"` — so this file follows that same choice rather than inventing a label the script itself declines. `cls_telecaller_report.py` (weekend cron) and `cls_watchdog.py`/`cls_telegram_listener.py` (monitoring, both targeting CLS2.db via their `.bat` wrappers) also sit outside this chain, as before.
 
 Stage names and their legal transitions are defined once in `cls_db.STAGE_TRANSITIONS` (`Incoming → Prospect → Opportunity → Site Visited → Booked`, plus `Unqualified`/`Lost`/`Re Assigned` side-states) — both Sell.do's own rule engine and the CRM app's `change_lead_stage()` route enforce these same one-way rules. Do not add free-form stage changes; extend `STAGE_TRANSITIONS` instead.
 
