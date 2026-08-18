@@ -2,11 +2,24 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.64
+Version : 2.65
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.65 (2026-08-18) — Fixed idx_leads_owner creation ordering — moved
+  after lead_owner column migration to prevent failure on a genuinely
+  fresh database (bug introduced in v2.63/F1). idx_leads_owner used to
+  run immediately after CREATE TABLE leads, alongside idx_phone/idx_
+  email/idx_leadgen/idx_leads_stage/idx_leads_created — but lead_owner
+  is not part of the original CREATE TABLE, it's added later via the
+  drip_migrations self-healing ALTER TABLE loop. On a brand-new/empty
+  database this made init_db() fail with "no such column: lead_owner".
+  Silent in production only because CLS1.db/CLS2.db already had lead_
+  owner from prior runs. idx_leads_stage and idx_leads_created were NOT
+  moved — both are genuinely part of the original CREATE TABLE, no
+  issue there. ADDITIVE ONLY — nothing existing removed or modified,
+  purely a reordering of one CREATE INDEX statement.
 v2.64 (2026-08-18) — F2 Phase 1: stored leads.project_bucket column.
   NEW self-healing ALTER TABLE (leads.project_bucket TEXT) + idx_leads_
   project_bucket index, both in init_db(). NEW one-time-per-row backfill
@@ -2571,7 +2584,6 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email ON leads(email_norm);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leadgen ON leads(leadgen_id);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(current_stage);")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_owner ON leads(lead_owner);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(cls_created_at);")
 
     # ── events_log table — historical record of every CAPI fire ──
@@ -2704,6 +2716,16 @@ def init_db():
     for col_name, col_type in drip_migrations:
         if col_name not in lead_cols:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col_name} {col_type};")
+
+    # ── v2.65 — idx_leads_owner moved here (fix) ──
+    # lead_owner is NOT part of the original CREATE TABLE leads statement —
+    # it's added above via the drip_migrations self-healing ALTER TABLE loop.
+    # Creating this index immediately after CREATE TABLE (as v2.63 did) fails
+    # with "no such column: lead_owner" on a genuinely fresh/empty database,
+    # since it ran before the column existed. Moved here, after the loop
+    # above guarantees the column exists, so it works on both fresh and
+    # existing databases.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_owner ON leads(lead_owner);")
 
     # ── v2.64 — F2 Phase 1: stored project_bucket column (self-healing) ──
     # Mirrors get_project_bucket()'s live-computed value so read paths can
