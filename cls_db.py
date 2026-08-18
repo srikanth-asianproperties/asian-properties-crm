@@ -2,11 +2,38 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.63
+Version : 2.64
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.64 (2026-08-18) — F2 Phase 1: stored leads.project_bucket column.
+  NEW self-healing ALTER TABLE (leads.project_bucket TEXT) + idx_leads_
+  project_bucket index, both in init_db(). NEW one-time-per-row backfill
+  (also in init_db(), runs on every call but only touches rows where
+  project_bucket IS NULL, so it's safe to leave permanently) — computed
+  inline against the SAME open connection/transaction as the rest of
+  init_db() rather than by calling get_project_bucket() itself, because
+  that function opens its own connection via _connect() and would not
+  see this transaction's own uncommitted project_aliases seed rows /
+  schema changes on a truly fresh DB. Every known write path to
+  leads.project is now kept in sync in the SAME transaction as its own
+  write (no separate round-trip): create_manual_lead() (INSERT),
+  upsert_meta_lead() (all 3 branches — leadgen_id-refresh UPDATE,
+  contact-match-enrich UPDATE, brand-new INSERT), upsert_selldo_lead()
+  (existing-row UPDATE, brand-new INSERT — still synced even though its
+  only production caller, selldo_to_cls.py/Job B, is retired, because
+  the function itself remains live infrastructure exercised by this
+  file's own --selftest; confirmed with Srikanth before touching
+  anything Job-B-adjacent), and import_selldo_csv_row() (brand-new
+  INSERT only — its matched/existing branch deliberately never touches
+  project, so project_bucket is correctly left untouched there too).
+  Migration applied to both CLS1.db (8038 leads, 0 NULL project_bucket
+  after) and CLS2.db (7973 leads, 0 NULL after) this session, 5-row
+  spot-check clean on both. ADDITIVE ONLY — nothing existing removed or
+  modified. Phase 2 (alias-change recompute hook) and Phase 3 (read-
+  side SQL filtering on project_bucket) are explicitly NOT part of this
+  change — the column exists and stays in sync, nothing reads it yet.
 v2.63 (2026-08-18) — F1 (audit): added idx_leads_stage, idx_leads_owner,
   idx_leads_created on leads table. Fixes full table scan on every
   /leads page load (original "1-2 min" complaint). Verified via
@@ -2678,6 +2705,15 @@ def init_db():
         if col_name not in lead_cols:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col_name} {col_type};")
 
+    # ── v2.64 — F2 Phase 1: stored project_bucket column (self-healing) ──
+    # Mirrors get_project_bucket()'s live-computed value so read paths can
+    # eventually filter/index on it directly instead of deriving it in
+    # Python per row. Backfill for this lives further down, AFTER
+    # project_aliases exists (see below) — this block only adds the column.
+    if "project_bucket" not in lead_cols:
+        conn.execute("ALTER TABLE leads ADD COLUMN project_bucket TEXT;")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_project_bucket ON leads(project_bucket);")
+
     # ── v2.3 backfill: owner_notified defaults to 1 (no pending badge)
     # for every row that existed before this column did. Only a fresh
     # reassign_lead_owner() call from this point forward sets it to 0.
@@ -3007,6 +3043,41 @@ def init_db():
         conn.executemany(
             "INSERT OR IGNORE INTO project_aliases (alias, project_bucket, created_at) VALUES (?, ?, ?)",
             [(alias, bucket, seed_ts) for alias, bucket in _PROJECT_ALIASES_SEED.items()]
+        )
+
+    # ── v2.64 — F2 Phase 1 backfill: fill project_bucket gaps only ──
+    # Must run AFTER project_aliases exists/is seeded above — it needs
+    # that table's alias map. Only ever fills NULL project_bucket rows,
+    # never overwrites an already-computed value, so this is safe to
+    # leave running on every init_db() call indefinitely (no separate
+    # one-time migration script needed).
+    #
+    # Deliberately reimplements get_project_bucket()'s exact algorithm
+    # (first-project-in-comma-list, alias lookup, "(unknown)" for
+    # blank/None) INLINE against this same open `conn`/transaction,
+    # rather than calling get_project_bucket() itself — that function
+    # opens its own connection via _connect(), which on a first-ever
+    # run would not yet see this transaction's uncommitted project_
+    # aliases seed rows (or even the project_bucket column/table DDL
+    # above) until this function's conn.commit() at the very end.
+    # Keep this logic identical to get_project_bucket() if that
+    # function's algorithm ever changes.
+    _alias_rows = conn.execute("SELECT alias, project_bucket FROM project_aliases").fetchall()
+    _alias_map = {r["alias"]: r["project_bucket"] for r in _alias_rows}
+
+    def _backfill_bucket_for(raw_project):
+        if not raw_project:
+            return "(unknown)"
+        first = raw_project.split(",")[0].strip()
+        return _alias_map.get(first, first)
+
+    _needs_backfill = conn.execute(
+        "SELECT cls_id, project FROM leads WHERE project_bucket IS NULL"
+    ).fetchall()
+    if _needs_backfill:
+        conn.executemany(
+            "UPDATE leads SET project_bucket=? WHERE cls_id=?",
+            [(_backfill_bucket_for(r["project"]), r["cls_id"]) for r in _needs_backfill]
         )
 
     # ── v2.25 — Campaign Routing (Single + Round Robin) + app_settings ──
@@ -6176,12 +6247,12 @@ def create_manual_lead(full_name, phone_raw, initial_stage, actor,
         crm_lead_no = _next_crm_lead_no(conn)
         conn.execute("""
             INSERT INTO leads (
-                cls_id, project, full_name, phone_raw, phone_norm,
+                cls_id, project, project_bucket, full_name, phone_raw, phone_norm,
                 email_raw, email_norm, current_stage, stage_updated_at,
                 match_tier, source, lead_owner, crm_lead_no,
                 lead_source_detail, cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (cls_id, project, full_name, phone_raw, phone_norm,
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (cls_id, project, get_project_bucket(project), full_name, phone_raw, phone_norm,
               email_raw, email_norm, initial_stage, now,
               "manual", "manual_crm", lead_owner, crm_lead_no,
               source_detail or None, now, now))
@@ -8376,7 +8447,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
             cls_id = existing["cls_id"]
             conn.execute("""
                 UPDATE leads SET
-                    form_id=?, project=?, full_name=?,
+                    form_id=?, project=?, project_bucket=?, full_name=?,
                     phone_raw=?, phone_norm=?, email_raw=?, email_norm=?,
                     meta_created_time=?,
                     meta_campaign_id=?, meta_campaign_name=?,
@@ -8384,7 +8455,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                     meta_ad_id=?, meta_ad_name=?, meta_platform=?,
                     cls_updated_at=?
                 WHERE cls_id=?
-            """, (form_id, project, full_name,
+            """, (form_id, project, get_project_bucket(project), full_name,
                   phone_raw, phone_norm, email_raw, email_norm,
                   meta_created_time,
                   meta_campaign_id, meta_campaign_name,
@@ -8404,9 +8475,17 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
             # UPDATE below touches it, so the reset decision uses the
             # genuine pre-sync value.
             prev_row = conn.execute(
-                "SELECT current_stage FROM leads WHERE cls_id=?", (cls_id,)
+                "SELECT current_stage, project FROM leads WHERE cls_id=?", (cls_id,)
             ).fetchone()
             _apply_reengagement_marker(conn, cls_id, prev_row["current_stage"] if prev_row else None, now)
+
+            # v2.64 — F2 Phase 1: project_bucket must track whatever the
+            # UPDATE below's project=COALESCE(project,?) will actually
+            # leave in the project column — computed here in Python from
+            # the SAME pre-update row just read above, so it matches
+            # exactly rather than being independently (and possibly
+            # inconsistently) COALESCE'd in SQL.
+            effective_project = (prev_row["project"] if prev_row and prev_row["project"] else project)
 
             # v2.57 — Task 3 Part A, Change 4: log a lead_reengaged
             # activity_log row at the SAME `now` used to stamp
@@ -8438,6 +8517,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
             conn.execute("""
                 UPDATE leads SET
                     leadgen_id=?, form_id=?, project=COALESCE(project,?),
+                    project_bucket=?,
                     full_name=COALESCE(NULLIF(full_name,''),?),
                     meta_created_time=?,
                     meta_campaign_id=?, meta_campaign_name=?,
@@ -8445,7 +8525,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                     meta_ad_id=?, meta_ad_name=?,
                     cls_updated_at=?
                 WHERE cls_id=?
-            """, (leadgen_id, form_id, project, full_name,
+            """, (leadgen_id, form_id, project, get_project_bucket(effective_project), full_name,
                   meta_created_time,
                   meta_campaign_id, meta_campaign_name,
                   meta_adset_id, meta_adset_name,
@@ -8460,7 +8540,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
         default_owner = resolve_owner_for_new_lead(conn, campaign)
         conn.execute("""
             INSERT INTO leads (
-                cls_id, leadgen_id, form_id, project, full_name,
+                cls_id, leadgen_id, form_id, project, project_bucket, full_name,
                 phone_raw, phone_norm, email_raw, email_norm,
                 meta_created_time, source, crm_lead_no,
                 current_stage, stage_updated_at, lead_owner, campaign,
@@ -8468,8 +8548,8 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
                 meta_adset_id, meta_adset_name,
                 meta_ad_id, meta_ad_name, meta_platform,
                 cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (cls_id, leadgen_id, form_id, project, full_name,
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (cls_id, leadgen_id, form_id, project, get_project_bucket(project), full_name,
               phone_raw, phone_norm, email_raw, email_norm,
               meta_created_time, "meta", crm_lead_no,
               "Incoming", now, default_owner, campaign,
@@ -8627,7 +8707,7 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
             conn.execute("""
                 UPDATE leads SET
                     selldo_lead_id=?, current_stage=?, match_tier=?,
-                    project=COALESCE(project,?),
+                    project=COALESCE(project,?), project_bucket=?,
                     full_name=COALESCE(NULLIF(full_name,''),?),
                     phone_raw=COALESCE(NULLIF(phone_raw,''),?),
                     phone_norm=COALESCE(NULLIF(phone_norm,''),?),
@@ -8640,7 +8720,7 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
                     cls_updated_at=CASE WHEN ? THEN ? ELSE cls_updated_at END
                 WHERE cls_id=?
             """, (selldo_lead_id, current_stage, match_tier,
-                  project, full_name,
+                  project, get_project_bucket(new_project), full_name,
                   phone_raw, phone_norm, email_raw, email_norm,
                   stage_changed, now,
                   lead_owner, selldo_url,
@@ -8654,14 +8734,14 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
         crm_lead_no = _next_crm_lead_no(conn)
         conn.execute("""
             INSERT INTO leads (
-                cls_id, leadgen_id, project, full_name,
+                cls_id, leadgen_id, project, project_bucket, full_name,
                 phone_raw, phone_norm, email_raw, email_norm,
                 selldo_lead_id, current_stage, stage_updated_at,
                 match_tier, source, lead_owner, selldo_url,
                 opportunity_temperature, crm_lead_no,
                 cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (cls_id, None, project, full_name,
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (cls_id, None, project, get_project_bucket(project), full_name,
               phone_raw, phone_norm, email_raw, email_norm,
               selldo_lead_id, current_stage, now,
               "unmatched", "selldo_only", lead_owner, selldo_url,
@@ -8946,7 +9026,7 @@ def import_selldo_csv_row(csv_row, commit=False):
         cls_id = str(uuid.uuid4())
         conn.execute("""
             INSERT INTO leads (
-                cls_id, leadgen_id, form_id, project, full_name,
+                cls_id, leadgen_id, form_id, project, project_bucket, full_name,
                 phone_raw, phone_norm, email_raw, email_norm,
                 selldo_lead_id, current_stage, stage_updated_at, match_tier,
                 last_fired_stage, last_fired_at,
@@ -8954,9 +9034,9 @@ def import_selldo_csv_row(csv_row, commit=False):
                 crm_lead_no, campaign, lead_source_detail,
                 drip_paused, drip_enrolled_at, owner_notified,
                 cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?, ?,?,?,?, ?,?,?, ?,?,?, ?,?)
+            ) VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?, ?,?,?,?, ?,?,?, ?,?,?, ?,?)
         """, (
-            cls_id, None, None, project, full_name,
+            cls_id, None, None, project, get_project_bucket(project), full_name,
             phone_raw, phone_norm, email_raw, email_norm,
             sid, lead_stage, created_at_str, "imported",
             lead_stage, created_at_str,
