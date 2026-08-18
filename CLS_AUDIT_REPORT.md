@@ -560,6 +560,9 @@ now-deleted reconcile script and is not route-reachable.
 - **Suggested direction:** Archive or delete all four as retired one-offs (their jobs are done — the
   Brevo URLs are already pasted into `cls_email_drip.py`, the field dump already informed Job A).
   If any is worth keeping as a re-runnable diagnostic, repoint `BASE_DIR`/`.env` to `D:\CLS`.
+- **Resolved (2026-08-18):** Deleted all four files (`meta_field_dump.py`, `send_template_preview.py`,
+  `upload_elevation.py`, `upload_images_to_brevo.py`) per Srikanth's explicit instruction. Re-verified
+  zero live references (no `.bat` wrapper, no `.py` import, no Task Scheduler entry) before deletion.
 
 ### P3-4 — Orphaned stage-bypass function left in the deterministic core after its caller was deleted
 - **File:** `cls_db.py`
@@ -582,6 +585,9 @@ now-deleted reconcile script and is not route-reachable.
   retire the function under a dated `# PAUSED — one-time 2026-08-14 reconciliation complete` block
   (paused-not-deleted) so it is clearly not general-purpose. Confirm the 41 corrections were applied
   before removing the caller for good.
+- **Resolved (2026-08-18):** Deleted `direct_set_stage_reconciliation()` from `cls_db.py` (v2.62) per
+  Srikanth's explicit instruction — genuine deletion, not paused. Re-verified zero callers before
+  removal (`cls_reconcile_apply.py`, its only caller, was already gone from the working tree).
 
 ### P3-5 — `run_cls_weekend_visits_report.bat` has a trailing space in `CLS_DB_PATH`; both report wrappers omit `@echo off`/`cd`
 - **File:** `run_cls_weekend_visits_report.bat`, `run_cls_monday_weekly_report.bat`

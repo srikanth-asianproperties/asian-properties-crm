@@ -2,11 +2,15 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.61
+Version : 2.62
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.62 (2026-08-18) — P3-4 — removed direct_set_stage_reconciliation,
+  orphaned after cls_reconcile_apply.py deletion, zero callers confirmed.
+  Audit cleanup per CLS_AUDIT_REPORT.md Pass 3, explicit delete (not
+  paused) per Srikanth. Nothing else removed or modified.
 v2.61 (2026-08-17) — Monday Weekly Report: per-salesperson breakdown. NEW
   get_monday_weekly_report_by_owner(week_start, week_end) — companion
   to get_monday_weekly_report_stats() (v2.60), same 4 underlying
@@ -5059,29 +5063,6 @@ def update_lead_stage(cls_id, new_stage, actor, reason_code=None, reason_notes=N
 
         conn.commit()
         return True, f"Stage changed: {live_stage} → {new_stage}.{cancelled_note}"
-    finally:
-        conn.close()
-
-
-def direct_set_stage_reconciliation(cls_id, new_stage, actor, prev_value):
-    """
-    ONE-TIME reconciliation write — bypasses STAGE_TRANSITIONS deliberately.
-    Not a general-purpose function; called only by cls_reconcile_apply.py.
-    Logs to activity_log (via the shared _log_activity() helper, same
-    atomic-with-the-write pattern as update_lead_stage() above) with a
-    distinct activity_type ('reconciliation_correction') so it's never
-    mistaken for a salesperson's own click.
-    """
-    now = _now()
-    conn = _connect()
-    try:
-        conn.execute("""
-            UPDATE leads SET current_stage=?, stage_updated_at=?, cls_updated_at=?
-            WHERE cls_id=?
-        """, (new_stage, now, now, cls_id))
-        _log_activity(conn, cls_id, "reconciliation_correction", actor,
-                      prev_value=prev_value, new_value=new_stage)
-        conn.commit()
     finally:
         conn.close()
 
