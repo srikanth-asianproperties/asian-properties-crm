@@ -2,11 +2,15 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.62
+Version : 2.63
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.63 (2026-08-18) — F1 (audit): added idx_leads_stage, idx_leads_owner,
+  idx_leads_created on leads table. Fixes full table scan on every
+  /leads page load (original "1-2 min" complaint). Verified via
+  EXPLAIN QUERY PLAN against live CLS1.db — see session notes.
 v2.62 (2026-08-18) — P3-4 — removed direct_set_stage_reconciliation,
   orphaned after cls_reconcile_apply.py deletion, zero callers confirmed.
   Audit cleanup per CLS_AUDIT_REPORT.md Pass 3, explicit delete (not
@@ -2539,6 +2543,9 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_phone ON leads(phone_norm);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email ON leads(email_norm);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leadgen ON leads(leadgen_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(current_stage);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_owner ON leads(lead_owner);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(cls_created_at);")
 
     # ── events_log table — historical record of every CAPI fire ──
     # The 'leads' table holds each lead's CURRENT state (last_fired_stage).
