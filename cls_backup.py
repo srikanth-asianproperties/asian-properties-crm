@@ -2,11 +2,23 @@
 =============================================================
 cls_backup.py  —  CLS Daily Backup to Google Drive
 =============================================================
-Version : 1.4
+Version : 1.5
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.5  (2026-08-18) — Exclude attendance_photos/ from backup per Srikanth's
+  explicit decision (2026-08-18), reversing the earlier v0.30/v0.31 design
+  call to include it after DPDP review. He does not want these photos
+  stored on Google Drive. Added RCLONE_EXCLUDE_ATTENDANCE (same rclone
+  filter syntax as RCLONE_EXCLUDE_CALL_RECORDINGS) and added it alongside
+  the existing --exclude call_recordings flag on all three rclone calls
+  that already excluded call_recordings (Step 1 sync, and both fallback
+  local-copy paths). Not added to Step 2 (server-side copy) — that step
+  copies from "latest" to a dated folder, and "latest" no longer contains
+  attendance_photos once Step 1 stops adding it, so nothing further is
+  needed there. Nothing else changed.
+
 v1.4  (2026-08) — BASE_DIR updated from C:\CLS to D:\CLS — drive migration, 2026-08.
 
 v1.3  (2026-08-03) — Fixed timeout failure from 2026-08-02.
@@ -204,6 +216,13 @@ SERVERSIDE_COPY_TIMEOUT = 600
 # (i.e. syncing it to Google Drive) before that's resolved. rclone
 # filter syntax: a trailing /** excludes the folder's full contents.
 RCLONE_EXCLUDE_CALL_RECORDINGS = "call_recordings/**"
+
+# v1.5 — attendance_photos/ is now excluded from backup per Srikanth's
+# explicit decision (2026-08-18), reversing the earlier v0.30/v0.31
+# design call to include it after DPDP review. He does not want these
+# photos stored on Google Drive. Same rclone filter syntax as
+# RCLONE_EXCLUDE_CALL_RECORDINGS.
+RCLONE_EXCLUDE_ATTENDANCE = "attendance_photos/**"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -445,6 +464,7 @@ def run_backup():
             "--progress",
             "--stats-one-line",
             "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
+            "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
         ],
         f"Latest backup → {GDRIVE_LATEST}"
     )
@@ -480,6 +500,7 @@ def run_backup():
                     "--progress",
                     "--stats-one-line",
                     "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
+                    "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
                 ],
                 f"Daily backup fallback (local copy) → {daily_dest}"
             )
@@ -498,6 +519,7 @@ def run_backup():
                 "--progress",
                 "--stats-one-line",
                 "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
+                "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
             ],
             f"Daily backup fallback (local copy) → {daily_dest}"
         )
