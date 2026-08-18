@@ -206,3 +206,251 @@ structural scan of all 54 `crm/templates/*.html`.
    Python" pattern from five functions at once and lets F1's index reach the reports.
 3. **F5 — verify inline-vs-Job-C `event_id` determinism (in Pass 2).** The only finding
    touching real ad spend; confirm the two fire paths can never disagree on `event_id`.
+
+---
+
+# PASS 2 — Background jobs & pipeline
+
+Files read in full or in depth: `meta_leads_fetcher.py` (Job A, 746), `selldo_to_cls.py`
+(Job B — audit-only, 990), `cls_capi_firer.py` (Job C, 400) + `cls_capi_core.py` (272),
+`cls_email_drip.py` (Job D, 1002), `cls_weekend_visits_report.py` (233), `cls_watchdog.py`
+(1126), `cls_backup.py` (628), `cls_parallel_diff.py` (204), `cls_telegram_listener.py`
+(572), `migrate_db.py` (114), `setup_task_scheduler.py` (188), `cls_attendance_photo.py`
+(257), `cls_dashboard.py` (469), `cls_telecaller_report.py` (568). Also inspected every
+`run_*.bat` wrapper to establish each job's live `CLS_DB_PATH` and interpreter.
+
+## Compliance confirmed (no action — recorded so Pass 3 doesn't re-check)
+
+- **Pass-1 F5 is RESOLVED, favourably.** All three fire call sites (`crm/app.py`
+  `change_lead_stage`, `meta_leads_fetcher.py` new-lead insert, `cls_capi_firer.py` queue
+  processor) fire through the **single** `cls_capi_core.fire_single_lead_event()` →
+  `build_event_payload()`. `event_id = md5(identifier + "_" + stage)` is therefore computed
+  by one implementation everywhere — the two paths cannot disagree. And the success path
+  **does** persist local per-row fire state (`cls_db.mark_as_fired()` + `record_event()`,
+  `cls_capi_core.py:263-271`), contrary to F5's tentative worry — so doctrine Risk 4 is
+  satisfied. Residual nuance carried forward as P2-6 (Low).
+- **`cls_attendance_photo.py` is exemplary.** No SQLite; uses the `logging` module (UTF-8
+  safe, guarded); config-not-code API key from a real env var; three-layer fallback where
+  the public function provably cannot raise. No findings.
+- **`cls_parallel_diff.py` is clean.** Read-only, uses only the documented
+  `cls_db.get_leads_snapshot(db_path)` exception, guarded prints (`_p`). (It loads both full
+  DBs into memory, but that is inherent to a whole-corpus diff and it is manual/unscheduled.)
+- **Job D pause is clean.** `DRIP_PAUSED=True` guard at the very top of `run()`
+  (`cls_email_drip.py:790`) exits before any work; nothing removed, dated reason in header.
+  Compliant "paused not deleted".
+- **Job B's `meta_fetch` gate is a clean pause** (`selldo_to_cls.py:785-801`) — commented
+  out with a dated CLS1/CLS2-split reason, not deleted. Compliant.
+- **Job A fires inline only on genuinely-new leads** (`is_new_lead`, `meta_leads_fetcher.py:618`)
+  and queues on failure rather than blocking the pull loop — sound idempotency posture.
+
+---
+
+## Findings
+
+### P2-1 — Job D bounce-sync opens a hardcoded, non-existent `cls.db` directly
+- **File:** `cls_email_drip.py`
+- **Function/Line:** `sync_bounces_from_brevo()` — `714-733` (called from `run()` at `818`)
+- **Category:** Doctrine Violation / Idempotency-adjacent correctness (latent Critical)
+- **Severity:** High (latent behind `DRIP_PAUSED`)
+- **What you found:** The bounce writer does `db_path = os.path.join(BASE_DIR, "cls.db")`
+  then `conn = sqlite3.connect(db_path)` and `UPDATE leads …`, with **no** try/except around
+  the DB block. Two independent faults: (1) it opens a **raw** `sqlite3` connection (doctrine
+  says all SQLite goes through `cls_db.py`); (2) `D:\CLS\cls.db` **no longer exists** — it was
+  split into CLS1/CLS2 on 2026-07-26 and the original renamed to `cls.db.pre_split_backup`.
+  `sqlite3.connect` silently **creates** an empty `cls.db`, then `UPDATE leads` raises
+  `no such table: leads`, which propagates and crashes `run()`. It also bypasses
+  `CLS_DB_PATH` entirely, so even if the file existed it would write to the wrong database
+  (Job D's wrapper targets CLS2.db).
+- **Why it matters:** The moment Job D is un-paused, its first substantive action crashes the
+  whole job — or, if a stray `cls.db` is ever present, silently marks bounces in a phantom DB
+  that nothing reads, so hard-bounced/complained addresses keep being emailed. That degrades
+  Brevo sender reputation and is a spam-compliance exposure.
+- **Suggested direction:** Add a `cls_db.mark_email_bounced(email, bounce_type)` helper that
+  uses `cls_db._connect()` (honouring `CLS_DB_PATH`), delete the hardcoded path, and
+  re-review Job D end-to-end before ever un-pausing it.
+
+### P2-2 — Monitoring (watchdog + Telegram bot) reads CLS2, now frozen since Job B stopped
+- **File:** `cls_watchdog.py`, `cls_telegram_listener.py` (+ their `.bat` wrappers)
+- **Function/Line:** wrappers set `CLS_DB_PATH=D:\CLS\CLS2.db`; watchdog `cls_db.stats()`
+  (`653/685`), `get_unfired_leads()` (`583/951`), `get_daily_owner_summary()` (`1017`);
+  listener `_db()` queries (`288/311/317/325/403`)
+- **Category:** Doctrine Violation (config/ops drift)
+- **Severity:** Medium (High if the false signal masks a real CLS1 outage)
+- **What you found:** `cls_capi_firer.py` v3.0 (2026-08-14) states **Job B is permanently
+  stopped** and the redesign now centres on CLS1 (Job A + the CRM app write CLS1; the
+  `capi_fire_queue` lives in CLS1; `run_cls_capi_firer.bat` points at **CLS1**). But both
+  monitoring tools still target **CLS2** — the Sell.do mirror that no longer receives writes.
+  So "new leads fetched", "pending fire", and the per-owner daily summary in the health digest
+  and the Telegram `/stats` `/today` `/pending` commands are computed from a frozen database.
+- **Why it matters:** The watchdog can report Job A as fetching 0 leads and show stale owner
+  summaries while the live system (CLS1) is perfectly healthy — chronic false alarms that
+  train the team to ignore the digest, and conversely it would **not** see a real problem in
+  CLS1. Flags and `job_results.txt` are shared files so those checks still work; only the
+  DB-backed numbers are wrong.
+- **Suggested direction:** Decide the intended monitoring DB now that Job B is stopped; if
+  CLS1 is the live source, repoint both wrappers to CLS1 (flag/job-result checks are
+  unaffected). Reconcile CLAUDE.md, which still documents monitoring → CLS2.
+
+### P2-3 — CLAUDE.md ↔ live wrapper drift on Job C's target DB (a wrong-DB-fallback trap)
+- **File:** `run_cls_capi_firer.bat` vs `CLAUDE.md`
+- **Line:** wrapper: `set CLS_DB_PATH=D:\CLS\CLS1.db`; CLAUDE.md documents Job C → CLS2.db
+- **Category:** Doctrine Violation (documentation vs reality)
+- **Severity:** Medium
+- **What you found:** The live wrapper points Job C at **CLS1** (correct for the v3.0
+  inline-firing redesign — the queue and leads it processes are in CLS1). CLAUDE.md still
+  says Job C/D and monitoring run against CLS2. The docs describe the *pre*-redesign world.
+- **Why it matters:** CLAUDE.md itself documents a real 2026-07-26 incident where a task ran
+  against the wrong DB. An operator "correcting" `run_cls_capi_firer.bat` back to CLS2 to
+  match the docs would silently break CAPI firing (the queue lives in CLS1) — real ad-spend
+  signal loss with no error.
+- **Suggested direction:** Update CLAUDE.md's database-split section to reflect the post-
+  Job-B-stop reality (Job C → CLS1, monitoring TBD per P2-2), so the docs stop contradicting
+  the wrappers.
+
+### P2-4 — SQL executed outside `cls_db.py` in three jobs
+- **File:** `meta_leads_fetcher.py`, `cls_telegram_listener.py`, `cls_email_drip.py`
+- **Function/Line:** `meta_leads_fetcher.newest_meta_time_for_form` (`500-507`, `cls_db._connect()`
+  + inline `SELECT MAX(...)`); `cls_telegram_listener._db()` (`172-176`) + inline queries
+  (`288/311/317/325/403`, **raw** `sqlite3.connect`); `cls_email_drip.maintenance_pass`
+  (`745-766`, `cls_db._connect()` + inline SELECT/loop) — the raw-`sqlite3` case in the same
+  file is P2-1
+- **Category:** Doctrine Violation
+- **Severity:** Medium
+- **What you found:** Doctrine: "All SQLite access stays centralized in `cls_db.py`. No other
+  script opens the database directly." `cls_telegram_listener._db()` opens a **raw**
+  `sqlite3.connect(DB_FILE)` and re-implements `row_factory`, re-deriving connection setup
+  that could drift from `cls_db._connect()`'s PRAGMAs. The other two use `cls_db._connect()`
+  (a softer deviation — right connection factory) but keep the SQL in the job file.
+- **Why it matters:** Schema/normalization changes now have to be chased across job files
+  instead of living in one place; the raw-connect path also silently skips `PRAGMA foreign_keys`
+  / WAL that every `cls_db._connect()` sets.
+- **Suggested direction:** Move each query behind a named `cls_db` function (e.g.
+  `get_newest_meta_time_for_form`, the listener's stat queries, the drip pause/unpause scan);
+  at minimum replace the raw `sqlite3.connect` in the listener with `cls_db._connect()`.
+
+### P2-5 — Unguarded `print()` in several jobs' `log()` (pythonw crash risk)
+- **File:** `meta_leads_fetcher.py`, `cls_watchdog.py`, `cls_email_drip.py`,
+  `cls_telecaller_report.py`, `selldo_to_cls.py`; partial in `cls_capi_firer.py`, `cls_backup.py`
+- **Function/Line:** `meta_leads_fetcher.py:231`, `cls_watchdog.py:297`, `cls_email_drip.py:169`,
+  `cls_telecaller_report.py:90`, `selldo_to_cls.py:263` (bare `print(entry)`);
+  `cls_capi_firer.py:104` and `cls_backup.py:218` catch only `UnicodeEncodeError`, **not** the
+  `RuntimeError`/`ValueError` raised when `sys.stdout is None`
+- **Category:** Doctrine Violation
+- **Severity:** Medium for `meta_leads_fetcher.py` (Job A), Low for the rest
+- **What you found:** Doctrine mandates guarding every `print()` because `pythonw.exe` sets
+  `sys.stdout=None`. The correct pattern exists in this repo (`cls_telegram_listener.py:135`,
+  `cls_weekend_visits_report.py:65`, `crm/app.py:1862`: `if sys.stdout is not None:`), but the
+  files above skip it. The other jobs' wrappers launch `python.exe` (real console → stdout
+  present today), so they don't crash **in practice** — but **Job A has no `.bat` wrapper**
+  (it relies on `cls_db.py`'s default DB), so nothing pins its interpreter; if its Task
+  Scheduler action uses `pythonw.exe`, `log()` crashes on the first line before any lead is
+  pulled. Note the two report jobs that *do* run under `pythonw.exe` are correctly guarded.
+- **Why it matters:** A silent background job that dies on its first log line looks like "it
+  ran and did nothing", the hardest failure to notice — exactly what the guard rule exists to
+  prevent.
+- **Suggested direction:** Apply the `if sys.stdout is not None:` guard uniformly in every
+  job's `log()` helper; widen the two `except UnicodeEncodeError` guards to also swallow the
+  stdout-is-None case.
+
+### P2-6 — Residual `event_id` fragility: identifier fallback chain + unbounded `record_event`
+- **File:** `cls_capi_core.py`
+- **Function/Line:** `build_event_payload` identifier pick (`186-189`); `record_event` call
+  on every success (`264-271`)
+- **Category:** Idempotency Risk
+- **Severity:** Low
+- **What you found:** `identifier = selldo_lead_id or phone_norm or cls_id`. The id is chosen
+  fresh at fire time, not frozen per lead. If a lead's higher-priority identifier appears or
+  changes **after** a first fire (e.g. a CLS1 lead later gains a `selldo_lead_id` via CSV
+  import), a subsequent same-stage fire computes a **different** `event_id`, so Meta will not
+  dedupe it → a possible double conversion against real spend. Separately, `record_event`
+  appends one `events_log` row per successful fire with no dedupe, so a lead queued twice for
+  the same stage inflates dashboard counts (local reporting only — Meta still dedupes on
+  matching `event_id`).
+- **Why it matters:** Narrow (needs an identifier to change plus a same-stage re-fire), but it
+  touches real ad-spend accuracy, so worth closing rather than relying on "identifiers never
+  change".
+- **Suggested direction:** Pin `identifier` to one stable field per lead (prefer `cls_id`, or
+  freeze whichever id was used at the lead's first fire) so `event_id` can never shift;
+  optionally dedupe `record_event` on `(cls_id, stage)`.
+
+### P2-7 — `cls_dashboard.generate_dashboard()` renders the entire `events_log` every run
+- **File:** `cls_dashboard.py`
+- **Function/Line:** `generate_dashboard()` — `cls_db.get_events()` with no limit (`109`),
+  two full Python passes (`117-130`, incl. `get_project_bucket()` per row), full-table HTML build
+- **Category:** Future Scale Risk / Performance
+- **Severity:** Medium
+- **What you found:** The dashboard pulls **every** CAPI event ever recorded, loops over all
+  of them twice in Python (the same derived-bucket pattern as Pass-1 F2), and writes each one
+  into a single `dashboard.html`. This runs at the end of **every** Job C cycle (up to 5×/day)
+  via `_refresh_outputs`. It is the concrete caller behind Pass-1 F7's unbounded `get_events()`.
+- **Why it matters:** `events_log` grows one row per fire forever, so both the generation time
+  and the size of `dashboard.html` grow without bound. Job C swallows dashboard failures, so it
+  won't break firing — it just quietly gets slower and heavier each cycle.
+- **Suggested direction:** Cap `get_events()` for the dashboard (most-recent N, or a rolling
+  window such as last 90 days) and summarize/paginate older events; pairs with F7's retention
+  recommendation.
+
+### P2-8 — `cls_backup.py`: live DB copied without a consistent snapshot; `.env` synced to Drive
+- **File:** `cls_backup.py`
+- **Function/Line:** whole-folder rclone sync of `D:\CLS` (config `170-206`); docstring lists
+  `.env` among backed-up files (`84`)
+- **Category:** Future Scale Risk (data integrity) + Security
+- **Severity:** Medium
+- **What you found:** (integrity) The backup rclone-copies `CLS1.db`/`CLS2.db` as raw files.
+  The CRM app runs continuously as a service and can be mid-write (WAL) at the 09:30 backup;
+  copying a WAL-mode DB without a checkpoint/online-backup can capture a torn or pre-commit
+  state, and the `-wal`/`-shm` sidecars may not be consistent at copy time. `cls_db_fork.py`
+  already shows the right move (`PRAGMA wal_checkpoint(FULL)` before copy). (security) The
+  docstring confirms `.env` — Meta CAPI token, System-User token, Brevo key, Telegram token —
+  is synced to Google Drive in plaintext; `attendance_photos/` (employee selfies + GPS) is
+  also synced, whereas `call_recordings/` is correctly excluded on DPDP grounds.
+- **Why it matters:** A restore from an inconsistent DB copy could silently drop or corrupt
+  recent leads — the one scenario a backup exists to prevent. A compromised Drive account
+  exposes every API credential and employee location/selfie data.
+- **Suggested direction:** Stage a consistent DB copy first (`wal_checkpoint(FULL)` then copy,
+  or sqlite `.backup`/`VACUUM INTO`) and back up that copy; consider excluding or encrypting
+  `.env`, and review `attendance_photos/` against the same DPDP posture already applied to
+  `call_recordings/`.
+
+### P2-9 — `migrate_db.py` and `setup_task_scheduler.py` are stale one-time tools (wrong drive/DB, bypass the `.bat` wrapper)
+- **File:** `migrate_db.py`, `setup_task_scheduler.py`
+- **Function/Line:** `migrate_db.py:22` `DB_PATH = r"C:\CLS\cls.db"`; `setup_task_scheduler.py:31-32`
+  `SCRIPT_PATH`/`START_DIR = C:\CLS`, XML Action `Command={python_exe}` + `Arguments={script}` (`91-94`)
+- **Category:** Dead Code / Doctrine Violation
+- **Severity:** Medium
+- **What you found:** `migrate_db.py` points at the **frozen C:\ drive** and the **pre-split**
+  `cls.db`; its four columns now live in `cls_db.init_db()`'s additive migration, so it is
+  superseded — running it would migrate the frozen backup. `setup_task_scheduler.py` registers
+  Job D pointing **straight at `sys.executable` + the `.py`**, with **no `CLS_DB_PATH`** and
+  **not** the `run_cls_email_drip.bat` wrapper — precisely the documented 2026-07-26 failure
+  mode (task bypasses the wrapper → silent CLS1.db fallback) — and it would re-enable the
+  deliberately-paused Job D on the frozen `C:\CLS` path.
+- **Why it matters:** Both are live footguns: re-running either does damage (migrate the wrong
+  DB / register a mis-targeted, un-paused Job D) with no warning that they are historical.
+- **Suggested direction:** Quarantine or delete both as historical, or update them to `D:\CLS`
+  and point the Task Scheduler Action at the `.bat` wrapper; add a loud "superseded — do not
+  run" banner. Do not run as-is.
+
+---
+
+## Pass 2 Summary
+
+- **Findings by severity:** High 1 · Medium 6 · Low 2 (9 total). Zero Critical (P2-1 is a
+  latent Critical held behind the Job-D pause, rated High).
+- **Doctrine posture:** the newest code (`cls_capi_core.py`, `cls_attendance_photo.py`,
+  inline-fire redesign) is clean and centralizes fire logic well; the debt is in **older/edge
+  tooling** (Job D bounce sync, monitoring DB target, one-time scripts) and in **docs that
+  now lag the code** (CLAUDE.md's CLS1/CLS2 roles).
+- **Idempotency verdict:** core firing is sound — one shared implementation, deterministic
+  `event_id`, local per-row fire state persisted (Pass-1 F5 resolved favourably). Only the
+  Low P2-6 residual remains.
+
+**Top 3 priorities from Pass 2:**
+1. **P2-1 — fix Job D's hardcoded `cls.db` bounce writer before un-pausing.** A latent
+   job-crash / phantom-DB write sitting one flag-flip away from live; also a clear doctrine
+   violation. Cheap to fix via a `cls_db` helper.
+2. **P2-2 / P2-3 — reconcile the CLS1/CLS2 target drift (monitoring + Job C + CLAUDE.md).**
+   Monitoring is watching a frozen DB and the docs contradict the live wrappers; both invite
+   the exact wrong-DB incident CLAUDE.md already records.
+3. **P2-5 — guard Job A's `print()` (and unify the guard everywhere).** Job A is the only
+   unguarded job with no wrapper pinning its interpreter — a first-line silent-death risk.
