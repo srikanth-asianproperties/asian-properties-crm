@@ -2,11 +2,31 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.65
+Version : 2.66
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.66 (2026-08-18) — F2 Phase 2: recompute leads.project_bucket on alias
+  add/delete. NEW _recompute_all_project_buckets() — full pass over every
+  DISTINCT leads.project value, bucket computed via get_project_bucket()
+  (reused directly, not reimplemented), one grouped UPDATE per distinct
+  value (NULL handled via its own "IS NULL" branch, since "project=NULL"
+  never matches in SQL; blank-string values need no special case). Called
+  from BOTH add_project_alias() and delete_project_alias(), always AFTER
+  reload_project_bucket_cache() so get_project_bucket() sees the fresh
+  alias mapping during recompute. Exceptions propagate uncaught — this
+  runs synchronously inside an admin action, so a failure must surface
+  to the admin rather than leave leads silently out of sync. Verified
+  against a throwaway copy of CLS1.db (add-alias repoints matching leads
+  to the new bucket, delete-alias falls them back to raw name/other
+  alias per get_project_bucket()'s documented fallback, unrelated raw
+  project values untouched) — see session notes. Not yet run against
+  live CLS1.db/CLS2.db as of this commit; the live /settings/projects
+  screen will trigger it automatically on the next real alias edit, no
+  separate live-DB step needed. ADDITIVE ONLY — nothing existing removed
+  or modified. Phase 3 (read-side SQL filtering on project_bucket) is
+  explicitly NOT part of this change.
 v2.65 (2026-08-18) — Fixed idx_leads_owner creation ordering — moved
   after lead_owner column migration to prevent failure on a genuinely
   fresh database (bug introduced in v2.63/F1). idx_leads_owner used to
@@ -2454,6 +2474,7 @@ def add_project_alias(alias, project_bucket):
     finally:
         conn.close()
     reload_project_bucket_cache()
+    _recompute_all_project_buckets()
 
 
 def delete_project_alias(alias):
@@ -2470,6 +2491,55 @@ def delete_project_alias(alias):
     finally:
         conn.close()
     reload_project_bucket_cache()
+    _recompute_all_project_buckets()
+
+
+def _recompute_all_project_buckets():
+    """
+    (v2.66) F2 Phase 2: full recompute of leads.project_bucket across
+    every row, driven by the current project_aliases mapping. Called
+    after reload_project_bucket_cache() in both add_project_alias() and
+    delete_project_alias() — that order matters, so get_project_bucket()
+    below picks up the freshly-invalidated/reloaded alias cache rather
+    than a stale one.
+
+    Intentionally a full recompute of every distinct leads.project value
+    (not a targeted "which leads does this one alias affect" pass) —
+    simpler and safe at ~8k rows, per the F2 Phase 2 planning decision.
+    One UPDATE per distinct raw project value (grouped, not per-row), so
+    this is cheap even though it's a full pass.
+
+    Reuses get_project_bucket() directly for the bucket computation, so
+    the stored column can never drift from what that function would
+    return live. NULL project values are handled explicitly via a
+    separate "IS NULL" branch, since "WHERE project = NULL" never
+    matches in SQL — blank-string ("") values need no special case,
+    ordinary equality matches those fine.
+
+    Any exception propagates. This runs synchronously inside an admin
+    action (alias add/delete); a failed recompute must surface as an
+    error to the admin, not be swallowed while leads silently drift out
+    of sync with the new alias mapping.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT DISTINCT project FROM leads").fetchall()
+        for r in rows:
+            raw = r["project"]
+            bucket = get_project_bucket(raw)
+            if raw is None:
+                conn.execute(
+                    "UPDATE leads SET project_bucket=? WHERE project IS NULL",
+                    (bucket,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE leads SET project_bucket=? WHERE project=?",
+                    (bucket, raw),
+                )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _campaign_bucket(raw_campaign):
