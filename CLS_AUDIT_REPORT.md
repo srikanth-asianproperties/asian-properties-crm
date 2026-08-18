@@ -622,6 +622,7 @@ now-deleted reconcile script and is not route-reachable.
   "version header + changelog" convention. No production impact, but it is exactly the "dead weight
   vs. active use" call this pass exists to make: it is dead.
 - **Suggested direction:** Delete it (its function lives in `upload_images_to_brevo.py`).
+- **Resolved (2026-08-18)** — see P3-3.
 
 ### P3-7 — `send_template_preview.py` couples a live-email one-off to the paused Job D module
 - **File:** `send_template_preview.py`
@@ -637,6 +638,7 @@ now-deleted reconcile script and is not route-reachable.
   the internals of a paused module — fragile and easy to run by mistake.
 - **Suggested direction:** Archive with the other P3-3 one-offs; if kept as a live preview tool,
   repoint to `D:\CLS` and depend on a stable public surface rather than `_`-private helpers.
+- **Resolved (2026-08-18)** — see P3-3.
 
 ### P3-8 — Android: `allowBackup="true"` on an app that stores a bearer token; no release build config
 - **File:** `android_pilot/app/src/main/AndroidManifest.xml` (`:33`), `android_pilot/app/build.gradle` (`buildTypes { debug { } }`)
