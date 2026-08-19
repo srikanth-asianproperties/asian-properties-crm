@@ -2,11 +2,63 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.68
+Version : 2.69
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.69 (2026-08-19) — Dashboard fix Part 2: site_visits.reminder_sent_at,
+  a real stored column replacing get_site_visits_for_tomorrow()'s old
+  correlated LIKE-against-activity_log lookup (the ~509ms bottleneck
+  #2 flagged, and deliberately deferred, in the Dashboard diagnosis/
+  Part-1 sessions). This ALSO FIXES A PRE-EXISTING BUG: under the old
+  LIKE-based logic, a visit's "reminder sent" status incorrectly
+  survived a reschedule — if a reminder was sent for a visit's original
+  date, then the visit got rescheduled to a new date, the old lookup
+  (keyed only on visit_id, not the scheduled_at it was sent for) still
+  matched the old activity_log row and showed the rescheduled visit as
+  already reminded, even though nobody had reminded the lead about the
+  NEW date. The new column is explicitly reset to NULL on a genuine
+  reschedule (see update_site_visit() below), so this can no longer
+  happen.
+    - Schema: site_visits gains reminder_sent_at (TEXT, nullable),
+      self-healing ALTER TABLE, same visits_cols check already used for
+      outcome_reason/project on this table. No index — table is a few
+      hundred rows and every read is already date-scoped to "tomorrow."
+    - Backfill (self-healing, gap-only, safe to leave running on every
+      init_db() call indefinitely — same pattern as F2 Phase 1's
+      project_bucket backfill): for every site_visits row where
+      reminder_sent_at IS NULL, sets it to whatever the OLD LIKE-based
+      lookup would have found (MAX(activity_log.created_at) for that
+      visit_id's 'whatsapp_reminder_sent' rows), preserving historical
+      accuracy for visits already correctly marked sent under the old
+      system. A visit the old logic would also have found nothing for
+      stays NULL — correctly still "not sent," not a change in meaning.
+    - log_reminder_sent(visit_id, cls_id, actor): now ALSO writes
+      site_visits.reminder_sent_at = now(), same connection/transaction
+      as the existing activity_log write (which is UNCHANGED and KEPT —
+      Srikanth wants the note in lead history regardless of this
+      column's existence).
+    - update_site_visit(): the "rescheduled" action branch now ALSO sets
+      site_visits.reminder_sent_at = NULL, same transaction as the
+      scheduled_at UPDATE, whenever new_scheduled_at is genuinely
+      different from the visit's previous scheduled_at (a reschedule
+      "to the same time" — never seen in practice, but checked for
+      literally — is treated as a no-op and does not reset). This is
+      the fix for the bug described above. schedule_site_visit()
+      (initial creation, a brand-new row) is deliberately NOT touched —
+      there is nothing to reset on a row that was never reminded yet.
+    - get_site_visits_for_tomorrow(): rewritten to SELECT
+      v.reminder_sent_at directly instead of the old correlated LIKE
+      scalar subquery — simpler query, no subquery at all now.
+      get_pending_reminder_count() needed no change — it already just
+      calls this function and checks the same field name.
+  Verified via a throwaway copy of live CLS1.db: backfilled values match
+  the old LIKE-based lookup exactly for every existing tomorrow's-visit
+  row; sending a reminder sets reminder_sent_at AND still writes the
+  activity_log row; rescheduling that same visit resets reminder_sent_at
+  to NULL and the visit correctly shows pending again for its new date;
+  rescheduling a visit that was never reminded is a no-op, no errors.
 v2.68 (2026-08-19) — Dashboard fix Part 1: two indexes targeting the two
   worst bottlenecks found in the Dashboard slowness diagnosis session
   (F1/F2-style audit, this time targeting Dashboard stat-card queries
@@ -3069,9 +3121,38 @@ def init_db():
         # column only exists for the walk-in case where the admin/
         # salesperson picks it explicitly on the spot.
         conn.execute("ALTER TABLE site_visits ADD COLUMN project TEXT;")
+    if "reminder_sent_at" not in visits_cols:
+        # v2.69 — Dashboard fix Part 2: stored replacement for the old
+        # correlated LIKE-against-activity_log lookup in
+        # get_site_visits_for_tomorrow(). See that function and
+        # log_reminder_sent()/update_site_visit() below, and the v2.69
+        # changelog entry at top of file, for the full read/write-path
+        # rationale (including the reschedule-bug fix this closes).
+        conn.execute("ALTER TABLE site_visits ADD COLUMN reminder_sent_at TEXT;")
     followups_cols = [r["name"] for r in conn.execute("PRAGMA table_info(follow_ups)").fetchall()]
     if "outcome_reason" not in followups_cols:
         conn.execute("ALTER TABLE follow_ups ADD COLUMN outcome_reason TEXT;")
+
+    # ── v2.69 — reminder_sent_at backfill (self-healing, gap-only, safe
+    # to leave running on every init_db() call indefinitely — same
+    # pattern as F2 Phase 1's project_bucket backfill). Only ever fills
+    # rows where reminder_sent_at IS NULL, computing exactly what the OLD
+    # LIKE-based lookup would have returned, so historical accuracy is
+    # preserved for visits already correctly marked sent under the old
+    # system. A visit the old logic would also have found nothing for is
+    # set to NULL by this (a no-op), which is the correct "not sent"
+    # state, not a change in meaning. Depends only on activity_log, which
+    # is created well above this point in init_db(), so this is safe to
+    # run here on both a fresh DB and an existing one.
+    conn.execute("""
+        UPDATE site_visits
+        SET reminder_sent_at = (
+            SELECT MAX(a.created_at) FROM activity_log a
+            WHERE a.activity_type = 'whatsapp_reminder_sent'
+              AND a.description LIKE 'visit_id:' || site_visits.visit_id || '%'
+        )
+        WHERE reminder_sent_at IS NULL
+    """)
 
     # ── users table — CRM v0.1 (Viewer) login accounts ──
     # One row per person who logs into the CRM. Kept in cls.db itself —
@@ -6171,6 +6252,18 @@ def update_site_visit(visit_id, action, actor, reason, new_scheduled_at=None):
     it up for an unrelated second visit to be scheduled alongside it.
     Every other action closes the item and frees that slot.
 
+    v2.69 — a genuine reschedule (new_scheduled_at actually different
+    from the row's previous scheduled_at) also resets
+    reminder_sent_at back to NULL, in the same transaction as the
+    scheduled_at UPDATE. FIXES A PRE-EXISTING BUG: before this, a
+    reminder sent for a visit's original date incorrectly kept showing
+    as "sent" after the visit was rescheduled to a new date, even
+    though nobody had reminded the lead about the new date. A reschedule
+    "to the same time" (new_scheduled_at == previous scheduled_at) is
+    treated as a no-op and does not reset — this should never happen in
+    practice via the UI, but is checked for literally rather than
+    assumed impossible.
+
     Returns (ok: bool, message: str).
     """
     if action not in SITE_VISIT_OUTCOMES:
@@ -6199,6 +6292,15 @@ def update_site_visit(visit_id, action, actor, reason, new_scheduled_at=None):
             conn.execute("""
                 UPDATE site_visits SET scheduled_at=?, outcome_reason=? WHERE visit_id=?
             """, (new_scheduled_at, reason, visit_id))
+            if new_scheduled_at != row["scheduled_at"]:
+                # v2.69 — genuine reschedule (not a same-time no-op): the
+                # old reminder, if any, was for the OLD date and is no
+                # longer valid for the new one. See docstring above and
+                # the v2.69 changelog entry at top of file.
+                conn.execute(
+                    "UPDATE site_visits SET reminder_sent_at=NULL WHERE visit_id=?",
+                    (visit_id,)
+                )
             _log_activity(conn, row["cls_id"], activity_type, actor,
                           prev_value=row["scheduled_at"], new_value=new_scheduled_at,
                           description=reason)
@@ -6892,18 +6994,21 @@ def get_site_visits_for_tomorrow(owner_match_name=None):
 
     Returns a list of dicts: visit_id, cls_id, full_name, phone_raw,
     phone_norm, phone_e164 ("91" + phone_norm), project (from
-    leads.project), scheduled_at, notes, reminder_sent_at (the most
-    recent whatsapp_reminder_sent activity_log entry for this visit,
-    else None). Sorted by scheduled_at ascending.
+    leads.project), scheduled_at, notes, reminder_sent_at (v2.69 — now
+    read straight from the stored site_visits.reminder_sent_at column,
+    set by log_reminder_sent() and reset to NULL on a genuine reschedule
+    by update_site_visit() — see both functions and the v2.69 changelog
+    entry at top of file. Previously a correlated LIKE-against-
+    activity_log scalar subquery, which was both slow (~509ms measured
+    in the Dashboard diagnosis session) and had a bug where a reminder's
+    "sent" status incorrectly survived a reschedule to a new date).
+    Sorted by scheduled_at ascending.
     """
     conn = _connect()
     try:
         query = """
             SELECT v.visit_id, v.cls_id, l.full_name, l.phone_raw, l.phone_norm,
-                   l.project, v.scheduled_at, v.notes,
-                   (SELECT MAX(a.created_at) FROM activity_log a
-                    WHERE a.activity_type = 'whatsapp_reminder_sent'
-                      AND a.description LIKE 'visit_id:' || v.visit_id || '%') AS reminder_sent_at
+                   l.project, v.scheduled_at, v.notes, v.reminder_sent_at
             FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
             WHERE v.status = 'scheduled'
               AND DATE(v.scheduled_at) = DATE('now', 'localtime', '+1 day')
@@ -7165,13 +7270,26 @@ def log_reminder_sent(visit_id, cls_id, actor):
     """
     (v2.14) Records that a tomorrow's-site-visit WhatsApp reminder was
     sent, via the existing activity_log audit trail (no new table).
-    description is EXACTLY f"visit_id:{visit_id}" —
-    get_site_visits_for_tomorrow()'s LIKE lookup depends on this format.
+    description is EXACTLY f"visit_id:{visit_id}" — kept for the lead's
+    Activity History even though get_site_visits_for_tomorrow() no
+    longer LIKE-parses it (v2.69 — reads site_visits.reminder_sent_at
+    directly instead, set below in this same transaction).
+
+    v2.69 — ALSO writes site_visits.reminder_sent_at = now(), same
+    connection/transaction as the activity_log write above (which stays
+    UNCHANGED and KEPT — Srikanth wants the note in lead history
+    regardless of this column's existence). See update_site_visit()'s
+    "rescheduled" branch for where this gets reset back to NULL.
     """
     conn = _connect()
     try:
+        now = _now()
         _log_activity(conn, cls_id, "whatsapp_reminder_sent", actor,
                       description=f"visit_id:{visit_id}")
+        conn.execute(
+            "UPDATE site_visits SET reminder_sent_at=? WHERE visit_id=?",
+            (now, visit_id)
+        )
         conn.commit()
     finally:
         conn.close()
