@@ -1,6 +1,6 @@
 # CLAUDE.md
 <!--
-Version: 1.4
+Version: 1.5
 Changelog:
   v1.0 (baseline, pre-existing) — original CLAUDE.md content, no version tracking.
   v1.1 (2026-07-28) — added mandatory "Session Closeout" section (Srikanth-requested):
@@ -50,6 +50,42 @@ Changelog:
                        sections; and a 2026-08-15 vs 2026-08-18 discrepancy
                        in Job B's documented retirement date between this
                        file and cls_db.py's own changelog.
+  v1.5 (2026-08-19) — Corrected the CLS1/CLS2 DB-target documentation left
+                       flagged-but-unfixed by v1.4: verified every `.bat`
+                       wrapper in D:\CLS that sets CLS_DB_PATH by reading
+                       each one live (not from this doc), which surfaced
+                       that a legitimate commit today nearly relied on the
+                       stale table. Confirmed run_cls_capi_firer.bat (Job C)
+                       and run_cls_telegram_listener.bat both now set
+                       CLS_DB_PATH=CLS1.db, not CLS2.db as previously
+                       documented. Fixed every section describing this:
+                       the three-layer overview, the database-split
+                       section's Job C/Job D bullet (split apart — they no
+                       longer share a target), the .bat wrapper practice
+                       table, the Commands section (two lines), the
+                       Architecture pipeline diagram's Job C paragraph
+                       (previously ended mid-discrepancy), the weekend-ops
+                       paragraph's watchdog/telegram-listener claim (they
+                       no longer share a DB target despite both being
+                       "monitoring" scripts), and the PWA section. Added an
+                       explanatory note on WHY the doc drifted: CLS2.db was
+                       Job B's dedicated mirror, and post-retirement,
+                       CLS2.db-targeting scripts have been migrated to
+                       CLS1.db one at a time across separate sessions
+                       rather than as one coordinated decision — Job C and
+                       the Telegram Listener have moved, Job D and the
+                       watchdog have not (yet). Also found during this
+                       verification pass, NOT fixed (out of scope for this
+                       correction): two additional CLS_DB_PATH-setting
+                       wrappers not mentioned anywhere in this file —
+                       run_cls_weekend_visits_report.bat (sets CLS1.db;
+                       matches the already-correct prose describing that
+                       script, just absent from the practice table) and
+                       run_cls_monday_weekly_report.bat (sets CLS1.db;
+                       this script/job is not documented anywhere in this
+                       file at all, not even a passing mention) — both
+                       reported to Srikanth this session, neither added
+                       here.
 -->
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -61,7 +97,7 @@ CLS ("Centralised Leads System") is a real-estate lead-management platform built
 The system has three layers:
 1. **Automation pipeline** (root `D:\CLS\*.py`) — scheduled jobs that pull leads from Meta and Sell.do, sync them into CLS1.db/CLS2.db, and fire conversion events back to Meta.
 2. **CRM web app** (`crm/`) — a Flask app where the sales team works leads directly (writes to CLS1.db).
-3. **PWA / mobile dashboard** (`pwa/`) — a Cloudflare Pages site that reads a read-only JSON snapshot (sourced from CLS2.db, the DB Job C reads from) via Workers KV, for phone access.
+3. **PWA / mobile dashboard** (`pwa/`) — a Cloudflare Pages site that reads a read-only JSON snapshot (sourced from CLS1.db, the DB Job C now reads from — see below) via Workers KV, for phone access.
 
 `cls_db.py` is the shared data-access layer imported by every Python component (`sys.path.insert(0, r"D:\CLS")` + `import cls_db`) — it is the single source of truth for schema, stage-transition rules, business logic, **and which of the two databases a given process talks to** (via `CLS_DB_PATH`, see below). Read its module docstring/changelog before touching schema or lead-lifecycle logic anywhere else in the codebase.
 
@@ -70,8 +106,10 @@ The system has three layers:
 The original single `cls.db` was forked into two databases that now serve different roles:
 
 - **CLS1.db** — "our own CRM" database. Fed by **Job A** (`meta_leads_fetcher.py`) and the **CRM app** (`crm/app.py`). This is the database the sales team's own CRM writes to and reads from.
-- **CLS2.db** — the Sell.do mirror. Fed **only** by **Job B** (`selldo_to_cls.py`).
-- **Job C** (`cls_capi_firer.py`) and **Job D** (`cls_email_drip.py`) both read/write **CLS2.db** during parallel-run. CAPI fires against real ad spend, so it deliberately stays on the Sell.do-trusted source rather than CLS1 — moving Job C/D onto CLS1 is a future decision that has **not** been made yet, contingent on parallel-run proving CLS1 reliable.
+- **CLS2.db** — originally the Sell.do mirror, fed **only** by **Job B** (`selldo_to_cls.py`). **Job D** (`cls_email_drip.py`, currently PAUSED) and `cls_watchdog.py`/`cls_telegram_listener.py`'s monitoring role still target CLS2.db today.
+- **Job C** (`cls_capi_firer.py`) has since been **migrated to CLS1.db** — its `.bat` wrapper (`run_cls_capi_firer.bat`) now sets `CLS_DB_PATH=D:\CLS\CLS1.db`, not CLS2.db. This reflects Job C's 2026-08-14 rewrite (v3.0): CAPI firing moved to be synchronous/inline at Job A and the CRM app — both of which write CLS1.db — so Job C itself is now just a safety-net queue processor for that same database, not an independent process with its own reason to stay on the Sell.do-trusted source. The original "stays on Sell.do-trusted source, deliberately not CLS1" reasoning no longer applies to Job C — it was written for the pre-rewrite design and is superseded here, not merely stale.
+- **`cls_telegram_listener.py`** has likewise been migrated: its wrapper (`run_cls_telegram_listener.bat`) now sets `CLS_DB_PATH=D:\CLS\CLS1.db` too.
+- **Why the drift**: CLS2.db was originally Job B's dedicated mirror. Since Job B's 2026-08-18 retirement, individual scripts that used to default to or explicitly target CLS2.db have been migrated to CLS1.db (the one database that's actually live) one at a time, in separate sessions, rather than as a single coordinated architecture decision — Job C and the Telegram Listener have moved so far; Job D and the watchdog have not (yet). That incremental, per-script migration is exactly why this document had drifted out of sync with the live `.bat` wrappers in three separate sections before this correction (2026-08-19) — read the live wrapper file, not this doc's prose, whenever the two seem to disagree.
 
 **Job B retired 2026-08-18**: Job B (`selldo_to_cls.py`) was formally retired — its Task Scheduler entry was removed and the Sell.do subscription cancelled. It no longer runs and no longer writes to CLS2.db. The description above of Job B's original role is kept for historical/reference context (it explains why CLS2.db exists and how the split worked while Job B was live) — it does not describe current behavior. Job C's dependency on Job B's `selldo_sync` flag (see the pipeline diagram below) is now permanently stale and has not yet been re-evaluated; treat that as an open follow-up, not a bug fixed by this note.
 
@@ -81,10 +119,10 @@ The original single `cls.db` was forked into two databases that now serve differ
 
 ```
 run_selldo_to_cls.bat        set CLS_DB_PATH=D:\CLS\CLS2.db   (Job B — RETIRED 2026-08-18, kept for reference only)
-run_cls_capi_firer.bat       set CLS_DB_PATH=D:\CLS\CLS2.db   (Job C)
-run_cls_email_drip.bat       set CLS_DB_PATH=D:\CLS\CLS2.db   (Job D)
+run_cls_capi_firer.bat       set CLS_DB_PATH=D:\CLS\CLS1.db   (Job C — migrated from CLS2.db, see above)
+run_cls_email_drip.bat       set CLS_DB_PATH=D:\CLS\CLS2.db   (Job D — PAUSED)
 run_cls_watchdog.bat         set CLS_DB_PATH=D:\CLS\CLS2.db
-run_cls_telegram_listener.bat set CLS_DB_PATH=D:\CLS\CLS2.db
+run_cls_telegram_listener.bat set CLS_DB_PATH=D:\CLS\CLS1.db  (migrated from CLS2.db, see above)
 run_app.bat                  set CLS_DB_PATH=D:\CLS\CLS1.db   (CRM app)
 ```
 Job A (`meta_leads_fetcher.py`) has **no** wrapper — it relies on `cls_db.py`'s default (CLS1.db), which is correct for Job A and not accidental.
@@ -130,7 +168,7 @@ python crm\schema_check.py CLS2.db   # or pass a filename to check CLS2.db inste
 python meta_leads_fetcher.py      # Job A  -> CLS1.db (default, no wrapper needed)
 # Job B (selldo_to_cls.py) — RETIRED 2026-08-18. Task Scheduler entry removed, Sell.do
 # subscription cancelled. No longer part of the live pipeline; do not schedule or run it.
-python cls_capi_firer.py          # Job C  -> CLS2.db (via run_cls_capi_firer.bat) (--force skips the Job B freshness gate, now permanently stale since Job B's retirement — see Architecture section)
+python cls_capi_firer.py          # Job C  -> CLS1.db (via run_cls_capi_firer.bat) (--force skips the Job B freshness gate, now permanently stale since Job B's retirement — see Architecture section)
 python cls_email_drip.py          # Job D  -> CLS2.db (via run_cls_email_drip.bat)
 python cleanup_comms_log.py       # Job D maintenance helper
 
@@ -138,7 +176,7 @@ python cleanup_comms_log.py       # Job D maintenance helper
 python cls_dashboard.py           # regenerate dashboard.html
 python cls_snapshot.py            # push JSON snapshot to Cloudflare KV (also: --selftest)
 python cls_watchdog.py            # health check + Telegram/Slack-style alert digest (via run_cls_watchdog.bat -> CLS2.db)
-python cls_telegram_listener.py   # long-polling Telegram command bot (/stats /today /health /pending) (via run_cls_telegram_listener.bat -> CLS2.db)
+python cls_telegram_listener.py   # long-polling Telegram command bot (/stats /today /health /pending) (via run_cls_telegram_listener.bat -> CLS1.db)
 python cls_telecaller_report.py   # weekend Opportunity-stage report email
 python cls_backup.py              # daily backup of D:\CLS to Google Drive via rclone
 python setup_task_scheduler.py    # registers Job D in Windows Task Scheduler (run once, as Admin)
@@ -188,10 +226,10 @@ The old hourly, flag-gated A→B→C→D batch chain no longer describes how CAP
                                 snapshot() after any run that actually had work to do (skipped on the fast
                                 empty-queue exit) — snapshot failures are still always swallowed, must
                                 never block CAPI firing. Reads CLS_DB_PATH the normal way; run_cls_capi_
-                                firer.bat currently sets this to CLS1.db, NOT CLS2.db — this contradicts
-                                the CLS2.db target documented for Job C in the database-split, Commands,
-                                and PWA sections elsewhere in this file. That's a real discrepancy, flagged
-                                here but not corrected elsewhere this session — needs a follow-up pass.
+                                firer.bat sets this to CLS1.db (migrated from CLS2.db — see database-split
+                                section above for why). This is now consistent across the database-split,
+                                Commands, and PWA sections elsewhere in this file, corrected 2026-08-19
+                                after being flagged-but-not-fixed in the v1.4 pass.
 
 [Job D] cls_email_drip.py       v1.5 — PAUSED as of 2026-08-04. Task Scheduler task is disabled, and
                                 run() also self-guards (logs a warning and exits immediately) if launched
@@ -200,7 +238,7 @@ The old hourly, flag-gated A→B→C→D batch chain no longer describes how CAP
                                 the file's own changelog).
 ```
 
-`cls_weekend_visits_report.py` (v1.0, 2026-08-17) is a separate Friday-afternoon ops script, independent of everything above: reads CLS1.db (`run_cls_weekend_visits_report.bat`), pulls the coming weekend's scheduled site visits, and sends Srikanth a per-salesperson Telegram breakdown (Brevo email fallback if Telegram is down). Its own docstring explicitly opts out of the Job-lettering convention — it logs to `job_results.txt` as `"Weekend Site Visits Report"`, not `"Job E"` — so this file follows that same choice rather than inventing a label the script itself declines. `cls_telecaller_report.py` (weekend cron) and `cls_watchdog.py`/`cls_telegram_listener.py` (monitoring, both targeting CLS2.db via their `.bat` wrappers) also sit outside this chain, as before.
+`cls_weekend_visits_report.py` (v1.0, 2026-08-17) is a separate Friday-afternoon ops script, independent of everything above: reads CLS1.db (`run_cls_weekend_visits_report.bat`), pulls the coming weekend's scheduled site visits, and sends Srikanth a per-salesperson Telegram breakdown (Brevo email fallback if Telegram is down). Its own docstring explicitly opts out of the Job-lettering convention — it logs to `job_results.txt` as `"Weekend Site Visits Report"`, not `"Job E"` — so this file follows that same choice rather than inventing a label the script itself declines. `cls_telecaller_report.py` (weekend cron) and `cls_watchdog.py`/`cls_telegram_listener.py` (monitoring) also sit outside this chain, as before — though note `cls_watchdog.py` still targets CLS2.db while `cls_telegram_listener.py` now targets CLS1.db (migrated, see database-split section above); they no longer share a DB target despite both being "monitoring" scripts.
 
 Stage names and their legal transitions are defined once in `cls_db.STAGE_TRANSITIONS` (`Incoming → Prospect → Opportunity → Site Visited → Booked`, plus `Unqualified`/`Lost`/`Re Assigned` side-states) — both Sell.do's own rule engine and the CRM app's `change_lead_stage()` route enforce these same one-way rules. Do not add free-form stage changes; extend `STAGE_TRANSITIONS` instead.
 
@@ -224,7 +262,7 @@ The app runs in **parallel-run mode** alongside Sell.do (by explicit design, not
 
 ### PWA (`pwa/`)
 
-Static Cloudflare Pages site + two Pages Functions (`functions/api/snapshot.js`, `functions/_middleware.js`) that serve the JSON blob `cls_snapshot.py` pushes to Workers KV (binding `CLS_SNAPSHOT`), sourced from whichever DB Job C targets (CLS2.db during parallel-run). The PWA never touches either database directly — it only ever reads the last pushed snapshot, so a failed push just means a stale (not broken) view. Access is gated by Cloudflare Access in front of the Pages project, not by any app-level auth.
+Static Cloudflare Pages site + two Pages Functions (`functions/api/snapshot.js`, `functions/_middleware.js`) that serve the JSON blob `cls_snapshot.py` pushes to Workers KV (binding `CLS_SNAPSHOT`), sourced from whichever DB Job C targets (CLS1.db — `cls_snapshot.py` sets no `CLS_DB_PATH` of its own, so it inherits whatever the calling process has; on the scheduled path that's `cls_capi_firer.py`'s process, via `run_cls_capi_firer.bat`, which now sets CLS1.db). The PWA never touches either database directly — it only ever reads the last pushed snapshot, so a failed push just means a stale (not broken) view. Access is gated by Cloudflare Access in front of the Pages project, not by any app-level auth.
 
 ## Parallel-run health checking: `cls_parallel_diff.py`
 
