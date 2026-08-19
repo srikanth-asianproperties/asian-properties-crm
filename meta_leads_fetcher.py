@@ -2,11 +2,20 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.8
+Version : 1.9
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.9 (2026-08-19) — Cosmetic log-string fix, no functional change. The
+  run()-completion log line for the 'meta_fetch' flag still said "Job B
+  may now proceed" — stale since Job B's 2026-08-18 retirement. Checked
+  who actually reads this flag today: no pipeline job gates on it (Job
+  B's own gate was already commented out pre-retirement, in v1.7), but
+  cls_watchdog.py and cls_telegram_listener.py's /health handler both
+  still call cls_db.get_flag("meta_fetch") to show Job A's last-run
+  freshness. Log line corrected to say that, instead of naming a
+  consumer (Job B) that no longer exists.
 v1.8 (2026-08-14) — inline CAPI firing redesign. Requires cls_db.py
   v2.55, whose upsert_meta_lead() now returns (cls_id, is_new_lead)
   instead of bare cls_id (updated here at this file's one call site).
@@ -646,9 +655,14 @@ def run():
         f"({s['with_leadgen_id']} with leadgen_id, "
         f"{s['selldo_only']} selldo-only, {s['pending_fire']} pending fire)")
 
-    # ── Completion flag (Risk 1) — tells Job B it is safe to run ──
+    # ── Completion flag (Risk 1) — Job B (its original consumer) retired
+    #    2026-08-18; no pipeline job gates on this flag anymore. Still read
+    #    by cls_watchdog.py and cls_telegram_listener.py's /health check to
+    #    display Job A's last-run freshness.
     cls_db.set_flag("meta_fetch")
-    log("Completion flag 'meta_fetch' set — Job B may now proceed.")
+    log("Completion flag 'meta_fetch' set — no job gates on this anymore "
+        "(Job B, its original consumer, retired 2026-08-18); still read by "
+        "cls_watchdog.py/cls_telegram_listener.py's health checks.")
 
     log("=" * 55)
     log("CLS JOB A — Meta Leads Fetcher — DONE")
