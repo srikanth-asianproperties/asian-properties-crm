@@ -1,7 +1,23 @@
 # CLAUDE.md
 <!--
-Version: 1.5
+Version: 1.6
 Changelog:
+  v1.6 (2026-08-19) — Documented the two ops-report .bat wrappers that had
+                       no entry anywhere in this file: run_cls_weekend_visits_
+                       report.bat and run_cls_monday_weekly_report.bat, both
+                       added to the .bat wrapper practice table (confirmed
+                       CLS_DB_PATH=CLS1.db and schedule for each by reading
+                       the live .bat files and querying Task Scheduler
+                       directly). Added a new paragraph for
+                       cls_monday_weekly_report.py (previously undocumented),
+                       matching the existing cls_weekend_visits_report.py
+                       paragraph's style/depth, including its actual
+                       deployment status: the Task Scheduler task is
+                       registered and enabled (Monday 07:00 weekly) but has
+                       only had manual test runs so far, not yet a genuine
+                       automatic firing (next scheduled: 2026-08-24) — not
+                       claimed as fully proven live. Documentation-only
+                       change, no behavior/process changes.
   v1.0 (baseline, pre-existing) — original CLAUDE.md content, no version tracking.
   v1.1 (2026-07-28) — added mandatory "Session Closeout" section (Srikanth-requested):
                        every response that creates/edits a file must end with a
@@ -124,6 +140,8 @@ run_cls_email_drip.bat       set CLS_DB_PATH=D:\CLS\CLS2.db   (Job D — PAUSED)
 run_cls_watchdog.bat         set CLS_DB_PATH=D:\CLS\CLS2.db
 run_cls_telegram_listener.bat set CLS_DB_PATH=D:\CLS\CLS1.db  (migrated from CLS2.db, see above)
 run_app.bat                  set CLS_DB_PATH=D:\CLS\CLS1.db   (CRM app)
+run_cls_weekend_visits_report.bat  set CLS_DB_PATH=D:\CLS\CLS1.db   (ops report, Friday 18:00 weekly — Task Scheduler-confirmed)
+run_cls_monday_weekly_report.bat   set CLS_DB_PATH=D:\CLS\CLS1.db   (ops report, Monday 07:00 weekly — Task Scheduler-confirmed, see status note below)
 ```
 Job A (`meta_leads_fetcher.py`) has **no** wrapper — it relies on `cls_db.py`'s default (CLS1.db), which is correct for Job A and not accidental.
 
@@ -239,6 +257,8 @@ The old hourly, flag-gated A→B→C→D batch chain no longer describes how CAP
 ```
 
 `cls_weekend_visits_report.py` (v1.0, 2026-08-17) is a separate Friday-afternoon ops script, independent of everything above: reads CLS1.db (`run_cls_weekend_visits_report.bat`), pulls the coming weekend's scheduled site visits, and sends Srikanth a per-salesperson Telegram breakdown (Brevo email fallback if Telegram is down). Its own docstring explicitly opts out of the Job-lettering convention — it logs to `job_results.txt` as `"Weekend Site Visits Report"`, not `"Job E"` — so this file follows that same choice rather than inventing a label the script itself declines. `cls_telecaller_report.py` (weekend cron) and `cls_watchdog.py`/`cls_telegram_listener.py` (monitoring) also sit outside this chain, as before — though note `cls_watchdog.py` still targets CLS2.db while `cls_telegram_listener.py` now targets CLS1.db (migrated, see database-split section above); they no longer share a DB target despite both being "monitoring" scripts.
+
+`cls_monday_weekly_report.py` (v1.1, 2026-08-17) is the Monday-morning counterpart to the script above: reads CLS1.db (`run_cls_monday_weekly_report.bat`), computes the most recently completed Mon-Sun week's 5 headline metrics (leads generated, site visits scheduled/conducted, bookings weekday/weekend) plus a per-salesperson breakdown, and sends Srikanth a Telegram message (Brevo email fallback), reusing `cls_watchdog.py`'s `load_env()`/`send_telegram()`/`send_brevo_alert()`. Same out-of-chain, non-"Job E" status as `cls_weekend_visits_report.py` — logs to `job_results.txt` as `"Monday Weekly Report"`. **Deployment status as of 2026-08-19**: the `"CLS Monday Weekly Report"` Task Scheduler task is registered and Enabled (Monday 07:00 weekly, Task To Run = `run_cls_monday_weekly_report.bat`, next run 2026-08-24) — registration is complete. However, it has not yet had a genuine unattended run: `cls_monday_weekly_report_log.txt`'s only two entries so far (2026-08-17, 13:45 and 14:16) are same-day manual test runs made right after the task was created, not an automatic Monday-morning firing. Treat it as registered-but-not-yet-proven-live until it fires on its own on 2026-08-24.
 
 Stage names and their legal transitions are defined once in `cls_db.STAGE_TRANSITIONS` (`Incoming → Prospect → Opportunity → Site Visited → Booked`, plus `Unqualified`/`Lost`/`Re Assigned` side-states) — both Sell.do's own rule engine and the CRM app's `change_lead_stage()` route enforce these same one-way rules. Do not add free-form stage changes; extend `STAGE_TRANSITIONS` instead.
 
