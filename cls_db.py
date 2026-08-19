@@ -2,11 +2,63 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.67
+Version : 2.68
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.68 (2026-08-19) — Dashboard fix Part 1: two indexes targeting the two
+  worst bottlenecks found in the Dashboard slowness diagnosis session
+  (F1/F2-style audit, this time targeting Dashboard stat-card queries
+  rather than lead-list queries). ONE of the two confirmed fixed; the
+  other's index was added but is NOT actually used by SQLite's query
+  planner at this table's current size — see honest writeup below,
+  this is not being oversold as "fixed" when it measurably isn't:
+    - idx_call_log_matched_direction_ts ON call_log_staging(matched_cls_id,
+      direction, call_timestamp) — CONFIRMED FIX. get_missed_calls_count()'s
+      outer WHERE (m.direction='MISSED' AND m.matched_cls_id IS NOT NULL)
+      and its correlated NOT EXISTS subquery (o.matched_cls_id =
+      m.matched_cls_id AND o.direction='OUTGOING' AND o.call_timestamp >
+      m.call_timestamp) previously both fell back to SCAN on
+      call_log_staging (56k rows), with the subquery re-scanning the full
+      table per outer row — O(n^2) against the largest table in the DB.
+      EXPLAIN QUERY PLAN now shows SEARCH...USING COVERING INDEX for both
+      the outer query and the correlated subquery. Measured 16,415ms ->
+      ~19-22ms steady-state on live CLS1.db (owner=None), a single
+      one-off 1.8s run observed during the very first post-index query
+      (index pages not yet in OS page cache) and not reproduced on any
+      later run. Column order (matched_cls_id, direction, call_timestamp)
+      chosen to serve the correlated subquery's exact
+      equality-equality-range predicate directly, and to let the outer
+      query's JOIN to leads probe this same index by matched_cls_id.
+    - idx_leads_reengaged_at ON leads(reengaged_at) — ADDED, PLANNER DOES
+      NOT USE IT. get_reengaged_count()'s WHERE reengaged_at IS NOT NULL
+      still shows SCAN leads in EXPLAIN QUERY PLAN even with this index
+      present, including after a diagnostic ANALYZE (run, checked, then
+      reverted — no ANALYZE/sqlite_stat1 persisted by this change).
+      SQLite's cost-based planner judges a full sequential scan of the
+      leads table (8,044 rows, small) cheaper than an index seek + rowid
+      lookup, which is a legitimate, correct call at this table size, not
+      a bug in the index. A controlled A/B test (same warm-cache
+      conditions, index present vs. DROP INDEX'd) showed IDENTICAL timing
+      either way (~12-30ms) — meaning the diagnosis session's original
+      404ms reading was a cache-state artifact of that specific run, not
+      a reproducible cost of the SCAN itself. Net effect: get_reengaged_
+      count() is already fast in steady state (~20-50ms) regardless of
+      this index; the index is harmless and kept (may earn its keep if
+      the leads table grows much larger and reengaged_at stays a small
+      fraction of it), but is not, today, "the fix" for anything.
+      Added in the same post-migration-loop location as idx_leads_owner
+      (v2.65) since reengaged_at, like lead_owner, is only added via the
+      self-healing ALTER TABLE loop, not the original CREATE TABLE —
+      creating the index earlier would fail "no such column" on a fresh
+      DB, same failure mode v2.65 already fixed once for idx_leads_owner.
+  Both additions only — no existing index, query, or function signature
+  touched; both COUNT(*) results verified identical before/after (271 and
+  10 respectively). get_pending_reminder_count() (bottleneck #2, 509ms,
+  part of inject_current_user() on every page load) is explicitly OUT OF
+  SCOPE here — deferred to a follow-up session per Srikanth's
+  instruction, its fix is a query/lookup rewrite, not an index.
 v2.67 (2026-08-18) — F2 Phase 3: read-side SQL filtering on
   project_bucket. Every function that used to derive project_bucket
   per-row in Python via get_project_bucket() (after F2 Phase 1/2 made
@@ -2836,6 +2888,20 @@ def init_db():
     # existing databases.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_owner ON leads(lead_owner);")
 
+    # ── v2.68 — idx_leads_reengaged_at, same post-migration-loop placement
+    # as idx_leads_owner above. reengaged_at (like lead_owner) is added via
+    # the drip_migrations self-healing ALTER TABLE loop above, not the
+    # original CREATE TABLE — indexing it before that loop runs would fail
+    # "no such column: reengaged_at" on a fresh database, the same failure
+    # mode v2.65 fixed for idx_leads_owner. NOTE: verified this index is
+    # currently NOT selected by SQLite's planner for get_reengaged_count()
+    # — it still SCANs leads (8k rows is cheap enough that a scan beats an
+    # index seek here) even after ANALYZE. Kept anyway (harmless, may help
+    # if the table grows) but do not assume it's "the fix" for that
+    # function — see v2.68 changelog entry at top of file for the full,
+    # honest before/after writeup.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_reengaged_at ON leads(reengaged_at);")
+
     # ── v2.64 — F2 Phase 1: stored project_bucket column (self-healing) ──
     # Mirrors get_project_bucket()'s live-computed value so read paths can
     # eventually filter/index on it directly instead of deriving it in
@@ -3353,6 +3419,20 @@ def init_db():
         );
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_staging_created ON call_log_staging(created_at);")
+
+    # ── v2.68 — idx_call_log_matched_direction_ts. matched_cls_id/direction/
+    # call_timestamp are all part of the CREATE TABLE above (not a later
+    # ALTER TABLE addition), so this is safe immediately after table
+    # creation, unlike the leads-table indexes elsewhere in this file that
+    # had to wait for a self-healing migration loop. Column order matches
+    # get_missed_calls_count()'s correlated NOT EXISTS subquery predicate
+    # (o.matched_cls_id = m.matched_cls_id AND o.direction = 'OUTGOING' AND
+    # o.call_timestamp > m.call_timestamp) exactly, and also serves that
+    # function's outer JOIN/WHERE. Fixes a SCAN + per-row full-table-rescan
+    # against this table's 56k rows (16,415ms -> ~19-22ms steady-state
+    # measured on live CLS1.db) — see v2.68 changelog entry at top of file
+    # for the full diagnosis/fix writeup.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_matched_direction_ts ON call_log_staging(matched_cls_id, direction, call_timestamp);")
 
     # ── APX Attendance v0.9 schema (v2.38) ──
     # SIBLING module to the lead-management engine — own tables, own API
