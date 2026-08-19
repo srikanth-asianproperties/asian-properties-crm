@@ -2,11 +2,43 @@
 =============================================================
 cls_backup.py  —  CLS Daily Backup to Google Drive
 =============================================================
-Version : 1.5
+Version : 1.6
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.6  (2026-08-19) — Exclude .git/ and __pycache__/ from backup per
+  Srikanth's explicit decision (2026-08-19), following the same-day
+  investigation session into Step 2's dated-archive timeout.
+  Investigation found gdrive:CLS_Backup/latest held 1,798 objects
+  total, of which .git/ (621 objects, 34.5%) and __pycache__/ (17
+  objects) together were ~90% of the object count when combined with
+  android_pilot/ — and Step 2's server-side copy is billed roughly
+  per-object by Google Drive's API, not per-byte, so a folder full of
+  many small objects (like .git/'s internal object store) drives the
+  same kind of throttling/timeout behavior documented in v1.3, even
+  though .git/ is only 9.9 MiB. .git/ is fully redundant with GitHub
+  (confirmed even with origin/master, 0 ahead/0 behind, at the time of
+  this decision) — the real commit history lives there; this Drive
+  backup only ever needed the working files. __pycache__/ is
+  auto-regenerated compiled bytecode with zero unique content and is
+  already gitignored by convention — a minor contributor (17 files)
+  but no reason to carry it along either.
+  Added RCLONE_EXCLUDE_GIT and RCLONE_EXCLUDE_PYCACHE (same rclone
+  filter syntax as the existing excludes) alongside the existing
+  --exclude flags on all three rclone calls that already excluded
+  call_recordings/attendance_photos (Step 1 sync, and both fallback
+  local-copy paths). Not added to Step 2 (server-side copy) — same
+  reasoning as v1.5: that step copies from "latest", and "latest" no
+  longer contains .git/ or __pycache__ once Step 1 stops adding them,
+  so nothing further is needed there.
+  EXPLICITLY NOT EXCLUDED: android_pilot/ (1,001 objects, the single
+  largest contributor found by the investigation) — this was a
+  confirmed decision, not an oversight. Unlike .git/, android_pilot/
+  has no backup elsewhere (it isn't tracked in the GitHub repo), so it
+  stays in the Drive backup as-is. Do not add it to the excludes in a
+  future session without re-confirming with Srikanth first.
+
 v1.5  (2026-08-18) — Exclude attendance_photos/ from backup per Srikanth's
   explicit decision (2026-08-18), reversing the earlier v0.30/v0.31 design
   call to include it after DPDP review. He does not want these photos
@@ -223,6 +255,20 @@ RCLONE_EXCLUDE_CALL_RECORDINGS = "call_recordings/**"
 # photos stored on Google Drive. Same rclone filter syntax as
 # RCLONE_EXCLUDE_CALL_RECORDINGS.
 RCLONE_EXCLUDE_ATTENDANCE = "attendance_photos/**"
+
+# v1.6 — .git/ excluded from backup per Srikanth's decision
+# (2026-08-19). Fully redundant with GitHub (confirmed even,
+# 0 ahead/0 behind, at the time of this decision) — the actual
+# per-commit history lives there, this Drive backup only ever needed
+# the working files. Was the leading contributor (621 objects, 34.5%
+# of latest/'s total object count) to Step 2's dated-archive timeout.
+RCLONE_EXCLUDE_GIT = ".git/**"
+
+# v1.6 — __pycache__/ excluded from backup per Srikanth's decision
+# (2026-08-19). Auto-regenerated compiled bytecode, zero unique
+# content, already gitignored by convention. Minor contributor (17
+# files) but no reason to carry it along.
+RCLONE_EXCLUDE_PYCACHE = "__pycache__/**"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -465,6 +511,8 @@ def run_backup():
             "--stats-one-line",
             "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
             "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
+            "--exclude", RCLONE_EXCLUDE_GIT,
+            "--exclude", RCLONE_EXCLUDE_PYCACHE,
         ],
         f"Latest backup → {GDRIVE_LATEST}"
     )
@@ -501,6 +549,8 @@ def run_backup():
                     "--stats-one-line",
                     "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
                     "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
+                    "--exclude", RCLONE_EXCLUDE_GIT,
+                    "--exclude", RCLONE_EXCLUDE_PYCACHE,
                 ],
                 f"Daily backup fallback (local copy) → {daily_dest}"
             )
@@ -520,6 +570,8 @@ def run_backup():
                 "--stats-one-line",
                 "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
                 "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
+                "--exclude", RCLONE_EXCLUDE_GIT,
+                "--exclude", RCLONE_EXCLUDE_PYCACHE,
             ],
             f"Daily backup fallback (local copy) → {daily_dest}"
         )
