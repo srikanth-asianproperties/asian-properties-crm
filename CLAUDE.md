@@ -1,7 +1,21 @@
 # CLAUDE.md
 <!--
-Version: 1.6
+Version: 1.7
 Changelog:
+  v1.7 (2026-08-21) — Notifications v1.0 build session: documented the new
+                       `notifications` table, the two config-not-code dicts
+                       (NOTIFICATION_EVENTS/NOTIFICATION_TRIGGERS), the 3
+                       instant hooks (new_enquiry/lead_reengaged/
+                       lead_reassigned) and the deviations found while
+                       verifying live code before hooking them in, the new
+                       cls_notifications_poller.py job (--dry-run/--selftest
+                       both run against throwaway DBs, documented result),
+                       the new run_cls_notifications_poller.bat wrapper
+                       (added to the .bat wrapper table, flagged as NOT YET
+                       registered in Task Scheduler), and the new header
+                       bell UI. New "Notifications v1.0" architecture
+                       subsection added; .bat wrapper table and Commands
+                       section both updated.
   v1.6 (2026-08-19) — Documented the two ops-report .bat wrappers that had
                        no entry anywhere in this file: run_cls_weekend_visits_
                        report.bat and run_cls_monday_weekly_report.bat, both
@@ -142,6 +156,7 @@ run_cls_telegram_listener.bat set CLS_DB_PATH=D:\CLS\CLS1.db  (migrated from CLS
 run_app.bat                  set CLS_DB_PATH=D:\CLS\CLS1.db   (CRM app)
 run_cls_weekend_visits_report.bat  set CLS_DB_PATH=D:\CLS\CLS1.db   (ops report, Friday 18:00 weekly — Task Scheduler-confirmed)
 run_cls_monday_weekly_report.bat   set CLS_DB_PATH=D:\CLS\CLS1.db   (ops report, Monday 07:00 weekly — Task Scheduler-confirmed, see status note below)
+run_cls_notifications_poller.bat   set CLS_DB_PATH=D:\CLS\CLS1.db   (Notifications v1.0 poller — wrapper file created 2026-08-21, NOT YET registered in Task Scheduler, see Notifications v1.0 section below)
 ```
 Job A (`meta_leads_fetcher.py`) has **no** wrapper — it relies on `cls_db.py`'s default (CLS1.db), which is correct for Job A and not accidental.
 
@@ -199,6 +214,9 @@ python cls_telecaller_report.py   # weekend Opportunity-stage report email
 python cls_backup.py              # daily backup of D:\CLS to Google Drive via rclone
 python setup_task_scheduler.py    # registers Job D in Windows Task Scheduler (run once, as Admin)
 python cls_parallel_diff.py       # compares CLS1.db vs CLS2.db directly -> parallel_diff_report.txt (primary parallel-run health tool, see below)
+python cls_notifications_poller.py            # Notifications v1.0 poller (via run_cls_notifications_poller.bat -> CLS1.db) -- NOT YET on the schedule, see below
+python cls_notifications_poller.py --dry-run  # same scan, logs what WOULD be sent, writes/pushes nothing
+python cls_notifications_poller.py --selftest # config sanity only (NOTIFICATION_TRIGGERS/NOTIFICATION_EVENTS keys match, window math is sane), no DB query
 
 # Self-tests (each job's own offline sanity check; look for --selftest / SELFTEST in the file)
 python cls_capi_firer.py --selftest   # style varies per script — check top-of-file docstring
@@ -259,6 +277,23 @@ The old hourly, flag-gated A→B→C→D batch chain no longer describes how CAP
 `cls_weekend_visits_report.py` (v1.0, 2026-08-17) is a separate Friday-afternoon ops script, independent of everything above: reads CLS1.db (`run_cls_weekend_visits_report.bat`), pulls the coming weekend's scheduled site visits, and sends Srikanth a per-salesperson Telegram breakdown (Brevo email fallback if Telegram is down). Its own docstring explicitly opts out of the Job-lettering convention — it logs to `job_results.txt` as `"Weekend Site Visits Report"`, not `"Job E"` — so this file follows that same choice rather than inventing a label the script itself declines. `cls_telecaller_report.py` (weekend cron) and `cls_watchdog.py`/`cls_telegram_listener.py` (monitoring) also sit outside this chain, as before — though note `cls_watchdog.py` still targets CLS2.db while `cls_telegram_listener.py` now targets CLS1.db (migrated, see database-split section above); they no longer share a DB target despite both being "monitoring" scripts.
 
 `cls_monday_weekly_report.py` (v1.1, 2026-08-17) is the Monday-morning counterpart to the script above: reads CLS1.db (`run_cls_monday_weekly_report.bat`), computes the most recently completed Mon-Sun week's 5 headline metrics (leads generated, site visits scheduled/conducted, bookings weekday/weekend) plus a per-salesperson breakdown, and sends Srikanth a Telegram message (Brevo email fallback), reusing `cls_watchdog.py`'s `load_env()`/`send_telegram()`/`send_brevo_alert()`. Same out-of-chain, non-"Job E" status as `cls_weekend_visits_report.py` — logs to `job_results.txt` as `"Monday Weekly Report"`. **Deployment status as of 2026-08-19**: the `"CLS Monday Weekly Report"` Task Scheduler task is registered and Enabled (Monday 07:00 weekly, Task To Run = `run_cls_monday_weekly_report.bat`, next run 2026-08-24) — registration is complete. However, it has not yet had a genuine unattended run: `cls_monday_weekly_report_log.txt`'s only two entries so far (2026-08-17, 13:45 and 14:16) are same-day manual test runs made right after the task was created, not an automatic Monday-morning firing. Treat it as registered-but-not-yet-proven-live until it fires on its own on 2026-08-24.
+
+### Notifications v1.0 (2026-08-21) — unified in-app + FCM notifications
+
+A `notifications` table (`cls_db.py` v2.72, self-healing `CREATE TABLE IF NOT EXISTS`) covers 8 event types, each defined once in the config-not-code dict `cls_db.NOTIFICATION_EVENTS` (event_type -> message template, filled in with `{full_name}`/`{project}` at insert time). Every insert goes through `cls_db.insert_notification(user_id, cls_id, event_type, message, conn=None)`, which is idempotent — `INSERT OR IGNORE` keyed on `event_id = md5(cls_id + event_type + today's date)`, the same dedup idiom Job C uses for CAPI `event_id`s. Read-side: `get_unread_notification_count()`, `get_notifications()`, `mark_notification_read()`, `mark_all_notifications_read()`.
+
+3 event types fire **instantly** from hooks inside existing write-path functions — additive only, nothing existing removed:
+- `new_enquiry` — `upsert_meta_lead()` branch 3 (genuinely new Meta lead), targets the resolved `default_owner`, falling back to every active admin if that placeholder owner name has no linked login.
+- `lead_reengaged` — `upsert_meta_lead()` branch 2 (contact-match enrich), right after its existing `lead_reengaged` `activity_log` row. **Not** inside `_apply_reengagement_marker()` — that helper's signature deliberately excludes `full_name`/owner (see its own docstring on why `lead_reengaged` logging belongs in the caller), so this hook follows that same existing convention rather than expanding the helper.
+- `lead_reassigned` — `reassign_lead_owner()`, right where `owner_notified=0` is set. Completely additive alongside `owner_notified`/`get_unread_assignment_count()`/`mark_lead_notification_read()`, which power the (separate, pre-existing, currently-unrendered-in-the-UI) reassignment badge — untouched. The actual FCM push for this event is fired only on the single-lead `/leads/<cls_id>/assign` path, not from inside `bulk_reassign_leads()`'s loop, to avoid serializing a bulk reassignment on per-lead network calls; the in-app notification row is still inserted for every lead in both cases.
+
+The other 5 event types (`followup_due`, `followup_overdue_1d`, `visit_tomorrow`, `visit_due_now`, `visit_overdue_1d`) are **polled** every 15 minutes by the new `cls_notifications_poller.py` (v1.0), driven by the config-not-code dict `cls_db.NOTIFICATION_TRIGGERS` (event_type -> `(source_table, date_column, offset_hours, extra_where)`). Same out-of-A-D-chain, non-"Job E" convention as `cls_weekend_visits_report.py`/`cls_monday_weekly_report.py` above — logs to `job_results.txt` as `"Notifications Poller"`. Targets CLS1.db via `run_cls_notifications_poller.bat`.
+
+**Deployment status as of 2026-08-21**: `run_cls_notifications_poller.bat` exists but has **NOT** been registered in Windows Task Scheduler — that's a standing-automation/OS-level change and needs Srikanth's explicit go-ahead (see the Session Closeout flags below), not something done silently mid-build-session. Until it's registered, the 5 polled event types simply never fire; the 3 instant hooks are live the moment this session's code is deployed. Dry-run-tested (`--dry-run`) and self-tested (`--selftest`) against throwaway SQLite copies before this note was written, per this file's own "test against a throwaway DB" rule — not yet run against the live CLS1.db.
+
+FCM push (`cls_db.send_fcm_push()`) is a guarded no-op until Srikanth completes Firebase project setup and sets the `FCM_SERVICE_ACCOUNT_KEY_PATH` env var (a real OS environment variable, same convention as `CLS_DB_PATH` — never a `.env` line) to a real service-account JSON key. It needs the `google-auth` and `requests` packages (`python -m pip install google-auth requests`), imported locally inside the function so `cls_db.py` stays importable without them today. The `user_fcm_tokens` table and `cls_db.set_fcm_token()` / `POST /api/attendance/register-fcm-token` already existed before this session (v2.42) — this session only added the actual sending logic that reads from that existing table.
+
+In-app delivery is a header bell in `crm/templates/base.html` (v0.19) — badge count from `app.py`'s `inject_current_user()` (`unread_notification_count`) on first paint, then polled every 30s via `GET /api/notifications/unread-count`; the dropdown fetches `GET /api/notifications` on open. 4 new `@login_required` routes in `crm/app.py` (v0.56): `GET /api/notifications`, `GET /api/notifications/unread-count`, `POST /api/notifications/<id>/read`, `POST /api/notifications/read-all`.
 
 Stage names and their legal transitions are defined once in `cls_db.STAGE_TRANSITIONS` (`Incoming → Prospect → Opportunity → Site Visited → Booked`, plus `Unqualified`/`Lost`/`Re Assigned` side-states) — both Sell.do's own rule engine and the CRM app's `change_lead_stage()` route enforce these same one-way rules. Do not add free-form stage changes; extend `STAGE_TRANSITIONS` instead.
 

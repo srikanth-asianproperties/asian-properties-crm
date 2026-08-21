@@ -2,11 +2,74 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.71
+Version : 2.72
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.72 (2026-08-21) — Notifications v1.0 (Srikanth build session): unified
+  in-app + FCM notification system, 8 event types.
+    - NEW TABLE notifications (notification_id, user_id, cls_id, event_type,
+      message, event_id UNIQUE, read_at, fcm_sent_at, created_at) + 2
+      indexes (user_id+read_at for the bell query, event_id for the
+      idempotency dedup lookup). Additive, self-healing CREATE TABLE IF
+      NOT EXISTS, same as every other table in this file.
+    - NEW config dicts NOTIFICATION_EVENTS (event_type -> message template)
+      and NOTIFICATION_TRIGGERS (event_type -> (source_table, date_column,
+      offset_hours, extra_where), for cls_notifications_poller.py's 5
+      due/overdue event types) — config-not-code, same doctrine as
+      STAGE_TRANSITIONS/RESET_STAGES_ON_REENGAGEMENT just above.
+    - NEW insert_notification(user_id, cls_id, event_type, message,
+      conn=None) — idempotent INSERT OR IGNORE keyed on event_id =
+      md5(cls_id + event_type + today's date), same dedup idiom Job C
+      uses for CAPI event_ids. Optional conn param, same reason/pattern
+      as reassign_lead_owner()'s conn= (v2.28) — lets the poller batch
+      many inserts in one transaction.
+    - NEW get_unread_notification_count(user_id), get_notifications(
+      user_id, limit=20) (joined to leads for full_name/crm_lead_no),
+      mark_notification_read(notification_id), mark_all_notifications_
+      read(user_id) — read-side of the bell, mirrors get_unread_
+      assignment_count()/mark_lead_notification_read()'s existing shape.
+    - NEW resolve_user_id_from_owner_name(owner_name) — SELECT user_id
+      FROM users WHERE owner_match_name=? (trimmed), active=1. Verified
+      live before writing: users.owner_match_name (v1.7) already IS the
+      lead_owner<->user_id mapping column used by login/role logic
+      elsewhere in this file — no new users column added, per the
+      "verify first, don't invent a mapping if one exists" instruction
+      this step was built under.
+    - NEW _get_admin_user_ids(conn) — small internal helper (SELECT
+      user_id FROM users WHERE role='admin' AND active=1), used only as
+      new_enquiry's fallback target when resolve_user_id_from_owner_name()
+      finds no linked login for the placeholder/fallback owner name.
+    - NEW send_fcm_push(user_id, title, body) — looks up user_fcm_tokens
+      (table has existed since v2.42; this is the first thing that
+      actually calls FCM). Returns False and logs one line, NEVER raises,
+      whenever user_fcm_tokens has no row for user_id OR the
+      FCM_SERVICE_ACCOUNT_KEY_PATH env var is unset/points at a missing
+      file — same pythonw.exe-safe guarded-print posture as every other
+      stdout call in this file. Self-tested with no token and no
+      credentials configured (see bottom of this file's SELF-TEST
+      section) before being wired into any hook.
+    - 3 hook call sites (upsert_meta_lead() branch 3 / new_enquiry,
+      upsert_meta_lead() branch 2 right after its existing lead_reengaged
+      _log_activity() call / lead_reengaged, reassign_lead_owner() right
+      where owner_notified=0 is set / lead_reassigned) each now also call
+      insert_notification() + send_fcm_push(). ADDITIVE ONLY — owner_
+      notified / mark_lead_notification_read() / get_unread_assignment_
+      count() are completely untouched, still the only thing driving the
+      (currently unrendered) reassignment badge.
+    - DEVIATION FROM THE ORIGINAL BUILD BRIEF, flagged not silently
+      applied: the brief said to put the lead_reengaged hook INSIDE
+      _apply_reengagement_marker(). Its live signature (conn, cls_id,
+      prev_stage, now) has no full_name/owner to build a message from,
+      and its own docstring already establishes the convention that
+      lead_reengaged logging happens in the CALLER (upsert_meta_lead()),
+      not the helper, for exactly this reason. Followed that existing
+      convention instead of expanding the helper's signature.
+    - Module-level `import sys` added (this file never needed it before
+      — no logging of its own; every caller does its own). Needed solely
+      for send_fcm_push()'s `sys.stdout is not None` guard, same
+      pythonw.exe-safe convention every other script here already follows.
 v2.71 (2026-08-20) — NEW get_call_staging_rows(user_id, date_str), read-
   only, built for cls_call_recording_diagnostic.py v1.1's staging-vs-
   recording cross-check (Srikanth found v1.0 silent on the real question:
@@ -2188,6 +2251,7 @@ ONE-TIME SETUP
 import math
 import os
 import re
+import sys
 import uuid
 import sqlite3
 import hashlib
@@ -2258,6 +2322,39 @@ RESET_STAGES_ON_REENGAGEMENT = ("Unqualified", "Lost", "Booked")
 # inquiry; it's a walk-in, a reference, or an offline call, so it
 # starts wherever it genuinely is in the funnel already.
 MANUAL_ENTRY_STAGES = ["Incoming", "Prospect", "Opportunity", "Site Visited"]
+
+# ── Notifications v1.0 (v2.72) ──────────────────────────────────────
+# Config-not-code, same doctrine as STAGE_TRANSITIONS/RESET_STAGES_ON_
+# REENGAGEMENT above: adding a 9th event later is one dict entry here +
+# one insert_notification() call site, never a new code branch.
+#
+# {full_name}/{project} are filled in with str.format() at insert time
+# by whichever call site renders the message (each hook/the poller
+# already has the lead row in hand).
+NOTIFICATION_EVENTS = {
+    "new_enquiry":         "New enquiry: {full_name} ({project})",
+    "lead_reengaged":      "{full_name} re-engaged — was previously in your pipeline",
+    "lead_reassigned":     "Lead reassigned to you: {full_name}",
+    "followup_due":        "Follow-up due today: {full_name}",
+    "followup_overdue_1d": "Follow-up overdue by 1 day: {full_name}",
+    "visit_tomorrow":      "Site visit scheduled tomorrow: {full_name}",
+    "visit_due_now":       "Site visit due now: {full_name}",
+    "visit_overdue_1d":    "Site visit overdue by 1 day: {full_name}",
+}
+
+# Read by cls_notifications_poller.py only — new_enquiry/lead_reengaged/
+# lead_reassigned are instant hooks (see upsert_meta_lead()/
+# reassign_lead_owner()), not polled. offset_hours: 0 = due now,
+# +24 = 24h before scheduled_at (tomorrow), -24 = 24h after (overdue by
+# a day). extra_where is ANDed in raw (no user input reaches it — values
+# are fixed strings here, never request data).
+NOTIFICATION_TRIGGERS = {
+    "followup_due":        ("follow_ups",  "scheduled_at", 0,   "status='scheduled'"),
+    "followup_overdue_1d": ("follow_ups",  "scheduled_at", -24, "status='scheduled'"),
+    "visit_tomorrow":      ("site_visits", "scheduled_at", 24,  "status='scheduled'"),
+    "visit_due_now":       ("site_visits", "scheduled_at", 0,   "status='scheduled'"),
+    "visit_overdue_1d":    ("site_visits", "scheduled_at", -24, "status='scheduled'"),
+}
 
 # PAUSED (v2.25) — superseded by Campaign Routing (campaign_routing_rules
 # + app_settings['default_fallback_owner'], see resolve_owner_for_new_
@@ -3722,6 +3819,29 @@ def init_db():
             updated_at  TEXT
         );
     """)
+
+    # Notifications v1.0 (v2.72) — one row per delivered notification,
+    # in-app bell + FCM. event_id UNIQUE is what makes insert_notification()
+    # idempotent (INSERT OR IGNORE keyed on it) — same md5-dedup idiom as
+    # Job C's CAPI event_ids, just keyed on (cls_id, event_type, today's
+    # date) instead of (identifier, stage). read_at/fcm_sent_at both
+    # NULL-until-set, same "NULL means pending" convention as
+    # site_visits.conducted_at / owner_notified elsewhere in this file.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id          INTEGER,           -- recipient, references users(user_id)
+            cls_id           TEXT,               -- the lead this is about
+            event_type       TEXT,               -- key into NOTIFICATION_EVENTS
+            message          TEXT,               -- rendered at insert time
+            event_id         TEXT UNIQUE,        -- md5(cls_id+event_type+today) — idempotency
+            read_at          TEXT,               -- NULL = unread
+            fcm_sent_at      TEXT,               -- NULL = not pushed yet
+            created_at       TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_event ON notifications(event_id);")
 
     # Self-healing seed, same INSERT OR IGNORE pattern as
     # default_fallback_owner (v2.25) — never clobbers a value Srikanth
@@ -6099,6 +6219,26 @@ def reassign_lead_owner(cls_id, new_owner, actor, conn=None):
     the caller owns the transaction. See bulk_reassign_leads() below,
     the only caller that uses this.
 
+    v2.72 (Notifications v1.0): also inserts a 'lead_reassigned'
+    notification for the new owner, right where owner_notified=0 is
+    set above it — ADDITIVE, owner_notified/mark_lead_notification_read()/
+    get_unread_assignment_count() are completely untouched. Uses
+    insert_notification(conn=conn) so it lands in the SAME transaction
+    on both the single-lead route (owns_conn=True, commits immediately
+    after) and bulk_reassign_leads()'s loop (owns_conn=False, commits
+    once at the end) — a bulk reassign of N leads either notifies all N
+    new owners or none, same all-or-nothing guarantee the rest of this
+    function already has.
+    send_fcm_push() (the actual network call) is deliberately fired
+    ONLY when owns_conn is True — i.e. only from the single-lead route,
+    never from inside bulk_reassign_leads()'s loop. A bulk reassignment
+    can touch hundreds of leads in one open SQLite transaction; doing a
+    blocking HTTP push per lead inside that loop would serialize the
+    whole bulk operation on network latency and hold the transaction
+    open for its duration. The in-app bell notification (inserted
+    above, cheap) still reaches every reassigned owner in both cases —
+    only the push is scoped down.
+
     Returns (ok: bool, message: str).
     """
     new_owner = (new_owner or "").strip()
@@ -6109,11 +6249,12 @@ def reassign_lead_owner(cls_id, new_owner, actor, conn=None):
     if owns_conn:
         conn = _connect()
     try:
-        row = conn.execute("SELECT lead_owner FROM leads WHERE cls_id=?", (cls_id,)).fetchone()
+        row = conn.execute("SELECT lead_owner, full_name FROM leads WHERE cls_id=?", (cls_id,)).fetchone()
         if not row:
             return False, "Lead not found."
 
         prev_owner = row["lead_owner"]
+        full_name = row["full_name"]
         now = _now()
         conn.execute(
             "UPDATE leads SET lead_owner=?, cls_updated_at=?, owner_notified=0 WHERE cls_id=?",
@@ -6121,6 +6262,14 @@ def reassign_lead_owner(cls_id, new_owner, actor, conn=None):
         )
         _log_activity(conn, cls_id, "assignment_change", actor,
                       prev_value=prev_owner, new_value=new_owner)
+
+        new_owner_user_id = resolve_user_id_from_owner_name(new_owner)
+        if new_owner_user_id:
+            message = NOTIFICATION_EVENTS["lead_reassigned"].format(full_name=full_name or "(no name)")
+            insert_notification(new_owner_user_id, cls_id, "lead_reassigned", message, conn=conn)
+            if owns_conn:
+                send_fcm_push(new_owner_user_id, "Lead reassigned", message)
+
         if owns_conn:
             conn.commit()
         return True, f"Reassigned: {prev_owner or '(unassigned)'} → {new_owner}."
@@ -9050,7 +9199,7 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
             # UPDATE below touches it, so the reset decision uses the
             # genuine pre-sync value.
             prev_row = conn.execute(
-                "SELECT current_stage, project FROM leads WHERE cls_id=?", (cls_id,)
+                "SELECT current_stage, project, full_name, lead_owner FROM leads WHERE cls_id=?", (cls_id,)
             ).fetchone()
             _apply_reengagement_marker(conn, cls_id, prev_row["current_stage"] if prev_row else None, now)
 
@@ -9086,6 +9235,22 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
             )
             _log_activity(conn, cls_id, "lead_reengaged", "system",
                           description=reengage_description, created_at=now)
+
+            # v2.72 — Notifications v1.0: notify the CURRENT owner (the
+            # pre-update row's lead_owner — this branch's UPDATE below
+            # never changes lead_owner, only project/leadgen_id/etc, so
+            # prev_row's value is also the post-update value). Uses
+            # prev_row's own full_name (COALESCE(NULLIF(...))'d the same
+            # way the UPDATE below does) so the message shows the name
+            # already on file, not a blank incoming Meta name.
+            reengaged_owner_user_id = resolve_user_id_from_owner_name(
+                prev_row["lead_owner"] if prev_row else None
+            )
+            if reengaged_owner_user_id:
+                reengaged_full_name = (prev_row["full_name"] if prev_row and prev_row["full_name"] else full_name) or "(no name)"
+                message = NOTIFICATION_EVENTS["lead_reengaged"].format(full_name=reengaged_full_name)
+                insert_notification(reengaged_owner_user_id, cls_id, "lead_reengaged", message, conn=conn)
+                send_fcm_push(reengaged_owner_user_id, "Lead re-engaged", message)
 
             # An existing row (likely selldo_only) is the same person.
             # Stamp the leadgen_id onto it — this is the back-fill case.
@@ -9178,6 +9343,22 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
         _log_activity(conn, cls_id, "lead_entered", "system",
                       description=description,
                       created_at=_format_meta_created_time(meta_created_time))
+
+        # v2.72 — Notifications v1.0: notify default_owner (resolved
+        # above via resolve_owner_for_new_lead()) if that placeholder
+        # name is actually linked to a login. If not (e.g. the
+        # app_settings default_fallback_owner name was never given a
+        # login), fall back to every active admin — a brand-new
+        # enquiry must always reach SOMEONE, never silently land on an
+        # unmonitored name.
+        new_enquiry_message = NOTIFICATION_EVENTS["new_enquiry"].format(
+            full_name=full_name or "(no name)", project=project or "(no project)"
+        )
+        new_enquiry_owner_id = resolve_user_id_from_owner_name(default_owner)
+        new_enquiry_targets = [new_enquiry_owner_id] if new_enquiry_owner_id else _get_admin_user_ids(conn)
+        for target_user_id in new_enquiry_targets:
+            insert_notification(target_user_id, cls_id, "new_enquiry", new_enquiry_message, conn=conn)
+            send_fcm_push(target_user_id, "New enquiry", new_enquiry_message)
 
         conn.commit()
         return cls_id, True   # v2.55 — genuinely new lead
@@ -12369,6 +12550,278 @@ def set_fcm_token(user_id, fcm_token):
         conn.commit()
     finally:
         conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# NOTIFICATIONS v1.0 (v2.72)
+# ─────────────────────────────────────────────────────────────
+# Unified in-app bell + FCM push, 8 event types (NOTIFICATION_EVENTS
+# above). 3 events fire instantly from hooks inside upsert_meta_lead()/
+# reassign_lead_owner(); 5 are polled by cls_notifications_poller.py
+# via NOTIFICATION_TRIGGERS. All routed through insert_notification()
+# so every event type — instant or polled — gets the same idempotency
+# guarantee and the same read/unread bookkeeping.
+
+def insert_notification(user_id, cls_id, event_type, message, conn=None):
+    """
+    Idempotent notification insert — INSERT OR IGNORE keyed on
+    event_id = md5(cls_id + event_type + today's date), same dedup
+    idiom Job C uses for CAPI event_ids. Re-running the poller (or a
+    hook that somehow fires twice for the same lead on the same day)
+    never double-notifies — the second insert is silently ignored by
+    SQLite's own UNIQUE constraint, no pre-check query needed.
+
+    Optional conn param, same reason/pattern as reassign_lead_owner()'s
+    conn= (v2.28): omitted (every instant-hook call site below) opens
+    its own connection, commits, closes it. Passed an OPEN connection
+    (cls_notifications_poller.py, batching many inserts per run) reuses
+    it and does NOT commit or close — the caller owns the transaction.
+
+    Silent no-op (returns False) if user_id is blank — every call site
+    below already treats "no user to notify" as nothing-to-do, not an
+    error.
+
+    Returns True if a new row was actually inserted, False if it was a
+    no-op (blank user_id, or a duplicate event_id).
+    """
+    if not user_id:
+        return False
+    today = datetime.now().strftime("%Y-%m-%d")
+    event_id = hashlib.md5(f"{cls_id}|{event_type}|{today}".encode("utf-8")).hexdigest()
+    now = _now()
+
+    owns_conn = conn is None
+    if owns_conn:
+        conn = _connect()
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO notifications "
+            "(user_id, cls_id, event_type, message, event_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, cls_id, event_type, message, event_id, now)
+        )
+        inserted = cur.rowcount == 1
+        if owns_conn:
+            conn.commit()
+        return inserted
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+def get_unread_notification_count(user_id):
+    """Count of this user's unread notifications, for the bell badge."""
+    if not user_id:
+        return 0
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read_at IS NULL",
+            (user_id,)
+        ).fetchone()
+        return row["c"] if row else 0
+    finally:
+        conn.close()
+
+
+def get_notifications(user_id, limit=20):
+    """
+    This user's most recent notifications, newest first, LEFT JOINed
+    to leads for full_name/crm_lead_no display (LEFT, not INNER — a
+    notification must never disappear from someone's list just because
+    the lead it was about was later deleted). Returns a list of dicts.
+    """
+    if not user_id:
+        return []
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT n.notification_id, n.cls_id, n.event_type, n.message,
+                   n.read_at, n.created_at,
+                   l.full_name, l.crm_lead_no
+            FROM notifications n
+            LEFT JOIN leads l ON l.cls_id = n.cls_id
+            WHERE n.user_id=?
+            ORDER BY n.created_at DESC, n.notification_id DESC
+            LIMIT ?
+        """, (user_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_notification_read(notification_id):
+    """Clears one notification's unread state. Silent no-op if it's
+    already read or doesn't exist — best-effort UI nicety, matching
+    mark_lead_notification_read()'s posture for the reassignment badge."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE notifications SET read_at=? WHERE notification_id=? AND read_at IS NULL",
+            (_now(), notification_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_all_notifications_read(user_id):
+    """Clears every unread notification for this user (the bell's
+    'mark all read' action)."""
+    if not user_id:
+        return
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL",
+            (_now(), user_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def resolve_user_id_from_owner_name(owner_name):
+    """
+    owner_name (a leads.lead_owner-style display name) -> the user_id
+    of the login linked to it via users.owner_match_name (v1.7) — the
+    SAME column login/role logic elsewhere in this file already uses
+    to go the other direction (owner_match_name -> which leads a
+    salesperson may see). Verified against the live schema before this
+    was written; no new users column was added for this.
+
+    Case/whitespace-loose match, same convention as owner_match_name's
+    other lookups in this file. Returns None if owner_name is blank or
+    no ACTIVE user is linked to it (e.g. a placeholder/fallback owner
+    name that was never actually given a login) — callers should treat
+    None as "no single owner to notify" and fall back to
+    _get_admin_user_ids() where that makes sense (see upsert_meta_lead()'s
+    new_enquiry hook).
+    """
+    owner_name = (owner_name or "").strip()
+    if not owner_name:
+        return None
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT user_id FROM users WHERE TRIM(owner_match_name)=? COLLATE NOCASE AND active=1 LIMIT 1",
+            (owner_name,)
+        ).fetchone()
+        return row["user_id"] if row else None
+    finally:
+        conn.close()
+
+
+def _get_admin_user_ids(conn):
+    """
+    Internal helper, scoped to Notifications v1.0's new_enquiry fallback
+    only: every active admin's user_id, for when
+    resolve_user_id_from_owner_name() finds no login linked to a brand-
+    new lead's placeholder/fallback owner name. Takes an OPEN connection
+    (called from inside upsert_meta_lead()'s existing transaction).
+    """
+    rows = conn.execute(
+        "SELECT user_id FROM users WHERE role='admin' AND active=1"
+    ).fetchall()
+    return [r["user_id"] for r in rows]
+
+
+def send_fcm_push(user_id, title, body):
+    """
+    Best-effort FCM push notification. Looks up user_fcm_tokens
+    (table has existed since v2.42; this is the first thing that
+    actually calls FCM with it) and requires the
+    FCM_SERVICE_ACCOUNT_KEY_PATH env var to point at a real Firebase
+    service-account JSON key. Either missing -> logs one guarded line
+    and returns False immediately, exactly like every other new-feature
+    stub in this codebase before its real credentials exist.
+
+    NEVER raises. Every failure path (no token on file, no/invalid
+    creds configured, the 'google-auth'/'requests' packages not
+    installed, a network error, FCM itself rejecting the token) is
+    caught here and turned into a guarded log line + False — the
+    caller (an instant hook inside a lead-write transaction, or the
+    15-min poller) must never be blocked or crashed by a push failure.
+    Guarded like every other pythonw.exe-safe stdout call in this file
+    (pythonw.exe sets sys.stdout=None).
+
+    The actual HTTP v1 send needs the 'google-auth' and 'requests'
+    packages for OAuth2 service-account signing — NEITHER is yet in
+    this project's installed package list (see CLAUDE.md "Commands").
+    They're imported locally inside the try below (not at module level)
+    specifically so cls_db.py stays importable by every job/the CRM app
+    today, before those packages exist and before
+    FCM_SERVICE_ACCOUNT_KEY_PATH is ever set — run
+    `python -m pip install google-auth requests` once Srikanth's
+    Firebase project setup is done and this is actually going live.
+    """
+    try:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT fcm_token FROM user_fcm_tokens WHERE user_id=?", (user_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        if sys.stdout is not None:
+            print(f"[send_fcm_push] DB lookup failed for user_id={user_id}: {e}")
+        return False
+
+    if not row or not row["fcm_token"]:
+        if sys.stdout is not None:
+            print(f"[send_fcm_push] No FCM token on file for user_id={user_id} — skipped.")
+        return False
+
+    key_path = os.environ.get("FCM_SERVICE_ACCOUNT_KEY_PATH", "")
+    if not key_path or not os.path.isfile(key_path):
+        if sys.stdout is not None:
+            print(f"[send_fcm_push] FCM_SERVICE_ACCOUNT_KEY_PATH unset or missing ({key_path!r}) — skipped.")
+        return False
+
+    try:
+        import json as _json
+        import requests as _requests
+        from google.oauth2 import service_account as _service_account
+        from google.auth.transport.requests import Request as _GARequest
+
+        with open(key_path, "r", encoding="utf-8") as f:
+            key_data = _json.load(f)
+        project_id = key_data.get("project_id")
+        if not project_id:
+            if sys.stdout is not None:
+                print("[send_fcm_push] Service account key has no project_id — skipped.")
+            return False
+
+        credentials = _service_account.Credentials.from_service_account_file(
+            key_path, scopes=["https://www.googleapis.com/auth/firebase.messaging"]
+        )
+        credentials.refresh(_GARequest())
+
+        url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
+        payload = {"message": {"token": row["fcm_token"],
+                                "notification": {"title": title, "body": body}}}
+        resp = _requests.post(
+            url, json=payload,
+            headers={"Authorization": f"Bearer {credentials.token}",
+                     "Content-Type": "application/json; charset=UTF-8"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return True
+        if sys.stdout is not None:
+            print(f"[send_fcm_push] FCM rejected push for user_id={user_id}: "
+                  f"{resp.status_code} {resp.text[:300]}")
+        return False
+    except ImportError as e:
+        if sys.stdout is not None:
+            print(f"[send_fcm_push] Missing package for FCM send ({e}) — "
+                  f"run: python -m pip install google-auth requests. Skipped.")
+        return False
+    except Exception as e:
+        if sys.stdout is not None:
+            print(f"[send_fcm_push] Unexpected error sending FCM push to user_id={user_id}: {e}")
+        return False
 
 
 # ─────────────────────────────────────────────────────────────

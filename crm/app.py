@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.54
+Version : 0.56
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,31 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.56 (2026-08-21) — Notifications v1.0 (Srikanth build session): the
+  header bell. (Also corrects this file's own "Version :" header above,
+  which had drifted to 0.54 despite the v0.55 entry already below it —
+  found while verifying live state before this session's edits, per
+  the "verify before editing" rule.)
+    - 4 NEW routes, all @login_required (session-auth — these back the
+      browser bell, not the native app's @token_required /api/*
+      layer): GET /api/notifications, GET /api/notifications/unread-
+      count, POST /api/notifications/<id>/read, POST
+      /api/notifications/read-all. Thin wrappers around cls_db.py
+      v2.72's get_notifications()/get_unread_notification_count()/
+      mark_notification_read()/mark_all_notifications_read().
+    - inject_current_user() now also injects `unread_notification_
+      count` (cls_db.get_unread_notification_count()), same shape as
+      unread_assignment_count/pending_reminder_count above it, but
+      computed unconditionally (not role-gated) since every role gets
+      notifications, unlike those two owner_match_name-scoped counts.
+    - base.html gained a header bell (icon + badge + dropdown, 30s
+      poll) — see that template's own changelog. DEVIATION FROM THE
+      BUILD BRIEF, flagged: the brief said to place it "near the
+      existing assignment-badge if one already renders there" — verified
+      live and there ISN'T one; unread_assignment_count is injected into
+      every template's context but was never actually rendered anywhere
+      in base.html. Placed the bell in the header instead (next to the
+      hamburger/brand), the one spot visible on every page.
 v0.55 (2026-08-20) — Task 4 batch, items 3 and 5:
     - Item 3 — NEW route POST /leads/<cls_id>/sitting-done
       (add_sitting_done()), mirroring add_walkin_site_visit() exactly:
@@ -2042,9 +2067,18 @@ def inject_current_user():
     # v0.40 — also injects `app_version` (the APP_VERSION constant
     # above), role-agnostic and available even when logged out, so
     # base.html can show it in the footer on every page.
+    # v0.55 — also injects `unread_notification_count` (cls_db.
+    # get_unread_notification_count(), Notifications v1.0), same
+    # scoping rule as unread_assignment_count/pending_reminder_count,
+    # for base.html's new header bell badge. This is keyed on
+    # user_id, not owner_match_name — every role (including admin/
+    # manager, who have no owner_match_name-based lead scope) can get
+    # notifications, so it's computed unconditionally whenever `user`
+    # resolves, not gated behind a role check like the two above.
     user = None
     unread_assignment_count = 0
     pending_reminder_count = 0
+    unread_notification_count = 0
     impersonator = None
     if session.get("user_id"):
         user = cls_db.get_user_by_id(session["user_id"])
@@ -2052,12 +2086,14 @@ def inject_current_user():
             unread_assignment_count = cls_db.get_unread_assignment_count(user.get("owner_match_name"))
             owner_scope = user.get("owner_match_name") if user["role"] == "salesperson" else None
             pending_reminder_count = cls_db.get_pending_reminder_count(owner_scope)
+            unread_notification_count = cls_db.get_unread_notification_count(user["user_id"])
         if session.get("impersonator_id"):
             impersonator = cls_db.get_user_by_id(session["impersonator_id"])
     return {
         "current_user": user,
         "unread_assignment_count": unread_assignment_count,
         "pending_reminder_count": pending_reminder_count,
+        "unread_notification_count": unread_notification_count,
         "impersonator": impersonator,
         "app_version": APP_VERSION,
     }
@@ -5815,6 +5851,51 @@ def api_attendance_register_fcm_token():
     if not fcm_token:
         return jsonify({"success": False, "message": "fcm_token is required."}), 400
     cls_db.set_fcm_token(user["user_id"], fcm_token)
+    return jsonify({"success": True})
+
+
+# ─────────────────────────────────────────────────────────────
+# NOTIFICATIONS v1.0 (v0.55) — the header bell
+# ─────────────────────────────────────────────────────────────
+# Session-auth (@login_required), not @token_required — these back the
+# browser CRM's header bell, not the native app's token-auth /api/*
+# layer above. cls_db does all the actual work; every route here is a
+# thin wrapper, same shape as the existing reminders/assignment routes.
+
+@app.route("/api/notifications")
+@login_required
+def api_notifications():
+    """JSON list of the current user's most recent notifications, newest
+    first — powers the bell dropdown."""
+    user = cls_db.get_user_by_id(session["user_id"])
+    notifications = cls_db.get_notifications(user["user_id"], limit=20)
+    return jsonify({"notifications": notifications})
+
+
+@app.route("/api/notifications/unread-count")
+@login_required
+def api_notifications_unread_count():
+    """JSON {count} — polled every 30s by base.html's bell badge."""
+    user = cls_db.get_user_by_id(session["user_id"])
+    count = cls_db.get_unread_notification_count(user["user_id"])
+    return jsonify({"count": count})
+
+
+@app.route("/api/notifications/<int:notification_id>/read", methods=["POST"])
+@login_required
+def api_notification_read(notification_id):
+    """Marks one notification read (bell dropdown item click)."""
+    cls_db.mark_notification_read(notification_id)
+    return jsonify({"success": True})
+
+
+@app.route("/api/notifications/read-all", methods=["POST"])
+@login_required
+def api_notifications_read_all():
+    """Marks every one of the current user's notifications read ('mark
+    all read' in the bell dropdown)."""
+    user = cls_db.get_user_by_id(session["user_id"])
+    cls_db.mark_all_notifications_read(user["user_id"])
     return jsonify({"success": True})
 
 

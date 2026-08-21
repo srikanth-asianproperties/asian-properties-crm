@@ -1,5 +1,8 @@
 """
-cls_pk_bundle.py  -- v1.4
+cls_pk_bundle.py  -- v1.5
+  v1.5 (2026-08-21): added cls_notifications_poller.py to INCLUDE_FILES
+  (Notifications v1.0 build session) -- a permanent job, not left to
+  auto-discovery.
 Consolidates the CLS/CRM source tree into ONE markdown file for manual
 upload to the Claude.ai Project Knowledge base. Solves three problems:
   1. Manual multi-file upload fatigue -> upload exactly one file.
@@ -145,6 +148,7 @@ INCLUDE_FILES = [
     "cls_snapshot.py",
     "cls_dashboard.py",
     "cls_telecaller_report.py",
+    "cls_notifications_poller.py",
     "migrate_db.py",
     "setup_task_scheduler.py",
 

@@ -1,4 +1,43 @@
-<!-- base.html v0.18 — Chunk B cosmetic: new SCOPED .btn-pill-green CSS
+<!-- base.html v0.20 — INCIDENT FIX: the v0.19 bell button was visually
+     colliding with the native Android app's floating btn_sync icon
+     (android_pilot) — both landing in the same top-right corner. Root
+     cause turned out NOT to be a CSS bug in this file: btn_sync is a
+     native Android View drawn in a separate layer on top of the
+     WebView, hand-positioned in activity_main.xml against this file's
+     own header CSS — it broke the moment that CSS changed (this session
+     replaced the empty 22px spacer btn_sync was calculated against with
+     a real bell button). No amount of flexbox here could ever reach a
+     native View in a different rendering layer, so the real fix is on
+     the Android side: btn_sync is REMOVED from activity_main.xml
+     entirely (see MainActivity.kt v15 / activity_main.xml's own
+     changelog notes) and replaced with a same-looking "Sync Recordings"
+     icon HERE, in this file's own header, wired to the existing
+     AndroidBridge.syncRecordings() JS bridge method (MainActivity.kt
+     v15) instead of a floating native button. Both header icons now sit
+     in a shared `.header-icons` flex row (`display:flex; gap:12px`)
+     rather than via absolute-position math, so they lay out side-by-
+     side naturally and won't re-collide if either one's size changes
+     later. The sync icon is feature-detected (`typeof AndroidBridge.
+     syncRecordings === 'function'`) and hidden by default — it only
+     appears inside the native app, never in a normal desktop browser.
+     v0.19 — Notifications v1.0: header bell (icon + badge +
+     dropdown), replacing the empty right-hand spacer in the appbar.
+     Badge count comes server-side on first paint from
+     inject_current_user()'s new unread_notification_count (app.py
+     v0.56), then poll30s() (bottom <script> block) keeps it live via
+     GET /api/notifications/unread-count without a page reload. Opening
+     the dropdown fetches GET /api/notifications and renders the list;
+     clicking an item POSTs /api/notifications/<id>/read then navigates
+     to that lead. "Mark all read" POSTs /api/notifications/read-all.
+     DEVIATION FROM THE BUILD BRIEF, flagged in app.py v0.56's own
+     changelog: the brief said to place this "near the existing
+     assignment-badge" — verified live and there wasn't one (unread_
+     assignment_count was injected into context but never rendered
+     anywhere in this file), so this is a new header element, not a
+     move of an existing one. No 30s-polling JS pattern existed
+     anywhere in this codebase to reuse either (crm/static/ has only
+     sw.js/manifest.json) — poll30s() below is new, not a reuse.
+     v0.18 — Chunk B cosmetic: new SCOPED .btn-pill-green CSS
      class (green, oval/pill) applied ONLY to the logout link below —
      .btn/.btn-primary/.drawer-link defaults used everywhere else are
      untouched. login.html's submit button gets the same class
@@ -474,6 +513,53 @@
       margin-bottom: 1px;
     }
   }
+
+/* Header icon buttons (v0.19 bell, v0.20 native-app sync) — sit in a
+   shared flex row so they lay out side-by-side naturally instead of via
+   hand-tuned absolute-position math (see v0.20 changelog: that's exactly
+   what broke last time). */
+header.appbar .header-icons{
+  display: flex; align-items: center; gap: 12px;
+}
+header.appbar .bell-btn, header.appbar .sync-btn{
+  background: none; border: none; color: #fff; padding: 4px;
+  cursor: pointer; display: flex; align-items: center; position: relative;
+}
+.bell-badge{
+  position: absolute; top: -2px; right: -4px;
+  background: var(--red); color: #fff;
+  border-radius: 999px; font-size: 10px; font-weight: 700;
+  min-width: 16px; height: 16px; line-height: 16px; text-align: center;
+  padding: 0 3px;
+}
+.notif-dropdown{
+  display: none;
+  position: fixed; top: 56px; right: 12px; z-index: 50;
+  width: min(360px, calc(100vw - 24px)); max-height: 70vh; overflow-y: auto;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+}
+.notif-dropdown.open{ display: block; }
+.notif-dropdown-header{
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--line); font-weight: 600;
+}
+.notif-dropdown-header button{
+  background: none; border: none; color: var(--blue);
+  font-size: 12px; font-weight: 600; cursor: pointer; padding: 0;
+}
+.notif-item{
+  display: block; padding: 10px 14px; border-bottom: 1px solid var(--line);
+  font-size: 13px; color: var(--ink); cursor: pointer; text-decoration: none;
+  background: none; width: 100%; text-align: left; border-left: none; border-right: none; border-top: none;
+}
+.notif-item:last-child{ border-bottom: none; }
+.notif-item.unread{ background: #EAF2FE; font-weight: 600; }
+.notif-item .notif-time{
+  display: block; margin-top: 3px; font-size: 11px; font-weight: 400; color: var(--ink-soft);
+}
+.notif-empty{ padding: 20px 14px; text-align: center; color: var(--ink-soft); font-size: 13px; }
 </style>
 {% block head %}{% endblock %}
 </head>
@@ -499,8 +585,24 @@
          <img src="{{ url_for('static', filename='logo.png') }}" alt="Asian Properties" class="brand-logo"> -->
     Asian Properties CRM
   </div>
-  <div style="width:22px;"></div>
+  <div class="header-icons">
+    <button id="syncBtn" class="sync-btn" onclick="triggerAndroidSync()" aria-label="Sync Recordings" style="display:none;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.3 6.4L3 15.5"/><path d="M3 12a9 9 0 0 1 15.3-6.4L21 8.5"/><path d="M3 21v-5.5h5.5"/><path d="M21 3v5.5h-5.5"/></svg>
+    </button>
+    <button class="bell-btn" onclick="toggleNotifDropdown()" aria-label="Notifications">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span id="notifBadge" class="bell-badge" style="{{ '' if unread_notification_count and unread_notification_count > 0 else 'display:none;' }}">{{ unread_notification_count }}</span>
+    </button>
+  </div>
 </header>
+
+<div id="notifDropdown" class="notif-dropdown">
+  <div class="notif-dropdown-header">
+    <span>Notifications</span>
+    <button onclick="markAllNotificationsRead()">Mark all read</button>
+  </div>
+  <div id="notifList"><div class="notif-empty">Loading…</div></div>
+</div>
 
 <div id="navScrim" class="nav-scrim" onclick="document.getElementById('navDrawer').classList.remove('open'); this.classList.remove('show');"></div>
 
@@ -586,6 +688,121 @@ function filterOptRows(input){
     row.style.display = (!term || text.indexOf(term) !== -1) ? '' : 'none';
   });
 }
+
+// Notifications v1.0 (v0.19) — header bell. Badge count polled every
+// 30s; the dropdown's own list is only fetched on open (not on every
+// poll tick), same "don't over-fetch" instinct as everything else in
+// this file.
+{% if current_user %}
+function escapeHtml(s){
+  var d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+
+function updateNotifBadge(count){
+  var badge = document.getElementById('notifBadge');
+  if (!badge) return;
+  if (count > 0){
+    badge.textContent = count;
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function pollNotifUnreadCount(){
+  fetch('/api/notifications/unread-count')
+    .then(function(r){ return r.json(); })
+    .then(function(data){ updateNotifBadge(data.count || 0); })
+    .catch(function(){});
+}
+setInterval(pollNotifUnreadCount, 30000);
+
+// v0.20 — "Sync Recordings" header icon, native-app only. Replaces the
+// old floating native btn_sync (removed from android_pilot's
+// activity_main.xml, MainActivity.kt v15) — that button's on-screen
+// position was hand-calculated against this file's own header CSS and
+// broke (visually collided with the new bell above) the moment this CSS
+// changed. Triggering it from here instead means there's nothing left
+// to collide with — it's a normal flex child in the same row as the
+// bell, not a native overlay guessing at this page's layout.
+// Same feature-detection convention already used for AndroidBridge.
+// punchIn/punchOut (attendance.html) — silently stays hidden in a
+// normal desktop/browser session, or on an older installed APK that
+// predates syncRecordings().
+if (window.AndroidBridge && typeof AndroidBridge.syncRecordings === 'function'){
+  var syncBtn = document.getElementById('syncBtn');
+  if (syncBtn) syncBtn.style.display = '';
+}
+function triggerAndroidSync(){
+  if (window.AndroidBridge && typeof AndroidBridge.syncRecordings === 'function'){
+    AndroidBridge.syncRecordings();
+  }
+}
+
+function renderNotifList(notifications){
+  var listEl = document.getElementById('notifList');
+  if (!notifications || notifications.length === 0){
+    listEl.innerHTML = '<div class="notif-empty">No notifications yet.</div>';
+    return;
+  }
+  listEl.innerHTML = notifications.map(function(n){
+    var cls = n.read_at ? 'notif-item' : 'notif-item unread';
+    return '<button type="button" class="' + cls + '" onclick="openNotification(' +
+      n.notification_id + ', ' + JSON.stringify(n.cls_id) + ')">' +
+      escapeHtml(n.message) +
+      '<span class="notif-time">' + escapeHtml(n.created_at || '') + '</span></button>';
+  }).join('');
+}
+
+function toggleNotifDropdown(){
+  var dropdown = document.getElementById('notifDropdown');
+  var opening = !dropdown.classList.contains('open');
+  dropdown.classList.toggle('open');
+  if (opening){
+    document.getElementById('notifList').innerHTML = '<div class="notif-empty">Loading…</div>';
+    fetch('/api/notifications')
+      .then(function(r){ return r.json(); })
+      .then(function(data){ renderNotifList(data.notifications || []); })
+      .catch(function(){
+        document.getElementById('notifList').innerHTML = '<div class="notif-empty">Couldn\'t load notifications.</div>';
+      });
+  }
+}
+
+function openNotification(notificationId, clsId){
+  fetch('/api/notifications/' + notificationId + '/read', {method: 'POST'})
+    .then(function(){ pollNotifUnreadCount(); })
+    .catch(function(){})
+    .finally(function(){
+      if (clsId){ window.location.href = '/leads/' + encodeURIComponent(clsId); }
+    });
+}
+
+function markAllNotificationsRead(){
+  fetch('/api/notifications/read-all', {method: 'POST'})
+    .then(function(){
+      pollNotifUnreadCount();
+      var dropdown = document.getElementById('notifDropdown');
+      if (dropdown.classList.contains('open')){
+        fetch('/api/notifications')
+          .then(function(r){ return r.json(); })
+          .then(function(data){ renderNotifList(data.notifications || []); });
+      }
+    })
+    .catch(function(){});
+}
+
+// Click outside the bell/dropdown closes it.
+document.addEventListener('click', function(e){
+  var dropdown = document.getElementById('notifDropdown');
+  var bellBtn = document.querySelector('.bell-btn');
+  if (!dropdown || !dropdown.classList.contains('open')) return;
+  if (dropdown.contains(e.target) || (bellBtn && bellBtn.contains(e.target))) return;
+  dropdown.classList.remove('open');
+});
+{% endif %}
 </script>
 </body>
 </html>
