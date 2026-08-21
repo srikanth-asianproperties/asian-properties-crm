@@ -141,6 +141,7 @@ INCLUDE_FILES = [
     "cls_db_fork.py",
     "cls_import_selldo_csv.py",
     "cls_call_recording_audit.py",
+    "cls_call_recording_diagnostic.py",
     "cls_snapshot.py",
     "cls_dashboard.py",
     "cls_telecaller_report.py",

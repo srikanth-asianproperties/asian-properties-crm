@@ -2,11 +2,25 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.70
+Version : 2.71
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.71 (2026-08-20) — NEW get_call_staging_rows(user_id, date_str), read-
+  only, built for cls_call_recording_diagnostic.py v1.1's staging-vs-
+  recording cross-check (Srikanth found v1.0 silent on the real question:
+  "I know elohar/office made 30+ calls today — why does the tool only
+  show 10 recordings?"). Added here rather than left as raw SQL in the
+  script, per this file's own centralization rule (CLAUDE.md: "All
+  SQLite access stays centralized in cls_db.py"). DISTINCT-deduped by
+  (matched_cls_id, call_timestamp, duration_seconds, direction) — see
+  the function's own docstring for the real-data discovery that made
+  this necessary: the Android app's periodic re-sync re-stages already-
+  seen calls on every run (record_call_log_entry() never dedupes on
+  insert), so raw call_log_staging row counts overstate real call volume
+  by several multiples (534 raw rows -> 72 distinct real calls, one
+  live example). Additive only — no existing function touched.
 v2.70 (2026-08-20) — Task 4 batch (Srikanth, Todoist ##CLS-CRM, items 3/5/
   6/7):
     - Item 7 BUG FIX — get_new_enquiries_count()/get_new_enquiries_leads()
@@ -5845,6 +5859,72 @@ def get_call_direction(cls_id, call_timestamp):
             ORDER BY staging_id DESC LIMIT 1
         """, (cls_id, call_timestamp)).fetchone()
         return row["direction"] if row and row["direction"] else None
+    finally:
+        conn.close()
+
+
+def get_call_staging_rows(user_id, date_str):
+    """
+    (v2.71) Read-only, for cls_call_recording_diagnostic.py v1.1's staging-
+    vs-recording cross-check — one DISTINCT row per real physical call a
+    salesperson made/received on date_str, with lead name and recording
+    status already resolved, so the caller never has to touch SQL itself
+    (centralization rule — see CLAUDE.md).
+
+    DISTINCT-deduped by (matched_cls_id, call_timestamp, duration_seconds,
+    direction) — NOT a plain SELECT of every call_log_staging row. Found
+    during this function's own build/test session: the Android app's
+    periodic re-sync re-stages already-seen calls on every run, inserting
+    an exact duplicate call_log_staging row each time (same everything
+    except staging_id/created_at — record_call_log_entry() always inserts,
+    never dedupes on the way in, per its own docstring). A naive COUNT(*)
+    against this table overstated real call volume by several multiples
+    on live data (e.g. one real user/day: 534 raw rows, 72 distinct real
+    calls) — confirmed harmless to dedupe this way because, across every
+    such duplicate group checked on live data, matched_cls_id and
+    match_status were IDENTICAL within the group (zero counterexamples
+    found) — i.e. dedup never discards a genuine match/status disagreement,
+    only genuine re-sync duplicates of the same physical call.
+
+    has_recording is resolved via the SAME join key get_call_direction()
+    above uses: matched_cls_id = activity_log.cls_id AND call_timestamp =
+    activity_log.created_at (log_call_recording() backdates created_at to
+    the real call_timestamp) AND activity_type='call_recording'. No actor
+    filter — same precedent as get_call_direction().
+
+    Returns a list of dicts: matched_cls_id, call_timestamp,
+    duration_seconds, direction, full_name (lead name, or None if
+    unmatched/lead since deleted), has_recording (bool).
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT d.matched_cls_id, d.call_timestamp, d.duration_seconds, d.direction,
+                   l.full_name,
+                   CASE WHEN a.activity_id IS NOT NULL THEN 1 ELSE 0 END AS has_recording
+            FROM (
+                SELECT DISTINCT matched_cls_id, call_timestamp, duration_seconds, direction
+                FROM call_log_staging
+                WHERE user_id = ? AND substr(call_timestamp, 1, 10) = ?
+            ) d
+            LEFT JOIN leads l ON l.cls_id = d.matched_cls_id
+            LEFT JOIN activity_log a
+                ON a.cls_id = d.matched_cls_id
+                AND a.created_at = d.call_timestamp
+                AND a.activity_type = 'call_recording'
+            ORDER BY d.call_timestamp
+        """, (user_id, date_str)).fetchall()
+        return [
+            {
+                "matched_cls_id": r["matched_cls_id"],
+                "call_timestamp": r["call_timestamp"],
+                "duration_seconds": r["duration_seconds"] or 0,
+                "direction": r["direction"],
+                "full_name": r["full_name"],
+                "has_recording": bool(r["has_recording"]),
+            }
+            for r in rows
+        ]
     finally:
         conn.close()
 
