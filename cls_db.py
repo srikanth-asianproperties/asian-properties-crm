@@ -2,11 +2,58 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.69
+Version : 2.70
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.70 (2026-08-20) — Task 4 batch (Srikanth, Todoist ##CLS-CRM, items 3/5/
+  6/7):
+    - Item 7 BUG FIX — get_new_enquiries_count()/get_new_enquiries_leads()
+      lost their "clears the instant a human touches the lead" behavior
+      when v2.57 replaced the old "zero activity_log rows" clause with
+      reengaged_at IS NULL only. v2.57 was RIGHT to drop the old clause
+      (broken by upsert_meta_lead()'s automatic lead_entered system row
+      since v2.28) but should have replaced it with an actor-aware
+      NOT EXISTS, not removed it outright. Both functions' WHERE clause
+      now reads: current_stage='Incoming' AND reengaged_at IS NULL AND
+      NOT EXISTS (a real, non-'system' activity_log row for this cls_id)
+      — keeps v2.57's undercounting fix AND restores v2.11 behavior: a
+      genuine call_attempted/note/stage-change tap by a real user drops
+      the lead off the New Enquiries card immediately, even while it's
+      still technically sitting at current_stage='Incoming'. Only the
+      WHERE clause changed in each function — nothing else touched.
+    - Item 6 — Srikanth explicitly reversed the "never Incoming on manual
+      entry" decision (create_manual_lead() docstring, since v1.9).
+      MANUAL_ENTRY_STAGES gains "Incoming" — config-only change, lead_new.
+      html's dropdown already iterates this list, no template loop logic
+      needed. create_manual_lead()'s docstring updated accordingly — see
+      that function below for the reasoning, so a future session doesn't
+      "fix" this back to the old restriction. Downstream effect (no code
+      change needed, just noted for awareness): a manually-created lead
+      at initial_stage='Incoming' is now eligible for the New Enquiries
+      card (per the Item 7 fix above) until someone acts on it, exactly
+      like a fresh Meta lead — consistent, not a bug.
+    - Item 3 — NEW log_sitting_done(cls_id, actor, notes="") — activity_
+      log-only event (activity_type='sitting_done'), same convention as
+      call_attempted/note: no new table, single _log_activity() call.
+      Mirrors log_walkin_site_visit()'s lead-exists-check shape, simpler
+      since there's no site_visits row to insert. get_todays_activity_
+      counts()'s METRIC_MAP gains "sitting_done": "sittings_done" so
+      Today's Performance / the Daily Scorecard report pick this up
+      automatically — zero new counting infrastructure, same mechanism
+      site_visit_conducted already uses. (ACTIVITY_METRIC_MAP at
+      get_activity_counts_range() is a deliberately separate constant
+      per its own comment — "never touch unless explicitly flagged" —
+      and is NOT touched here; not in scope for this item.)
+    - Item 5 — NEW get_followups_count_for_day(date_str, owner=None) —
+      counts follow_ups rows where substr(scheduled_at,1,10)=date_str
+      AND status='scheduled', optionally scoped to one owner via the
+      same follow_ups f JOIN leads l ON l.cls_id=f.cls_id / l.lead_owner
+      pattern already used by get_todays_agenda()/get_due_by_kind() above.
+      Feeds app.py's post-schedule flash message; no new route/template.
+  All four items additive/behavior-restoring only — no existing function
+  signature removed, no schema change.
 v2.69 (2026-08-19) — Dashboard fix Part 2: site_visits.reminder_sent_at,
   a real stored column replacing get_site_visits_for_tomorrow()'s old
   correlated LIKE-against-activity_log lookup (the ~509ms bottleneck
@@ -2196,7 +2243,7 @@ RESET_STAGES_ON_REENGAGEMENT = ("Unqualified", "Lost", "Booked")
 # "Incoming" — a manual entry is definitionally not a fresh digital
 # inquiry; it's a walk-in, a reference, or an offline call, so it
 # starts wherever it genuinely is in the funnel already.
-MANUAL_ENTRY_STAGES = ["Prospect", "Opportunity", "Site Visited"]
+MANUAL_ENTRY_STAGES = ["Incoming", "Prospect", "Opportunity", "Site Visited"]
 
 # PAUSED (v2.25) — superseded by Campaign Routing (campaign_routing_rules
 # + app_settings['default_fallback_owner'], see resolve_owner_for_new_
@@ -4522,6 +4569,19 @@ def get_new_enquiries_count(days=7, owner=None):
     repeat contact" — i.e. genuinely new, regardless of activity_log
     contents.
 
+    v2.70 BUG FIX (Task 4, item 7) — v2.57 above was right to drop the
+    old "zero activity_log rows" clause, but dropped the "a human
+    touched this" signal along with it instead of replacing it with an
+    actor-aware version — regressing v2.11's "clears the instant a
+    human touches the lead" behavior. Restored via NOT EXISTS (a real,
+    actor != 'system' activity_log row for this cls_id): the automatic
+    lead_entered/lead_reengaged system rows are ignored, but any genuine
+    call_attempted/note/stage-change tap by a real user now drops the
+    lead off this count immediately, even while it's still technically
+    sitting at current_stage='Incoming'. Combined with the still-active
+    reengaged_at IS NULL clause, this both keeps v2.57's undercounting
+    fix and restores the lost v2.11 human-touch behavior.
+
     owner (v2.31): optional, default None (existing behavior, unchanged
     — dashboard() previously called this with zero args). Pass a
     lead_owner to scope to one salesperson's own leads, same convention
@@ -4533,6 +4593,10 @@ def get_new_enquiries_count(days=7, owner=None):
             SELECT COUNT(*) c FROM leads l
             WHERE l.current_stage='Incoming'
               AND l.reengaged_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM activity_log a
+                  WHERE a.cls_id = l.cls_id AND a.actor != 'system'
+              )
         """
         params = []
         if owner:
@@ -4555,6 +4619,10 @@ def get_new_enquiries_leads(owner=None):
     get_new_enquiries_count() above; see that function's docstring for
     the full explanation of the silent-undercounting bug this replaces.
 
+    v2.70 BUG FIX (Task 4, item 7) — same NOT EXISTS actor-aware fix as
+    get_new_enquiries_count() above; see that function's docstring for
+    the full explanation of the lost v2.11 behavior this restores.
+
     owner (v2.31): optional, default None (existing behavior, unchanged
     — new_enquiries_list() previously called this with zero args). Pass
     a lead_owner to scope to one salesperson's own leads.
@@ -4565,6 +4633,10 @@ def get_new_enquiries_leads(owner=None):
             SELECT * FROM leads l
             WHERE l.current_stage='Incoming'
               AND l.reengaged_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM activity_log a
+                  WHERE a.cls_id = l.cls_id AND a.actor != 'system'
+              )
         """
         params = []
         if owner:
@@ -5000,6 +5072,10 @@ def get_todays_activity_counts(actor_email=None):
     (v2.12) NEW 'notes_added' key (activity_type='note') for Report
     #1's Daily Scorecard — every other key this function already
     returned is unchanged.
+
+    (v2.70, Task 4 item 3) NEW 'sittings_done' key (activity_type=
+    'sitting_done', from the new log_sitting_done()) — same automatic
+    pickup as every other METRIC_MAP entry, no separate counting code.
     """
     METRIC_MAP = {
         "call_attempted":        "calls_attempted",
@@ -5008,6 +5084,7 @@ def get_todays_activity_counts(actor_email=None):
         "follow_up_scheduled":   "follow_ups_created",
         "follow_up_completed":   "follow_ups_completed",
         "note":                  "notes_added",
+        "sitting_done":          "sittings_done",
     }
     result = {key: 0 for key in METRIC_MAP.values()}
 
@@ -6371,6 +6448,36 @@ def log_walkin_site_visit(cls_id, project, conducted_at, actor, notes=""):
         conn.close()
 
 
+def log_sitting_done(cls_id, actor, notes=""):
+    """
+    (v2.70, Task 4 item 3) Log a "sitting" — an in-office negotiation/
+    paperwork session with a lead — as an activity_log-only event, same
+    convention as call_attempted/note: no new table, no status to
+    manage, just a timestamped row. Mirrors log_walkin_site_visit()'s
+    lead-exists-check shape above, but simpler — there's no site_visits
+    row to insert, since a sitting isn't a visit.
+
+    Logs activity_type='sitting_done'. Picked up automatically by
+    get_todays_activity_counts()'s METRIC_MAP (new sittings_done key) —
+    no separate counting infrastructure needed, same mechanism
+    site_visit_conducted already uses for Today's Performance and the
+    Daily Scorecard report.
+
+    Returns (ok: bool, message: str).
+    """
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT cls_id FROM leads WHERE cls_id=?", (cls_id,)).fetchone()
+        if not row:
+            return False, "Lead not found."
+
+        _log_activity(conn, cls_id, "sitting_done", actor, description=notes or "")
+        conn.commit()
+        return True, "Sitting done logged."
+    finally:
+        conn.close()
+
+
 def schedule_follow_up(cls_id, scheduled_at, actor, notes=""):
     """
     Schedule a follow-up for a lead. Same shape/format as
@@ -6405,6 +6512,45 @@ def schedule_follow_up(cls_id, scheduled_at, actor, notes=""):
                       new_value=scheduled_at, description=notes or None)
         conn.commit()
         return True, "Follow-up scheduled."
+    finally:
+        conn.close()
+
+
+def get_followups_count_for_day(date_str, owner=None):
+    """
+    (v2.70, Task 4 item 5) How many follow-ups are scheduled for one
+    given day — feeds app.py's post-schedule flash message ("You have
+    N follow-up(s) due on <date>") so a salesperson sees their day's
+    load right after scheduling one, without a separate page visit.
+
+    date_str is 'YYYY-MM-DD'. Counts follow_ups rows where
+    substr(scheduled_at, 1, 10) = date_str AND status = 'scheduled' —
+    same date-truncation and status-scoping convention used throughout
+    this file (e.g. get_todays_activity_counts()'s substr(created_at,1,10)
+    above).
+
+    owner: optional, default None (company-wide). Pass a lead_owner
+    string to scope to one salesperson's own leads, via the same
+    follow_ups f JOIN leads l ON l.cls_id = f.cls_id / l.lead_owner
+    pattern already used by get_todays_agenda()/get_due_by_kind() below.
+
+    Returns an int.
+    """
+    conn = _connect()
+    try:
+        query = """
+            SELECT COUNT(*) c
+            FROM follow_ups f
+            JOIN leads l ON l.cls_id = f.cls_id
+            WHERE substr(f.scheduled_at, 1, 10) = ?
+              AND f.status = 'scheduled'
+        """
+        params = [date_str]
+        if owner:
+            query += " AND l.lead_owner = ?"
+            params.append(owner)
+        row = conn.execute(query, params).fetchone()
+        return row["c"]
     finally:
         conn.close()
 
@@ -6524,11 +6670,17 @@ def create_manual_lead(full_name, phone_raw, initial_stage, actor,
     added v2.0) — for walk-ins, references, and offline inquiries that
     never came through Meta or Sell.do's digital intake.
 
-    initial_stage MUST be one of MANUAL_ENTRY_STAGES (Prospect /
-    Opportunity / Site Visited) — never "Incoming", since a manually-
-    entered lead is definitionally not a fresh digital inquiry; it's
-    already somewhere further along in the funnel by the time someone
-    is typing it in by hand.
+    initial_stage MUST be one of MANUAL_ENTRY_STAGES (Incoming /
+    Prospect / Opportunity / Site Visited).
+
+    v2.70 (Task 4, item 6) — "Incoming" was previously excluded here on
+    the reasoning that a manually-entered lead is definitionally not a
+    fresh digital inquiry. Srikanth explicitly reversed that decision
+    2026-08-20 (Task 4, item 6): a walk-in genuinely AT the very start
+    of the funnel can now be entered as Incoming too, same as any other
+    stage a manual entry might already be sitting at. Do NOT restore
+    the old restriction without a fresh explicit instruction — this note
+    exists specifically so a future session doesn't "fix" it back.
 
     source_detail MUST be one of MANUAL_SOURCE_OPTIONS if provided —
     this is set ONCE, here, at creation, and locked from then on (see

@@ -111,6 +111,23 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.55 (2026-08-20) — Task 4 batch, items 3 and 5:
+    - Item 3 — NEW route POST /leads/<cls_id>/sitting-done
+      (add_sitting_done()), mirroring add_walkin_site_visit() exactly:
+      same _check_lead_ownership gate, same flash/redirect pattern.
+      Calls the new cls_db.log_sitting_done(). Paired with lead_detail.
+      html v14's new "Sitting Done" ACTIONS-modal block.
+    - Item 5 — add_follow_up() now folds the day's follow-up load into
+      its success flash message: after a successful schedule_follow_up()
+      call, calls the new cls_db.get_followups_count_for_day(), scoped
+      via the same scope_owner pattern (None for admin/manager,
+      user["owner_match_name"] otherwise) used throughout the dashboard
+      routes elsewhere in this file. Wrapped in a bare try/except that
+      falls back to the original "Follow-up scheduled." message on any
+      failure — never blocks the scheduling flow itself. No new route,
+      no new template.
+  Both items additive only — no existing route signature or behavior
+  changed.
 v0.54 (2026-08-16) — Task 3 Part B CORRECTION: Today's Agenda moved to
   its own top-level tab. v0.53 nested Today's Agenda inside
   dashboard_today() — a structural mistake; Srikanth's original spec
@@ -3761,6 +3778,26 @@ def update_site_visit_route(cls_id, visit_id):
     return redirect(url_for("lead_detail", cls_id=cls_id))
 
 
+@app.route("/leads/<cls_id>/sitting-done", methods=["POST"])
+@login_required
+def add_sitting_done(cls_id):
+    """
+    v0.55 — Task 4 item 3. Mirrors add_walkin_site_visit above exactly:
+    same ownership check, same flash/redirect pattern. Posts straight to
+    cls_db.log_sitting_done() — activity_log-only, no site_visits row.
+    """
+    lead = cls_db.get_lead_by_id(cls_id)
+    if not lead:
+        abort(404, description="No lead found with that id.")
+    user = cls_db.get_user_by_id(session["user_id"])
+    _check_lead_ownership(lead, user)
+
+    notes = request.form.get("notes", "")
+    ok, message = cls_db.log_sitting_done(cls_id, actor=_actor(), notes=notes)
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("lead_detail", cls_id=cls_id))
+
+
 @app.route("/leads/<cls_id>/follow-up", methods=["POST"])
 @login_required
 def add_follow_up(cls_id):
@@ -3773,6 +3810,22 @@ def add_follow_up(cls_id):
     scheduled_at = request.form.get("scheduled_at", "")
     notes = request.form.get("notes", "")
     ok, message = cls_db.schedule_follow_up(cls_id, scheduled_at, actor=_actor(), notes=notes)
+    if ok:
+        # v0.55 — Task 4 item 5: fold today's/this day's follow-up load
+        # into the success flash so a salesperson sees it right after
+        # scheduling, without a separate page visit. scope_owner mirrors
+        # the pattern used throughout the dashboard routes below — None
+        # (company-wide) for admin/manager, the acting salesperson's own
+        # owner_match_name otherwise. Never blocks the flow: any failure
+        # in the count lookup falls back to the plain "Follow-up
+        # scheduled." message instead of erroring the whole request.
+        try:
+            scope_owner = None if cls_db.can_view_all_leads(user["role"]) else user.get("owner_match_name")
+            due_date = (scheduled_at or "")[:10]
+            count = cls_db.get_followups_count_for_day(due_date, owner=scope_owner)
+            message = f"Follow-up scheduled. You have {count} follow-up(s) due on {due_date}."
+        except Exception:
+            pass
     flash(message, "success" if ok else "error")
     return redirect(url_for("lead_detail", cls_id=cls_id))
 

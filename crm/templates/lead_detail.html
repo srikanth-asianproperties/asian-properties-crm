@@ -1,4 +1,11 @@
-{# lead_detail.html v13 (2026-08-16) — Task 3 Part A, Change 4: new
+{# lead_detail.html v14 (2026-08-20) — Task 4 item 3: new ACTIONS-modal
+   block "Sitting Done", posting to the new add_sitting_done route
+   (app.py) which calls cls_db.log_sitting_done() — same
+   details.write-toggle / form.write-form markup as "Site Visit
+   Conducted" immediately above it, but simpler: no date field, just an
+   optional notes textarea. No other block in this file changed.
+
+   lead_detail.html v13 (2026-08-16) — Task 3 Part A, Change 4: new
    {% elif %} branch for activity_type 'lead_reengaged' (🔄, same \n ->
    <br> rendering as the 'lead_entered' branch above it) — without it,
    the row fell through to the generic {% else %} and showed the raw
@@ -432,6 +439,22 @@
                   onclick="document.getElementById('visitConductedAt').value = document.getElementById('visitConductedDate').value + ' ' + document.getElementById('visitConductedTime').value;">
             Submit
           </button>
+        </div>
+      </form>
+    </details>
+
+    <details class="write-toggle" style="margin-top:10px;">
+      <summary>Sitting Done</summary>
+      {# v14 — Task 4 item 3: in-office negotiation/paperwork session,
+         logged activity_log-only via cls_db.log_sitting_done() — no
+         site_visits row, no date field (unlike Site Visit Conducted
+         above), just notes. Same markup/classes as the block above. #}
+      <form method="post" action="{{ url_for('add_sitting_done', cls_id=lead.cls_id) }}" class="write-form">
+        <div class="field-label" style="margin-top:10px;">Notes</div>
+        <textarea name="notes" placeholder="What was discussed/finalized (optional)"></textarea>
+
+        <div class="write-form-row" style="margin-top:10px;">
+          <button type="submit" class="btn btn-primary">Submit</button>
         </div>
       </form>
     </details>

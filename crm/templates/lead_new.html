@@ -1,3 +1,9 @@
+{# lead_new.html — v0.2 (2026-08-20), Task 4 item 6: dropped the "it
+   can't start at Incoming" paragraph, no longer true now that
+   cls_db.MANUAL_ENTRY_STAGES includes "Incoming" (Srikanth's explicit
+   reversal, Task 4 item 6 — see cls_db.py v2.70's changelog and
+   create_manual_lead()'s docstring for the reasoning). No prior
+   top-of-file version comment existed in this file before this edit. #}
 {% extends "base.html" %}
 {% block title %}Add Lead{% endblock %}
 
@@ -5,9 +11,9 @@
 <h2 style="margin-top:0;">Add a lead manually</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:0;">
   For walk-ins, references, and offline inquiries — anything that didn't come
-  through Meta or Sell.do's digital intake. Since this is definitionally not a
-  fresh digital inquiry, it can't start at "Incoming" — pick whichever stage
-  it's genuinely at already.
+  through Meta or Sell.do's digital intake. Pick whichever stage it's
+  genuinely at already — including "Incoming" for a walk-in who's right at
+  the very start of the funnel.
 </p>
 
 <div class="card">
