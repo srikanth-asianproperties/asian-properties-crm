@@ -1,4 +1,22 @@
-<!-- base.html v0.20 — INCIDENT FIX: the v0.19 bell button was visually
+<!-- base.html v0.21 — INCIDENT FIX: bell dropdown rows were unclickable.
+     renderNotifList() built each row's onclick="openNotification(...)"
+     by string-concatenating JSON.stringify(n.cls_id) directly into a
+     double-quoted HTML attribute — JSON.stringify() always double-quotes
+     its output, the SAME quote character already closing onclick="...",
+     so the attribute got truncated right after the first argument on
+     EVERY row (cls_id is always a UUID string, so this wasn't an edge
+     case, it fired every single time). Rows looked clickable (real
+     <button>, cursor:pointer) but the handler never actually ran. Fixed
+     by switching to data-notification-id/data-cls-id attributes (run
+     through the same escapeHtml() already used for message/created_at)
+     plus one delegated click listener on #notifList, instead of a fresh
+     inline onclick per row. openNotification()'s own logic — POST
+     /api/notifications/<id>/read, then navigate to /leads/<cls_id> — is
+     UNCHANGED; only how each row's data reaches it changed. "Mark all
+     read" (markAllNotificationsRead()) was never affected by this bug —
+     it has no interpolated onclick data, which is also why it kept
+     working while individual-row clicks silently didn't.
+     v0.20 — INCIDENT FIX: the v0.19 bell button was visually
      colliding with the native Android app's floating btn_sync icon
      (android_pilot) — both landing in the same top-right corner. Root
      cause turned out NOT to be a CSS bug in this file: btn_sync is a
@@ -747,14 +765,39 @@ function renderNotifList(notifications){
     listEl.innerHTML = '<div class="notif-empty">No notifications yet.</div>';
     return;
   }
+  // v0.21 — data-* attributes instead of an inline onclick= built from
+  // interpolated string data. The old version did
+  // `onclick="openNotification(' + n.notification_id + ', ' +
+  // JSON.stringify(n.cls_id) + ')"` — JSON.stringify() always wraps its
+  // result in double quotes, the SAME character already closing the
+  // onclick="..." HTML attribute, so the attribute got truncated right
+  // after the first argument on every single row (every cls_id is a
+  // UUID string, so this fired every time, not an edge case). Rows
+  // LOOKED clickable (real <button>, cursor:pointer) but the handler
+  // itself never actually ran. data-* values go through the same
+  // escapeHtml() already used for message/created_at below, and the
+  // delegated listener right after this function reads them back off
+  // the element instead of re-embedding them in JS source text.
   listEl.innerHTML = notifications.map(function(n){
     var cls = n.read_at ? 'notif-item' : 'notif-item unread';
-    return '<button type="button" class="' + cls + '" onclick="openNotification(' +
-      n.notification_id + ', ' + JSON.stringify(n.cls_id) + ')">' +
+    return '<button type="button" class="' + cls + '" data-notification-id="' + n.notification_id +
+      '" data-cls-id="' + escapeHtml(n.cls_id || '') + '">' +
       escapeHtml(n.message) +
       '<span class="notif-time">' + escapeHtml(n.created_at || '') + '</span></button>';
   }).join('');
 }
+
+// v0.21 — one delegated listener on the list container rather than a
+// fresh inline onclick per row (see renderNotifList()'s comment above
+// for why). notifList is a static element present at page load, so
+// this only needs to be attached once. Reuses the SAME openNotification()
+// mark-read-then-navigate logic that already existed — only how each
+// row's data reaches it changed, not what happens on click.
+document.getElementById('notifList').addEventListener('click', function(e){
+  var item = e.target.closest('.notif-item');
+  if (!item) return;
+  openNotification(item.dataset.notificationId, item.dataset.clsId);
+});
 
 function toggleNotifDropdown(){
   var dropdown = document.getElementById('notifDropdown');
