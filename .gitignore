@@ -1,6 +1,7 @@
 # Secrets
 .env
 *.env
+secrets/
 
 # Database (contains live lead PII) — never committed
 cls.db
