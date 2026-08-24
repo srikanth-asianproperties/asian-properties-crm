@@ -1,4 +1,14 @@
 # APX CRM — requirements.txt
+# v5  (2026-08-24) — added google-auth + requests for cls_db.py's
+#   send_fcm_push() (v2.73), now actually being activated (Firebase
+#   service-account key is in place). Both were already documented in
+#   CLAUDE.md as needed and imported locally inside that function so
+#   cls_db.py stays importable without them — this just makes the
+#   dependency formal now that the feature is going live. requests was
+#   already available anyway (used elsewhere in the CLS pipeline) but
+#   had never been listed here since this file only tracks the CRM app's
+#   own direct dependencies.
+#
 # v4  (2026-08-06) — added Pillow for APX Attendance Chunk A's server-
 #   side punch-photo map-overlay compositing (app.py v0.35 /
 #   cls_attendance_photo.py v1.0). requests was already a project
@@ -20,3 +30,5 @@ python-dotenv
 waitress
 openpyxl
 Pillow
+google-auth
+requests

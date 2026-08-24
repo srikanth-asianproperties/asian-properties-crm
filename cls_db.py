@@ -2,11 +2,38 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.72
+Version : 2.73
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.73 (2026-08-24) — send_fcm_push() stale-token cleanup, ADDITIVE ONLY.
+  Firebase project setup is done (secrets/*firebase-adminsdk*.json exists)
+  and this is the first session actually activating the feature, so it's
+  worth re-verifying: send_fcm_push() was NOT a no-op stub going into this
+  session — v2.72 above already wired a real HTTP v1 send (google-auth +
+  requests, reading FCM_SERVICE_ACCOUNT_KEY_PATH), just gated on
+  credentials that didn't exist yet. That implementation is UNCHANGED here
+  — no library swap, no env-var rename — per explicit confirmation this
+  session, since CLAUDE.md/PK_BUNDLE.md already document google-auth +
+  requests + FCM_SERVICE_ACCOUNT_KEY_PATH as the live convention and a
+  second env var or SDK would only fork it.
+    - NEW behavior added to send_fcm_push(), inserted between the existing
+      200-OK success path and the existing generic-rejection log line
+      (neither of those two lines changed): a 404 status code, or an
+      "UNREGISTERED" errorCode in the response body's error.details[]
+      (FCM's own signal that a token's app was uninstalled/reinstalled and
+      will never succeed again), now triggers a DELETE FROM
+      user_fcm_tokens WHERE user_id=? for that user, logged distinctly
+      from a generic rejection. Without this, a stale token would be
+      re-attempted forever on every future notification event for that
+      user. A delete that turns out to be premature is harmless — the
+      Android app re-registers on its next launch, and set_fcm_token()'s
+      INSERT OR REPLACE just overwrites it.
+    - No other line in send_fcm_push() changed. No change to
+      set_fcm_token(), the user_fcm_tokens schema, or any of the 8
+      notification-event call sites — this version touches nothing outside
+      this one function.
 v2.72 (2026-08-21) — Notifications v1.0 (Srikanth build session): unified
   in-app + FCM notification system, 8 event types.
     - NEW TABLE notifications (notification_id, user_id, cls_id, event_type,
@@ -12736,6 +12763,11 @@ def send_fcm_push(user_id, title, body):
     and returns False immediately, exactly like every other new-feature
     stub in this codebase before its real credentials exist.
 
+    v2.73 — a 404 / "UNREGISTERED" response (FCM's own signal that this
+    token's app was uninstalled/reinstalled) now clears the stale token
+    from user_fcm_tokens so it isn't retried forever. See this file's
+    v2.73 changelog entry for the full reasoning.
+
     NEVER raises. Every failure path (no token on file, no/invalid
     creds configured, the 'google-auth'/'requests' packages not
     installed, a network error, FCM itself rejecting the token) is
@@ -12809,6 +12841,37 @@ def send_fcm_push(user_id, title, body):
         )
         if resp.status_code == 200:
             return True
+
+        # v2.73 — stale-token cleanup. FCM's own signal that this token's
+        # app was uninstalled/reinstalled and will never succeed again is
+        # either a 404 status or an "UNREGISTERED" errorCode in the response
+        # body's error.details[] — check both since the body doesn't always
+        # parse as expected. This ONLY ever deletes the token; a premature
+        # delete is harmless since the app re-registers on its next launch
+        # and set_fcm_token()'s INSERT OR REPLACE just overwrites it.
+        is_unregistered = resp.status_code == 404
+        try:
+            for detail in resp.json().get("error", {}).get("details", []):
+                if detail.get("errorCode") == "UNREGISTERED":
+                    is_unregistered = True
+        except Exception:
+            pass
+
+        if is_unregistered:
+            try:
+                conn2 = _connect()
+                try:
+                    conn2.execute("DELETE FROM user_fcm_tokens WHERE user_id=?", (user_id,))
+                    conn2.commit()
+                finally:
+                    conn2.close()
+                if sys.stdout is not None:
+                    print(f"[send_fcm_push] Stale/unregistered token cleared for user_id={user_id}.")
+            except Exception as e:
+                if sys.stdout is not None:
+                    print(f"[send_fcm_push] Failed to clear stale token for user_id={user_id}: {e}")
+            return False
+
         if sys.stdout is not None:
             print(f"[send_fcm_push] FCM rejected push for user_id={user_id}: "
                   f"{resp.status_code} {resp.text[:300]}")
