@@ -2,11 +2,37 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.73
+Version : 2.74
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.74 (2026-08-25) — Fix IST conversion bug in _format_meta_created_time(),
+  ADDITIVE + ONE BUG FIX ONLY.
+    - Confirmed repro: the Sahitya lead (#8335, 2026-08-24) — FB Leads
+      Center showed this lead logging in at 18:33 IST, but Activity
+      History in CLS showed 13:03. Root cause: _format_meta_created_time()
+      parsed Meta's tz-aware created_time (UTC-offset ISO string, e.g.
+      '2026-08-24T13:03:00+0000') with datetime.strptime(raw, fmt).
+      strftime(...) directly — strptime keeps the parsed datetime's
+      original wall-clock digits and attaches the offset as tzinfo, but
+      the immediate .strftime() call never converts those digits to IST,
+      so the UTC clock-face time (13:03) was displayed unchanged instead
+      of the correct IST time (18:33).
+    - FIX: added a module-level IST constant (timezone(timedelta(hours=5,
+      minutes=30))) next to the datetime import. The tz-aware branch of
+      _format_meta_created_time() now calls .astimezone(IST) on the
+      parsed datetime BEFORE .strftime(), so the displayed digits are
+      actually converted to IST wall-clock time. The naive-format branch
+      ("%Y-%m-%d %H:%M:%S", no tzinfo — already a CLS-local timestamp) is
+      untouched, same as before.
+    - Scope: this function only. meta_leads_fetcher.py's
+      newest_meta_time_for_form() was NOT touched — its use of
+      .timestamp() is already timezone-correct (Unix timestamps are
+      offset-agnostic by construction) and needed no change. No other
+      function in this file was modified. meta_created_time's raw
+      storage is unaffected — only this display/backdating formatter
+      changed.
 v2.73 (2026-08-24) — send_fcm_push() stale-token cleanup, ADDITIVE ONLY.
   Firebase project setup is done (secrets/*firebase-adminsdk*.json exists)
   and this is the first session actually activating the feature, so it's
@@ -2283,7 +2309,14 @@ import uuid
 import sqlite3
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# v2.74: IST offset constant, used ONLY by _format_meta_created_time() to
+# convert Meta's tz-aware created_time into actual IST wall-clock digits
+# before display. Deliberately narrow — NOT a general timezone abstraction
+# for the rest of this file, which stays on the existing server-local
+# convention documented at get_site_visits_for_tomorrow() and elsewhere.
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -9119,13 +9152,25 @@ def _format_meta_created_time(raw):
     Falls back to _now() if raw is blank or unparseable — this is a
     display-only value, never used for matching/business logic, so a
     safe fallback beats raising.
+
+    (v2.74) The tz-aware branch ("%Y-%m-%dT%H:%M:%S%z") now converts to
+    IST via .astimezone(IST) before formatting — previously it kept the
+    parsed datetime's original wall-clock digits (whatever offset Meta
+    sent) and just relabeled them, which silently displayed UTC-offset
+    times as if they were IST. The naive branch ("%Y-%m-%d %H:%M:%S")
+    is untouched: it carries no tzinfo, is already a CLS-format local
+    timestamp, and needs no conversion.
     """
     if raw:
-        for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
-            try:
-                return datetime.strptime(raw, fmt).strftime("%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                continue
+        try:
+            return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S%z") \
+                .astimezone(IST).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
     return _now()
 
 
