@@ -1,0 +1,152 @@
+{# settings_attendance_dashboard.html (v0.29) — APX Attendance admin
+   Dashboard (Build Order Step 3). NOT admin-only server-side (see
+   app.py's settings_attendance_dashboard() docstring) — a salesperson
+   reaches this same template force-scoped to themselves, with the
+   employee filter hidden (is_oversight is False for them).
+
+   Export: Excel via /settings/attendance/dashboard/export.xlsx
+   (openpyxl, server-side, cls_reports.export_to_excel() — the SAME
+   engine Reports uses, no new one written). PDF: browser print-to-PDF,
+   same convention as report_view.html — the <style media="print">
+   block below hides everything except the totals/calendar, and
+   "Print / Save as PDF" just calls window.print(). No PDF library. #}
+{% extends "base.html" %}
+{% block title %}Attendance Dashboard{% endblock %}
+
+{% block content %}
+<style media="print">
+  .appbar, .nav-drawer, .nav-scrim, .no-print { display: none !important; }
+  main.wrap { max-width: 100%; padding: 0; }
+</style>
+
+<a href="{{ url_for('settings_attendance') if is_oversight else url_for('attendance_home') }}"
+   class="no-print" style="font-size:14px;">&larr; Back</a>
+
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+  <h2 style="margin-top:10px;">Attendance Dashboard</h2>
+  <div class="no-print" style="display:flex; gap:8px;">
+    <a href="{{ url_for('settings_attendance_dashboard_export', year=year, month=month, user_id=selected_user_id or '') }}" class="btn">Export Excel</a>
+    <button type="button" class="btn" onclick="window.print();">Print / Save as PDF</button>
+  </div>
+</div>
+
+<form method="get" class="no-print" style="display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:10px;">
+  <div>
+    <label style="font-size:12px; color:var(--ink-soft); display:block;">Month</label>
+    <select name="month">
+      {% for m in range(1, 13) %}
+      <option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ month_names[m] }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label style="font-size:12px; color:var(--ink-soft); display:block;">Year</label>
+    <select name="year">
+      {% for y in year_options %}
+      <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% if is_oversight %}
+  <div>
+    <label style="font-size:12px; color:var(--ink-soft); display:block;">Employee</label>
+    <select name="user_id">
+      <option value="">All employees</option>
+      {% for u in employees %}
+      <option value="{{ u.user_id }}" {% if selected_user_id == u.user_id %}selected{% endif %}>{{ u.full_name or u.email }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  <button type="submit" class="btn btn-primary">View</button>
+</form>
+
+<div class="card" style="margin-top:16px;">
+  <strong style="font-size:15px;">{{ month_names[month] }} {{ year }} — Totals</strong>
+  <div style="overflow-x:auto; margin-top:10px;">
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:8px; color:var(--ink-soft); text-transform:uppercase; font-size:11px;">Name</th>
+          {% for s in attendance_statuses %}
+          <th style="text-align:center; padding:8px; color:var(--ink-soft); text-transform:uppercase; font-size:11px;">{{ s }}</th>
+          {% endfor %}
+          <th style="text-align:center; padding:8px; color:var(--ink-soft); text-transform:uppercase; font-size:11px;">Geofence Breaches</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in totals %}
+        <tr style="border-top:1px solid var(--line);">
+          <td style="padding:8px;">{{ t.full_name or t.email }}</td>
+          {% for s in attendance_statuses %}
+          <td style="text-align:center; padding:8px;">{{ t[s] }}</td>
+          {% endfor %}
+          <td style="text-align:center; padding:8px;">{{ t.geofence_breaches }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if not totals %}
+<div class="card empty-state" style="margin-top:16px;">
+  <p>No employees to show.</p>
+</div>
+{% endif %}
+
+{% if calendar_weeks %}
+<div class="card" style="margin-top:16px;">
+  <strong style="font-size:15px;">{{ calendar_user_name }}'s Calendar — {{ month_names[month] }} {{ year }}</strong>
+
+  <table style="width:100%; border-collapse:collapse; margin-top:14px; font-size:13px;">
+    <thead>
+      <tr>
+        {% for wd in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}
+        <th style="padding:6px; text-align:center; color:var(--ink-soft); font-weight:600; font-size:12px;">{{ wd }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for week in calendar_weeks %}
+      <tr>
+        {% for day in week %}
+        {% if day == 0 %}
+        <td style="padding:6px;"></td>
+        {% else %}
+        {% set date_str = '%04d-%02d-%02d'|format(year, month, day) %}
+        {% set row = calendar_month_data[date_str] if date_str in calendar_month_data else none %}
+        <td style="padding:6px; text-align:center; border-radius:6px;
+          {% if row and row.status == 'present' %}background:#E3F5E9;
+          {% elif row and row.status == 'late' %}background:#FCEFD8;
+          {% elif row and row.status == 'absent' %}background:#FBE3E3;
+          {% elif row and row.status == 'weekoff' %}background:#EDEDED;
+          {% elif row and row.status == 'leave' %}background:#E9E3F7;
+          {% elif date_str in holidays %}background:#FDE9D9;
+          {% endif %}
+          {% if row and (row.login_geofence_breach or row.logout_geofence_breach) %}border:2px solid #FF8C00;{% endif %}">
+          {{ day }}
+        </td>
+        {% endif %}
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:12px; font-size:12px; color:var(--ink-soft);">
+    <span><span style="display:inline-block; width:10px; height:10px; background:#E3F5E9; border-radius:2px; vertical-align:middle;"></span> Present</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#FCEFD8; border-radius:2px; vertical-align:middle;"></span> Late</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#FBE3E3; border-radius:2px; vertical-align:middle;"></span> Absent</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#EDEDED; border-radius:2px; vertical-align:middle;"></span> Weekoff</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#E9E3F7; border-radius:2px; vertical-align:middle;"></span> Leave</span>
+    <span><span style="display:inline-block; width:10px; height:10px; background:#FDE9D9; border-radius:2px; vertical-align:middle;"></span> Holiday</span>
+    <span><span style="display:inline-block; width:10px; height:10px; border:2px solid #FF8C00; border-radius:2px; vertical-align:middle;"></span> Geofence breach</span>
+  </div>
+</div>
+{% elif is_oversight %}
+<p class="no-print" style="font-size:13px; color:var(--ink-soft); margin-top:12px;">
+  Select one employee from the filter above to see their day-by-day calendar.
+</p>
+{% endif %}
+{% endblock %}
