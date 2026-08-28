@@ -1,21 +1,54 @@
-{# whatsapp_picker.html (v0.9.4) — the screen the lead-page WhatsApp
+{# whatsapp_picker.html (v0.9.7) — the screen the lead-page WhatsApp
    button opens.
+
+   v0.9.7 — Debug box removed. v0.9.6's whatsapp://send link confirmed
+   working by Srikanth on the real device/team flow (2026-08-27) — the
+   emoji-corruption complaint is CLOSED. The temporary "Debug: link
+   comparison" box from v0.9.5/v0.9.6 served its purpose (isolating
+   that wa.me's own intermediate webpage — not this codebase — was
+   re-serializing and corrupting astral-plane/emoji characters before
+   handoff) and is now stripped. No other behavior changed from v0.9.6.
+
+   v0.9.6 — Root cause found. Srikanth confirmed via controlled testing
+   that the generated URL text was byte-perfect (verified by decoding
+   it character-by-character — zero corruption), and that the template
+   renders correctly whenever WhatsApp is reached WITHOUT passing
+   through wa.me's own "Chat on WhatsApp with +91..." webpage. The real
+   button-tap flow (this page -> https://wa.me/... -> that intermediate
+   Meta-hosted webpage -> "Open with" chooser -> real chat) showed "�"
+   ALREADY on that intermediate page, and that same corrupted text
+   landed in the actual chat compose box — i.e. wa.me's page was
+   re-serializing (and mangling emoji in) the text before handing off
+   to WhatsApp. That's a bug on Meta's servers, not this codebase, but
+   it's avoidable: WhatsApp also accepts a direct app-level link,
+   whatsapp://send?phone=..&text=.., which opens WhatsApp (or the
+   chooser between 2 installed WhatsApp apps) WITHOUT ever visiting
+   wa.me's webpage. sendBtn now targets whatsapp:// instead of
+   https://wa.me/ — same direct client-side <a href> tap mechanism as
+   before, so it didn't reintroduce the v0.9.4 gesture-loss bug (that
+   one was specifically about a multi-hop SERVER redirect chain, not
+   about the target scheme of a single client tap).
+
+   v0.9.5 — TEMPORARY diagnostic addition (now removed in v0.9.7).
+   Added a debug box showing the raw generated link(s) with a Copy
+   button, to capture the exact on-device URL for offline byte-level
+   inspection during the investigation above.
 
    v0.9.4 — PWA deep-link fix. Send used to be a <form method=post>
    submit that the server 302-redirected to https://wa.me/..., which
    itself redirects to whatsapp://... — in an installed/standalone PWA
    that redirect chain loses user-gesture status, so the OS blocks the
    whatsapp:// custom scheme (net::ERR_UNKNOWN_URL_SCHEME). Send is now
-   a real <a href="https://wa.me/...">, kept in sync with the
-   project/message pickers via JS (href recomputed on every change/
-   input event, same trigger refreshSendState() already used). The
-   disabled state (no message yet) is emulated with pointer-events/
-   tabindex toggling, since anchors have no native `disabled`. On click,
-   the same activity-log POST still fires — via fetch(...,
-   {keepalive:true}), not awaited, no preventDefault — so the anchor's
-   own navigation proceeds un-intercepted. See app.py's whatsapp_send(),
-   which now returns 204 instead of redirecting since the browser
-   navigates via the anchor's own href independently.
+   a real <a href="...">, kept in sync with the project/message pickers
+   via JS (href recomputed on every change/input event, same trigger
+   refreshSendState() already used). The disabled state (no message
+   yet) is emulated with pointer-events/tabindex toggling, since
+   anchors have no native `disabled`. On click, the same activity-log
+   POST still fires — via fetch(..., {keepalive:true}), not awaited, no
+   preventDefault — so the anchor's own navigation proceeds
+   un-intercepted. See app.py's whatsapp_send(), which returns 204
+   instead of redirecting since the browser navigates via the anchor's
+   own href independently.
 
    v0.9.2 — items 2/3 redesign. The old screen listed every project's
    template as a full card (message text visible + scrollable) — with
@@ -24,11 +57,9 @@
    textarea that fills with that project's message on selection, is
    editable in place, and scrolls if long. Send appears right after
    the textarea and opens WhatsApp with whatever is CURRENTLY in the
-   textarea (edited or not) — same wa.me deep-link approach as before,
-   WhatsApp itself still can't auto-send, so the user reviews and taps
-   Send there. No app.py/cls_db.py change — same `templates` data the
-   route already rendered per-lead in v0.9.1, just presented one at a
-   time instead of all at once.
+   textarea (edited or not). No app.py/cls_db.py change — same
+   `templates` data the route already rendered per-lead in v0.9.1,
+   just presented one at a time instead of all at once.
 
    v0.9.3 (Task 2.2) — Send used to be client-side only (window.open,
    no server round-trip, nothing logged). Now a real <form
@@ -88,7 +119,10 @@
   function refreshSendState() {
     var enabled = msgBox.value.trim().length > 0;
     if (enabled) {
-      sendBtn.href = 'https://wa.me/' + PHONE + '?text=' + encodeURIComponent(msgBox.value);
+      // v0.9.6 — whatsapp:// direct link, bypassing wa.me's
+      // intermediate webpage (confirmed source of emoji corruption —
+      // see changelog above). Confirmed working 2026-08-27.
+      sendBtn.href = 'whatsapp://send?phone=' + PHONE + '&text=' + encodeURIComponent(msgBox.value);
       sendBtn.removeAttribute('tabindex');
       sendBtn.setAttribute('aria-disabled', 'false');
       sendBtn.style.opacity = '1';
@@ -118,7 +152,7 @@
     fd.append('project', t ? t.project : '');
     fd.append('message', msgBox.value);
     // Fire-and-forget: not awaited, no preventDefault — the anchor's
-    // own top-level navigation to wa.me/whatsapp:// must proceed
+    // own top-level navigation to whatsapp:// must proceed
     // un-intercepted so the OS still treats it as a user gesture.
     fetch(LOG_URL, { method: 'POST', body: fd, keepalive: true });
   });
