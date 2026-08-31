@@ -1,4 +1,15 @@
-<!-- base.html v0.21 — INCIDENT FIX: bell dropdown rows were unclickable.
+<!-- base.html v0.22 — NEW pull-to-refresh gesture, installed-PWA-mode replacement
+     for the native browser gesture that standalone display mode suppresses.
+     Touch-only (touchstart/touchmove/touchend), arms only when scrollY===0
+     and no overlay (nav drawer / notif dropdown / fields popover) is open,
+     72px threshold, full window.location.reload() on commit — no AJAX
+     partial-refresh path, consistent with sw.js's existing "always fresh
+     over cached" stance. New .ptr-indicator/.ptr-spinner CSS block and one
+     new #ptrIndicator div right after <body>; new self-contained JS IIFE
+     appended to the bottom <script> block, placed OUTSIDE the
+     the "current_user" guard so it also works on login.html. No other
+     existing behavior (drawer, notifications, sw registration) touched.
+     v0.21 — INCIDENT FIX: bell dropdown rows were unclickable.
      renderNotifList() built each row's onclick="openNotification(...)"
      by string-concatenating JSON.stringify(n.cls_id) directly into a
      double-quoted HTML attribute — JSON.stringify() always double-quotes
@@ -283,6 +294,40 @@
     overflow-y: auto;
   }
   .fields-popover.open{ display: block; }
+
+  /* Pull-to-refresh indicator (v0.22). Installed/standalone PWA mode has
+     no native pull-to-refresh (that's a browser-chrome feature, suppressed
+     outside a browser tab), so this is a minimal custom replacement.
+     Purely visual — actual refresh is a full page reload, matching this
+     app's existing "always fresh over cached" philosophy (see sw.js). */
+  .ptr-indicator{
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 60px;
+    transform: translateY(-60px);
+    transition: transform 0.15s ease;
+    z-index: 25;
+    pointer-events: none;
+  }
+  .ptr-indicator.dragging{ transition: none; }
+  .ptr-spinner{
+    width: 22px;
+    height: 22px;
+    border: 2.5px solid var(--line);
+    border-top-color: var(--navy);
+    border-radius: 50%;
+  }
+  .ptr-spinner.spin{
+    animation: ptr-spin 0.7s linear infinite;
+  }
+  @keyframes ptr-spin{
+    to{ transform: rotate(360deg); }
+  }
 
   main.wrap{
     max-width: 1080px;
@@ -582,6 +627,7 @@ header.appbar .bell-btn, header.appbar .sync-btn{
 {% block head %}{% endblock %}
 </head>
 <body>
+<div class="ptr-indicator" id="ptrIndicator"><div class="ptr-spinner" id="ptrSpinner"></div></div>
 {% if impersonator %}
 <div class="impersonation-banner">
   ⚠️ Viewing as <strong>{{ current_user.full_name }}</strong>
@@ -688,6 +734,80 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+
+// Pull-to-refresh (v0.22). Touch-only, only arms when scrollY===0
+// and no overlay (nav drawer / notif dropdown / fields popover) is
+// open — see base.html CHANGELOG v0.22 for the full rationale.
+(function(){
+  var indicator = document.getElementById('ptrIndicator');
+  var spinner = document.getElementById('ptrSpinner');
+  var THRESHOLD = 72;
+  var MAX_PULL = 90;
+  var startY = null;
+  var pulling = false;
+  var committed = false;
+
+  function overlayOpen(){
+    var drawer = document.querySelector('.nav-drawer.open');
+    var notif = document.getElementById('notifDropdown');
+    var popover = document.querySelector('.fields-popover.open');
+    return !!(drawer || (notif && notif.classList.contains('open')) || popover);
+  }
+
+  document.addEventListener('touchstart', function(e){
+    if (window.scrollY !== 0 || overlayOpen() || e.touches.length !== 1) {
+      startY = null;
+      return;
+    }
+    startY = e.touches[0].clientY;
+    pulling = false;
+    committed = false;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', function(e){
+    if (startY === null || committed) return;
+    var deltaY = e.touches[0].clientY - startY;
+    if (deltaY <= 0) {
+      startY = null;
+      indicator.classList.remove('dragging');
+      indicator.style.transform = 'translateY(-60px)';
+      return;
+    }
+    if (window.scrollY !== 0) {
+      startY = null;
+      indicator.classList.remove('dragging');
+      indicator.style.transform = 'translateY(-60px)';
+      return;
+    }
+    pulling = true;
+    e.preventDefault();
+    var capped = Math.min(deltaY, MAX_PULL);
+    indicator.classList.add('dragging');
+    indicator.style.transform = 'translateY(' + (capped - 60) + 'px)';
+    spinner.classList.toggle('spin', deltaY >= THRESHOLD);
+  }, { passive: false });
+
+  document.addEventListener('touchend', function(){
+    if (!pulling || startY === null) {
+      startY = null;
+      pulling = false;
+      return;
+    }
+    var pulledEnough = spinner.classList.contains('spin');
+    indicator.classList.remove('dragging');
+    if (pulledEnough) {
+      committed = true;
+      indicator.style.transform = 'translateY(0)';
+      spinner.classList.add('spin');
+      window.location.reload();
+    } else {
+      indicator.style.transform = 'translateY(-60px)';
+      spinner.classList.remove('spin');
+    }
+    startY = null;
+    pulling = false;
+  }, { passive: true });
+})();
 
 // v0.15 — shared checkbox/radio-list search filter (Export's Task B,
 // now reused by Bulk Reassign too instead of a second copy). Filters
