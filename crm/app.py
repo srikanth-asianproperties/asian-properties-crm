@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.56
+Version : 0.58
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,85 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.58 (2026-08-28) — BUG FIX to the Phase 2 Meta webhook work (v0.57):
+  _process_leadgen_change()'s two outbound Graph API calls (meta_leads_
+  fetcher.resolve_page_token() and .fetch_single_lead_by_id()) were
+  passing META_LEADGEN_APP_SECRET as the app_secret argument alongside
+  META_SYSTEM_USER_TOKEN. Wrong pairing, not a config/.env problem:
+  META_SYSTEM_USER_TOKEN is the token meta_leads_fetcher.py (Job A) has
+  always used, and Job A's own run() pairs it with META_APP_SECRET
+  (confirmed live at its resolve_page_token() call site before this fix
+  - env.get("META_APP_SECRET", "")) - never META_LEADGEN_APP_SECRET,
+  which belongs to a separate, newer app used ONLY to verify inbound
+  webhook signatures (X-Hub-Signature-256 / signed_request), not to
+  authenticate outbound calls against the System User token. NEW
+  META_APP_SECRET constant added next to META_SYSTEM_USER_TOKEN,
+  .env-sourced via the same _env dict convention as the others. All 4
+  call sites in _process_leadgen_change() (2x resolve_page_token, 2x
+  fetch_single_lead_by_id - the second of each pair being the retry-
+  after-stale-token path) switched to META_APP_SECRET.
+  _verify_meta_webhook_signature()'s use of META_LEADGEN_APP_SECRET is
+  UNCHANGED - that one is correct as-is, it verifies the inbound webhook
+  signature, a different concern from these outbound calls. Nothing else
+  in this file changed.
+v0.57 (2026-08-28) — Meta webhook Phase 2: wires /webhooks/meta-leadgen's
+  POST branch into the REAL lead pipeline, reusing the exact same trusted
+  function Job A (meta_leads_fetcher.py) already calls: cls_db.upsert_
+  meta_lead(). Job A's own scheduled polling is completely untouched and
+  keeps running in parallel as a safety net — upsert_meta_lead() is
+  idempotent on leadgen_id, so re-processing the same lead via either path
+  is always safe and never creates a duplicate. Additive only:
+    - NEW import meta_leads_fetcher (confirmed import-safe first — all of
+      its top-level code is imports/constants/def's, load_env() only runs
+      inside run(), everything else is behind if __name__ == "__main__").
+    - NEW _verify_meta_webhook_signature(raw_body, signature_header,
+      app_secret) next to the existing _verify_meta_signed_request() —
+      a DIFFERENT verification mechanism: Meta signs leadgen webhook POST
+      bodies via the X-Hub-Signature-256 header (HMAC-SHA256 over the raw
+      request body), not the OAuth-style signed_request param the existing
+      helper checks. Reuses this file's existing hmac/hashlib imports.
+    - NEW module-level _page_token_cache = {} (in-memory only, no TTL —
+      Page tokens derived from a System User token are non-expiring per
+      meta_leads_fetcher.py's own resolve_page_token() docstring) so a
+      burst of webhook calls for the same page doesn't re-resolve a page
+      token on every single one. Evicted and retried once on a RuntimeError
+      from the Graph call, covering the rare case of Meta invalidating a
+      token server-side.
+    - meta_leadgen_webhook()'s GET branch (verification handshake) is
+      completely untouched. POST branch rewritten: reads request.get_data()
+      FIRST (signature must cover the exact raw bytes Meta sent), verifies
+      X-Hub-Signature-256 before parsing JSON (fails closed — 403 on a bad
+      or missing signature), keeps the existing cls_db.log_webhook_test_
+      lead(payload) audit-trail call exactly as-is (own try/except,
+      non-fatal, unconditional — untouched from v0.50), then walks Meta's
+      real entry[]/changes[] leadgen payload shape and hands each matching
+      change to the new _process_leadgen_change() helper. Always returns
+      "OK", 200 regardless of processing outcome — Meta's retry behavior on
+      non-200 is aggressive, and a failed fetch/upsert should fall back to
+      Job A's next scheduled sweep, not trigger Meta retries. Any payload
+      shape that doesn't match (Meta's own test payloads, other webhook
+      fields) is skipped and logged at INFO, not treated as an error.
+    - NEW _process_leadgen_change(leadgen_id, page_id, form_id): resolves
+      the (cached) page token, calls meta_leads_fetcher.fetch_single_
+      lead_by_id() + extract_lead_fields(), looks the form up in meta_
+      leads_fetcher.LEAD_FORMS by form_id (skips with a WARNING log if not
+      found — Job A wouldn't recognize it either until LEAD_FORMS is
+      updated), then calls cls_db.upsert_meta_lead() with the SAME kwargs
+      Job A's own run() passes at its call site (meta_leads_fetcher.py
+      line ~603) — including campaign=form.get("campaign_name",
+      form["form_name"]), the same Campaign Routing passthrough Job A uses
+      for the Grace Classic / Naishka forms, and extra_answers=fields.get(
+      "extra_answers") or None, matching Job A's empty-list-to-None
+      normalization. Unpacks the (cls_id, is_new_lead) tuple return
+      (cls_db.py v2.55 — upsert_meta_lead() no longer returns a bare
+      cls_id; meta_leads_fetcher.py's own v1.8 changelog documents this,
+      confirmed live before writing this call site) and uses is_new_lead
+      to log "new lead" vs "updated lead" in the success line. Any failure
+      is caught by the caller (POST branch, per-change try/except) so one
+      bad change in a batch never blocks the others or the 200 response;
+      Job A's next poll remains the safety net.
+    - webhook_test_leads audit logging, the GET verification handshake,
+      and Job A's scheduled polling are all untouched by this change.
 v0.56 (2026-08-21) — Notifications v1.0 (Srikanth build session): the
   header bell. (Also corrects this file's own "Version :" header above,
   which had drifted to 0.54 despite the v0.55 entry already below it —
@@ -1755,6 +1834,7 @@ import cls_db  # noqa: E402  (must follow the sys.path insert above)
 import cls_capi_core  # v0.49 — inline CAPI firing (fire_single_lead_event) for change_lead_stage()
 import cls_reports  # v0.6 — Reports section; lives in crm/ alongside app.py, no sys.path change needed
 import cls_attendance_photo  # v0.35 — APX Attendance Chunk A: map-thumbnail photo watermarking
+import meta_leads_fetcher  # v0.57 — Meta webhook Phase 2: fetch_single_lead_by_id()/LEAD_FORMS/resolve_page_token() reused for real-time lead capture
 
 # v0.21 — Phase B Telephony: where uploaded call recordings land.
 # Deliberately outside cls_db.py's DB file (this is plain files, not
@@ -1886,6 +1966,24 @@ META_LEADGEN_APP_SECRET = _env.get("META_LEADGEN_APP_SECRET", "")
 # if unset — the route below fails closed (renders an error message
 # instead of sending a blank access_token to Meta).
 META_SYSTEM_USER_TOKEN = _env.get("META_SYSTEM_USER_TOKEN", "")
+
+# v0.58 — App secret that pairs with META_SYSTEM_USER_TOKEN for outbound
+# Graph API calls (Page token resolution, single-lead fetch) — the SAME
+# app meta_leads_fetcher.py (Job A) has always used, read there as
+# env.get("META_APP_SECRET", ""). Deliberately separate from
+# META_LEADGEN_APP_SECRET above, which belongs to a different, newer app
+# used only to verify inbound webhook signatures/signed_requests — never
+# for an outbound access_token/appsecret_proof pairing. Same .env-sourced
+# convention as the constants above.
+META_APP_SECRET = _env.get("META_APP_SECRET", "")
+
+# v0.57 — Phase 2 in-memory Page Access Token cache. Page tokens derived
+# from a System User token are non-expiring (see meta_leads_fetcher.py's
+# resolve_page_token() docstring), so no TTL is needed here — this just
+# avoids re-resolving on every single webhook call. Evicted and retried
+# once in _process_leadgen_change() if a cached token ever fails a Graph
+# call (covers the rare case of Meta invalidating a token server-side).
+_page_token_cache = {}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -6018,16 +6116,140 @@ def meta_leadgen_webhook():
             _log("Meta webhook verification FAILED - token mismatch", "WARNING")
             return "Verification failed", 403
 
-    # POST — logging, plus (v0.50) a best-effort write to the isolated
-    # webhook_test_leads table for App Review's screencast requirement.
-    # Never touches the real leads table / Job A/B/C.
+    # POST — v0.57, Phase 2: wired into the real lead pipeline. Raw body
+    # is read FIRST (before any JSON parsing) because the signature must
+    # be computed over the exact bytes Meta sent.
+    raw_body = request.get_data()
+    signature_header = request.headers.get("X-Hub-Signature-256", "")
+    if not _verify_meta_webhook_signature(raw_body, signature_header, META_LEADGEN_APP_SECRET):
+        _log("Meta leadgen webhook POST rejected - invalid X-Hub-Signature-256", "WARNING")
+        return "Invalid signature", 403
+
     payload = request.get_json(silent=True) or {}
     _log(f"Meta leadgen webhook received: {payload}")
+
+    # (v0.50) best-effort write to the isolated webhook_test_leads table
+    # for App Review's screencast requirement. Untouched by Phase 2 —
+    # still unconditional, still never blocks the real pipeline below.
     try:
         cls_db.log_webhook_test_lead(payload)
     except Exception as e:
         _log(f"log_webhook_test_lead failed (non-fatal, webhook still returns 200): {e}", "WARNING")
+
+    # Real pipeline: walk Meta's leadgen payload shape. Anything that
+    # doesn't match (Meta's own test payloads, other webhook fields) is
+    # skipped and logged at INFO rather than treated as an error.
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            if change.get("field") != "leadgen":
+                _log(f"Webhook change field '{change.get('field')}' is not 'leadgen' - skipped")
+                continue
+            value = change.get("value", {})
+            leadgen_id = value.get("leadgen_id")
+            page_id = value.get("page_id")
+            form_id = value.get("form_id")
+            if not (leadgen_id and page_id and form_id):
+                _log(f"Webhook leadgen change missing leadgen_id/page_id/form_id - skipped: {value}")
+                continue
+            try:
+                _process_leadgen_change(leadgen_id, page_id, form_id)
+            except Exception as e:
+                _log(f"_process_leadgen_change failed for leadgen_id={leadgen_id}: {e}", "WARNING")
+
+    # Always 200 - Meta's retry behavior on non-200 is aggressive, and a
+    # failed fetch/upsert here should fall back to Job A's next scheduled
+    # sweep, not trigger Meta retries.
     return "OK", 200
+
+
+def _verify_meta_webhook_signature(raw_body, signature_header, app_secret):
+    """
+    Verifies Meta's X-Hub-Signature-256 header on webhook POSTs: HMAC-SHA256
+    over the raw request body, keyed by the app secret, formatted as
+    'sha256=<hex digest>'. Returns True if valid, False otherwise
+    (including when the header or secret is missing/empty - fails closed).
+    """
+    if not raw_body or not signature_header or not app_secret:
+        return False
+    if not signature_header.startswith("sha256="):
+        return False
+    expected = hmac.new(
+        app_secret.encode("utf-8"), raw_body, hashlib.sha256
+    ).hexdigest()
+    provided = signature_header.split("=", 1)[1]
+    return hmac.compare_digest(expected, provided)
+
+
+def _process_leadgen_change(leadgen_id, page_id, form_id):
+    """
+    Phase 2 — resolves a webhook-delivered leadgen_id into a full lead and
+    writes it through cls_db.upsert_meta_lead(), the SAME function Job A
+    (meta_leads_fetcher.py) uses. Idempotent on leadgen_id - safe to run
+    even if Job A's next poll also picks up this same lead. Any failure
+    here is logged and swallowed by the caller; Job A remains the safety
+    net.
+    """
+    # Resolve (cached) page token. Uses META_APP_SECRET (Job A's own app
+    # secret, paired with META_SYSTEM_USER_TOKEN) - NOT META_LEADGEN_
+    # APP_SECRET, which belongs to the separate app used only to verify
+    # inbound webhook signatures (see _verify_meta_webhook_signature()).
+    page_token = _page_token_cache.get(page_id)
+    if not page_token:
+        page_token, _name = meta_leads_fetcher.resolve_page_token(
+            page_id, META_SYSTEM_USER_TOKEN, META_APP_SECRET
+        )
+        _page_token_cache[page_id] = page_token
+
+    try:
+        raw_lead = meta_leads_fetcher.fetch_single_lead_by_id(
+            leadgen_id, page_token, META_APP_SECRET
+        )
+    except RuntimeError:
+        # Cached token may have gone stale - evict and retry ONCE.
+        _page_token_cache.pop(page_id, None)
+        page_token, _name = meta_leads_fetcher.resolve_page_token(
+            page_id, META_SYSTEM_USER_TOKEN, META_APP_SECRET
+        )
+        _page_token_cache[page_id] = page_token
+        raw_lead = meta_leads_fetcher.fetch_single_lead_by_id(
+            leadgen_id, page_token, META_APP_SECRET
+        )
+
+    fields = meta_leads_fetcher.extract_lead_fields(raw_lead)
+
+    form = next(
+        (f for f in meta_leads_fetcher.LEAD_FORMS if f["form_id"] == form_id),
+        None
+    )
+    if not form:
+        _log(f"Webhook lead {leadgen_id}: form_id {form_id} not in "
+             f"LEAD_FORMS - skipped, Job A won't recognize it either "
+             f"until LEAD_FORMS is updated", "WARNING")
+        return
+
+    # Same call, same kwargs, as Job A's own run() call site
+    # (meta_leads_fetcher.py) - including the campaign= Campaign Routing
+    # passthrough and the extra_answers empty-list-to-None normalization.
+    cls_id, is_new_lead = cls_db.upsert_meta_lead(
+        leadgen_id=fields["leadgen_id"],
+        form_id=form_id,
+        project=form["project"],
+        full_name=fields["full_name"],
+        phone_raw=fields["phone"],
+        email_raw=fields["email"],
+        meta_created_time=fields["created_time"],
+        campaign=form.get("campaign_name", form["form_name"]),
+        meta_campaign_id=fields["meta_campaign_id"],
+        meta_campaign_name=fields["meta_campaign_name"],
+        meta_adset_id=fields["meta_adset_id"],
+        meta_adset_name=fields["meta_adset_name"],
+        meta_ad_id=fields["meta_ad_id"],
+        meta_ad_name=fields["meta_ad_name"],
+        meta_platform=fields["meta_platform"],
+        extra_answers=fields.get("extra_answers") or None,
+    )
+    status = "new lead" if is_new_lead else "updated lead"
+    _log(f"Webhook lead processed OK ({status}): leadgen_id={leadgen_id} -> cls_id={cls_id}")
 
 
 @app.route("/admin/webhook-test-leads")

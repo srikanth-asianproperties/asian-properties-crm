@@ -2,11 +2,23 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.9
+Version : 1.10
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.10 (2026-08-28) — Meta webhook Phase 2 (real-time lead capture). Added
+  ONE new function, fetch_single_lead_by_id(leadgen_id, page_token,
+  app_secret) — the webhook-delivered counterpart to fetch_leads_for_form()'s
+  bulk/paginated pull, fetching exactly one lead by ID via the same
+  graph_get() wrapper and the same fields= list. Called from crm/app.py's
+  /webhooks/meta-leadgen POST handler so a lead can be written into CLS the
+  moment Meta delivers the webhook, instead of waiting for this job's next
+  scheduled poll. Purely additive — nothing existing in this file changed,
+  run()'s own polling loop and all other functions are untouched, and Job A
+  keeps running on its existing schedule as a safety net (upsert_meta_lead()
+  is idempotent on leadgen_id, so the webhook and Job A's poll can both
+  process the same lead with no duplicate created).
 v1.9 (2026-08-19) — Cosmetic log-string fix, no functional change. The
   run()-completion log line for the 'meta_fetch' flag still said "Job B
   may now proceed" — stale since Job B's 2026-08-18 retirement. Checked
@@ -412,6 +424,28 @@ def fetch_leads_for_form(form, page_token, app_secret, since_unix=None):
         time.sleep(API_PAUSE_SEC)
 
     return leads
+
+
+# ─────────────────────────────────────────────────────────────
+# SINGLE-LEAD FETCH  —  webhook-delivered counterpart to the bulk pull
+# above (v1.10, Phase 2 of the Meta webhook)
+# ─────────────────────────────────────────────────────────────
+
+def fetch_single_lead_by_id(leadgen_id, page_token, app_secret):
+    """
+    Fetch one lead directly by its leadgen_id — the webhook-delivered
+    counterpart to fetch_leads_for_form()'s bulk paginated pull. Same
+    fields, same graph_get() wrapper, same error behavior (raises
+    RuntimeError on a Meta API error so the caller decides how to handle
+    it). Returns a single raw Meta lead dict (same shape as one element
+    of fetch_leads_for_form()'s return list) — safe to pass straight into
+    extract_lead_fields().
+    """
+    params = {
+        "fields": "id,created_time,campaign_id,campaign_name,"
+                   "adset_id,adset_name,ad_id,ad_name,platform,field_data",
+    }
+    return graph_get(leadgen_id, page_token, app_secret, params)
 
 
 # ─────────────────────────────────────────────────────────────
