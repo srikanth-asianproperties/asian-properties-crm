@@ -1,7 +1,33 @@
 # CLAUDE.md
 <!--
-Version: 1.7
+Version: 1.8
 Changelog:
+  v1.8 (2026-08-28) — Two corrections, docs-only, no other files touched:
+                       (1) the "no git repo here" line in "What this is" was
+                       stale — verified live with `git remote -v` / `git
+                       branch --show-current`: a real repo exists, remote
+                       `origin` -> github.com/srikanth-asianproperties/
+                       asian-properties-crm.git, branch `master`. Corrected
+                       to state that, while keeping the existing note that
+                       `git-log.txt` is a stray export file, not actual git
+                       history (that file still exists on disk and could
+                       otherwise be mistaken for the real log). (2) Swept
+                       the whole file for remaining "never touch Job B" /
+                       stale active-pipeline-job language, per Job B's
+                       (`selldo_to_cls.py`) 2026-08-18 retirement (already
+                       corrected in v1.3/v1.4) — found every other Job B
+                       mention already reflects retirement correctly, but
+                       found ONE adjacent staleness of the same kind not
+                       about Job B itself: the "Job result logging" section
+                       listed `cls_email_drip.py` (Job D) as one of the
+                       "active" jobs calling `write_job_result()`, directly
+                       contradicting this same file's own Architecture
+                       section three headings up, which documents Job D as
+                       PAUSED since 2026-08-04. Fixed to name only the two
+                       actually-scheduled jobs (`meta_leads_fetcher.py`,
+                       `cls_capi_firer.py`) as active, with Job D and the
+                       retired Job B both called out separately as callers
+                       of the same function while not currently running.
   v1.7 (2026-08-21) — Notifications v1.0 build session: documented the new
                        `notifications` table, the two config-not-code dicts
                        (NOTIFICATION_EVENTS/NOTIFICATION_TRIGGERS), the 3
@@ -122,7 +148,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-CLS ("Centralised Leads System") is a real-estate lead-management platform built for **Asian Properties**. It runs unattended on a single Windows laptop (Task Scheduler jobs) plus a small Cloudflare edge layer. As of **2026-07-26** it is backed by **two** SQLite databases, `D:\CLS\CLS1.db` and `D:\CLS\CLS2.db` (previously a single `cls.db` — see "The CLS1/CLS2 database split" below). There is no git repo here (`git-log.txt` is a stray export, not history) and no automated test suite — validation is done via each script's built-in `--selftest` / dry-run mode and manual review.
+CLS ("Centralised Leads System") is a real-estate lead-management platform built for **Asian Properties**. It runs unattended on a single Windows laptop (Task Scheduler jobs) plus a small Cloudflare edge layer. As of **2026-07-26** it is backed by **two** SQLite databases, `D:\CLS\CLS1.db` and `D:\CLS\CLS2.db` (previously a single `cls.db` — see "The CLS1/CLS2 database split" below). This is a real git repository (remote `origin` → `github.com/srikanth-asianproperties/asian-properties-crm.git`, branch `master`) — confirmed live, not the stray `git-log.txt` export file that sits alongside it in `D:\CLS` (that file is not git history; use `git log` for that). There is no automated test suite — validation is done via each script's built-in `--selftest` / dry-run mode and manual review.
 
 The system has three layers:
 1. **Automation pipeline** (root `D:\CLS\*.py`) — scheduled jobs that pull leads from Meta and Sell.do, sync them into CLS1.db/CLS2.db, and fire conversion events back to Meta.
@@ -336,7 +362,7 @@ Run manually (`python cls_parallel_diff.py`); not part of the scheduled A-D chai
 
 ## Job result logging: `write_job_result()`
 
-Every active job (`meta_leads_fetcher.py`, `cls_capi_firer.py`, `cls_email_drip.py`) calls `cls_db.write_job_result(job_name, success, summary)` at each of its return points, appending one plain-English line (`[timestamp] Job Name: SUCCESS/FAILED — summary`) to `D:\CLS\job_results.txt`. This is the quick human-glance status check across all jobs at once — separate from, and much shorter than, each job's own detailed `*_log.txt` file. (`selldo_to_cls.py` also called this while it was live, before its 2026-08-18 retirement — see Architecture section.)
+`meta_leads_fetcher.py` and `cls_capi_firer.py` — the two jobs currently active on the schedule — call `cls_db.write_job_result(job_name, success, summary)` at each of their return points, appending one plain-English line (`[timestamp] Job Name: SUCCESS/FAILED — summary`) to `D:\CLS\job_results.txt`. This is the quick human-glance status check across all jobs at once — separate from, and much shorter than, each job's own detailed `*_log.txt` file. `cls_email_drip.py` also has this call at each return point, but PAUSED as of 2026-08-04 (see Architecture section) — it doesn't currently run, so it doesn't currently write to `job_results.txt` either. `selldo_to_cls.py` also called this while it was live, before its 2026-08-18 retirement — see Architecture section.
 
 ## Historical migration tooling: `cls_db_fork.py`
 
