@@ -1,4 +1,23 @@
-{# lead_detail.html v14 (2026-08-20) — Task 4 item 3: new ACTIONS-modal
+{# lead_detail.html v15 (2026-08-31) — Manual Project Editor (Part A):
+   NEW "Project" <select name="project_bucket"> field added as the FIRST
+   field in the existing "Edit property details" form (before Funding
+   source) — populated from project_buckets (already passed into this
+   template for exactly this, per its own route comment), pre-selected
+   to lead.project_bucket. Posts to the same update_property_details_
+   route action as the rest of that form; app.py v0.59 reads it and
+   calls the new cls_db.update_lead_project() as an additional call.
+   Also fixes two missing activity-log render branches that fell
+   through to the generic {% else %} and showed a raw activity_type
+   string: 'cross_project_reassigned' (added to cls_db.py in the
+   previous session, v2.75, but never got a template branch — out of
+   scope then) and 'project_changed' (new this session). Both added to
+   ACTIVITY_BUCKETS under the existing 'assignment_change' bucket (no
+   new filter icon) and given {% elif %} branches matching the
+   description-only style of the neighbouring 'property_details_updated'
+   branch (🔀 / 🏗️ icons, static bold label, plain description — neither
+   activity_type carries prev_value/new_value).
+
+   lead_detail.html v14 (2026-08-20) — Task 4 item 3: new ACTIONS-modal
    block "Sitting Done", posting to the new add_sitting_done route
    (app.py) which calls cls_db.log_sitting_done() — same
    details.write-toggle / form.write-form markup as "Site Visit
@@ -238,6 +257,8 @@
   'lead_entered'           : 'other',
   'lead_reengaged'         : 'other',
   'call_recording'         : 'call_recording',
+  'cross_project_reassigned' : 'assignment_change',
+  'project_changed'          : 'assignment_change',
 } %}
 
 <a href="{{ url_for('leads_list') }}" style="font-size:14px;">← Back to leads</a>
@@ -346,6 +367,13 @@
     <details class="write-toggle" style="margin-top:10px;">
       <summary>Edit property details</summary>
       <form method="post" action="{{ url_for('update_property_details_route', cls_id=lead.cls_id) }}" class="write-form">
+        <div class="field-label" style="margin-top:10px;">Project</div>
+        <select name="project_bucket">
+          {% for p in project_buckets %}
+          <option value="{{ p }}" {% if lead.project_bucket == p %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+
         <div class="field-label" style="margin-top:10px;">Funding source</div>
         <select name="funding_source">
           <option value="">— Unchanged / not set —</option>
@@ -614,6 +642,10 @@
             <div>🔄 <strong>Stage changed:</strong> <strong>{{ a.prev_value }}</strong> → <strong>{{ a.new_value }}</strong>{% if a.description %} — {{ a.description }}{% endif %}</div>
           {% elif a.activity_type == 'assignment_change' %}
             <div>👤 <strong>Reassigned:</strong> <strong>{{ a.prev_value or '(unassigned)' }}</strong> → <strong>{{ a.new_value }}</strong></div>
+          {% elif a.activity_type == 'cross_project_reassigned' %}
+            <div>🔀 <strong>Auto-reassigned:</strong> {{ a.description }}</div>
+          {% elif a.activity_type == 'project_changed' %}
+            <div>🏗️ <strong>Project changed:</strong> {{ a.description }}</div>
           {% elif a.activity_type == 'site_visit_scheduled' %}
             <div>📅 <strong>Site visit scheduled for</strong> {{ a.new_value|ampm }}{% if a.description %} — {{ a.description }}{% endif %}</div>
           {% elif a.activity_type == 'site_visit_conducted' %}

@@ -2,11 +2,79 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.74
+Version : 2.76
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.76 (2026-08-31) — Manual Project Editor (Part A), ADDITIVE ONLY.
+    - NEW function update_lead_project(cls_id, new_bucket, actor) — lets
+      a lead's owner manually change its project via Actions > Edit
+      Property Details. Validates new_bucket against
+      get_all_bucket_names() (same dropdown source as lead_new.html /
+      the leads filter screen). No-op if unchanged (no pointless
+      activity_log row or cls_updated_at bump). Sets BOTH leads.project
+      and leads.project_bucket to new_bucket, same as
+      _auto_cross_reassign_project() (v2.75) does. Does NOT touch
+      current_stage, stage_reason, lead_owner, or cross_reassigned_at —
+      fully independent of the auto-reassignment feature and its
+      permanent ping-pong guard; a manual change never sets or checks
+      that flag. Booked leads can have their project changed too, no
+      restriction (Srikanth's explicit call). Logs a new 'project_changed'
+      activity_log row.
+    - Scope: cls_db.py ONLY, additive-only. Nothing existing removed or
+      modified.
+v2.75 (2026-08-31) — Cross-Project Auto-Reassignment, ADDITIVE ONLY.
+    - NEW table cross_project_reassign_rules (init_db()) — mirrors
+      campaign_routing_rules exactly in style: source_bucket/
+      target_bucket pair, rule_type ('single'/'round_robin'), owners
+      JSON array, next_index round-robin cursor, UNIQUE(source_bucket,
+      target_bucket). Self-healing seed (INSERT OR IGNORE, never
+      clobbers a row Srikanth already edited later via a future GUI):
+      Naishka Homes -> Grace Classic (single, Mounika Peddi); Grace
+      Classic -> Naishka Homes (round_robin, Elohar Peddi / Devender
+      Goud). Owner spellings verified against the live users.full_name/
+      leads.lead_owner columns before writing this seed.
+    - NEW column leads.cross_reassigned_at (drip_migrations self-healing
+      ALTER TABLE loop), nullable, NULL until a lead is auto-reassigned
+      across project buckets. This is the PERMANENT ping-pong guard —
+      Srikanth's explicit instruction (2026-08): once set for a lead,
+      this feature can never fire again for it. If the lead goes Lost/
+      Unqualified again on the new project too, it just stays there. No
+      second bounce, ever.
+    - NEW project_aliases seed row: ('Naishka Homes', 'Naishka Homes')
+      — registers the bucket name itself as its own alias (previously
+      only its sub-projects mapped to it). Cosmetic/completeness fix
+      for /settings/projects display; get_project_bucket() already
+      fell through safely without it.
+    - NEW helpers _get_cross_reassign_rule(conn, source_bucket),
+      _pick_cross_reassign_owner(conn, rule), and
+      _auto_cross_reassign_project(conn, cls_id, source_bucket,
+      new_stage, actor) — modeled directly on the existing
+      _auto_cancel_open_schedules() helper (same file, same style, same
+      silently-no-op-if-nothing-to-do posture). The picker reuses the
+      exact same single/round_robin logic as the campaign routing
+      picker used by resolve_owner_for_new_lead().
+    - NEW NOTIFICATION_EVENTS key 'lead_cross_reassigned', shaped
+      exactly like the existing 'lead_reassigned' entry. In-app bell
+      only (insert_notification()) — deliberately no send_fcm_push()
+      call here, same reasoning bulk_reassign_leads() already uses:
+      this runs inside update_lead_stage()'s shared transaction, not a
+      dedicated single-lead route, so a blocking network call per fire
+      is skipped.
+    - ONE new hook line in update_lead_stage(), inside the existing
+      `if new_stage in AUTO_CANCEL_ON_STAGES:` block, immediately after
+      the existing _auto_cancel_open_schedules() call: re-reads
+      leads.project_bucket for this lead and calls
+      _auto_cross_reassign_project() if it's set. AUTO_CANCEL_ON_STAGES
+      itself is untouched — Lost/Unqualified already covers exactly the
+      right cases.
+    - Scope: cls_db.py ONLY, additive-only. Nothing existing removed or
+      modified except the one new hook line inside update_lead_stage()
+      described above. No changes to app.py, templates, or any other
+      file — the admin GUI (/settings/cross-reassign) and the manual
+      project-change dropdown are explicitly deferred to the next
+      app.py-touching session.
 v2.74 (2026-08-25) — Fix IST conversion bug in _format_meta_created_time(),
   ADDITIVE + ONE BUG FIX ONLY.
     - Confirmed repro: the Sahitya lead (#8335, 2026-08-24) — FB Leads
@@ -2395,6 +2463,7 @@ NOTIFICATION_EVENTS = {
     "new_enquiry":         "New enquiry: {full_name} ({project})",
     "lead_reengaged":      "{full_name} re-engaged — was previously in your pipeline",
     "lead_reassigned":     "Lead reassigned to you: {full_name}",
+    "lead_cross_reassigned": "Lead auto-reassigned to you: {full_name} ({project})",
     "followup_due":        "Follow-up due today: {full_name}",
     "followup_overdue_1d": "Follow-up overdue by 1 day: {full_name}",
     "visit_tomorrow":      "Site visit scheduled tomorrow: {full_name}",
@@ -3143,6 +3212,12 @@ def init_db():
         # the other meta_ columns above. NULL on all leads created before
         # this version.
         ("meta_platform",      "TEXT"),
+        # v2.75 — Cross-Project Auto-Reassignment permanent ping-pong
+        # guard. NULL until a lead is auto-reassigned across project
+        # buckets (see _auto_cross_reassign_project() below); once set,
+        # this feature can never fire again for this lead — Srikanth's
+        # explicit instruction (2026-08): one bounce only, ever.
+        ("cross_reassigned_at", "TEXT"),
     ]
     for col_name, col_type in drip_migrations:
         if col_name not in lead_cols:
@@ -3913,6 +3988,63 @@ def init_db():
     conn.execute(
         "INSERT OR IGNORE INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
         ("attendance_default_radius_m", "1500", _now())
+    )
+
+    # ── v2.75 — Cross-Project Auto-Reassignment ──
+    # Mirrors campaign_routing_rules exactly in style (same rule_type
+    # CHECK constraint, same owners-as-JSON-array + next_index round-
+    # robin cursor). One row per (source_bucket, target_bucket) pair —
+    # UNIQUE enforces at most one active route out of a given source
+    # bucket into a given target bucket. See _get_cross_reassign_rule()/
+    # _pick_cross_reassign_owner()/_auto_cross_reassign_project() below
+    # for how this is read, and update_lead_stage()'s hook for where
+    # it's triggered (Lost/Unqualified transitions only).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cross_project_reassign_rules (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_bucket   TEXT NOT NULL COLLATE NOCASE,
+            target_bucket   TEXT NOT NULL COLLATE NOCASE,
+            rule_type       TEXT NOT NULL CHECK (rule_type IN ('single','round_robin')),
+            owners          TEXT NOT NULL,
+            next_index      INTEGER NOT NULL DEFAULT 0,
+            active          INTEGER NOT NULL DEFAULT 1,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL,
+            UNIQUE(source_bucket, target_bucket)
+        );
+    """)
+
+    # Self-healing seed, same INSERT OR IGNORE pattern as
+    # default_fallback_owner (v2.25) — never clobbers a row Srikanth
+    # already edited later via a future GUI. Owner names verified
+    # against the live users/leads tables before this was written.
+    _cross_reassign_seed_ts = _now()
+    conn.execute(
+        "INSERT OR IGNORE INTO cross_project_reassign_rules "
+        "(source_bucket, target_bucket, rule_type, owners, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("Naishka Homes", "Grace Classic", "single",
+         json.dumps(["Mounika Peddi"]), _cross_reassign_seed_ts, _cross_reassign_seed_ts)
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO cross_project_reassign_rules "
+        "(source_bucket, target_bucket, rule_type, owners, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("Grace Classic", "Naishka Homes", "round_robin",
+         json.dumps(["Elohar Peddi", "Devender Goud"]), _cross_reassign_seed_ts, _cross_reassign_seed_ts)
+    )
+
+    # Registers the "Naishka Homes" bucket name as its own alias.
+    # Currently only the sub-projects (Naishka, Naishka Prism, etc.) map
+    # to this bucket — the bucket name itself isn't registered.
+    # Cosmetic/completeness fix so it displays correctly on
+    # /settings/projects. get_project_bucket() already falls through
+    # safely without this, so it was low-risk either way. Unconditional
+    # INSERT OR IGNORE (not gated on table_existed_before above) since
+    # project_aliases already exists on the live database.
+    conn.execute(
+        "INSERT OR IGNORE INTO project_aliases (alias, project_bucket, created_at) VALUES (?, ?, ?)",
+        ("Naishka Homes", "Naishka Homes", _cross_reassign_seed_ts)
     )
 
     conn.commit()
@@ -5627,6 +5759,93 @@ def _auto_cancel_open_schedules(conn, cls_id, new_stage, actor):
         _log_activity(conn, cls_id, "follow_up_cancelled", actor, description=reason)
 
 
+def _get_cross_reassign_rule(conn, source_bucket):
+    """
+    Internal helper (v2.75) — reads the active cross_project_reassign_
+    rules row for source_bucket, if any, on the SAME open connection.
+    Returns None if no active rule exists for that bucket — this is
+    what keeps the feature correctly inert for Prima Paradiso, Praga
+    Enclave, or any future project bucket that never gets a rule row.
+    """
+    return conn.execute(
+        "SELECT id, source_bucket, target_bucket, rule_type, owners, next_index "
+        "FROM cross_project_reassign_rules WHERE source_bucket=? AND active=1",
+        (source_bucket,)
+    ).fetchone()
+
+
+def _pick_cross_reassign_owner(conn, rule):
+    """
+    Internal helper (v2.75) — same logic as resolve_owner_for_new_lead()'s
+    round-robin picker for campaign_routing_rules:
+      - rule_type='single' -> owners[0].
+      - rule_type='round_robin' -> owners[next_index % len(owners)], then
+        next_index is incremented on that same row (same conn, not yet
+        committed here — the caller's own commit covers it).
+    """
+    owners = json.loads(rule["owners"])
+    if rule["rule_type"] == "single":
+        return owners[0]
+
+    picked = owners[rule["next_index"] % len(owners)]
+    conn.execute(
+        "UPDATE cross_project_reassign_rules SET next_index = next_index + 1 WHERE id=?",
+        (rule["id"],)
+    )
+    return picked
+
+
+def _auto_cross_reassign_project(conn, cls_id, source_bucket, new_stage, actor):
+    """
+    Internal helper (v2.75) — called from INSIDE update_lead_stage()'s
+    own open transaction, right after _auto_cancel_open_schedules(),
+    whenever the lead's project_bucket has an active cross-project
+    reassignment rule configured. Model: _auto_cancel_open_schedules()
+    above — same "silently no-op if nothing to do" posture.
+
+    Permanent ping-pong guard: once leads.cross_reassigned_at is set for
+    a lead, this can never fire again for that lead — Srikanth's
+    explicit instruction (2026-08): after one auto-reassignment, if the
+    lead goes Lost/Unqualified again on the new project too, it just
+    stays there. No second bounce, ever.
+    """
+    rule = _get_cross_reassign_rule(conn, source_bucket)
+    if not rule:
+        return
+
+    row = conn.execute(
+        "SELECT full_name, cross_reassigned_at FROM leads WHERE cls_id=?", (cls_id,)
+    ).fetchone()
+    if not row or row["cross_reassigned_at"] is not None:
+        return
+
+    picked_owner = _pick_cross_reassign_owner(conn, rule)
+    target_bucket = rule["target_bucket"]
+    now = _now()
+
+    conn.execute("""
+        UPDATE leads
+        SET current_stage='Re Assigned', stage_reason=NULL,
+            project=?, project_bucket=?, lead_owner=?, cross_reassigned_at=?
+        WHERE cls_id=?
+    """, (target_bucket, target_bucket, picked_owner, now, cls_id))
+
+    _log_activity(
+        conn, cls_id, "cross_project_reassigned", actor,
+        description=(
+            f"Auto-reassigned: {source_bucket} -> {target_bucket}. "
+            f"New owner: {picked_owner}. (Lead was marked {new_stage}.)"
+        )
+    )
+
+    new_owner_user_id = resolve_user_id_from_owner_name(picked_owner)
+    if new_owner_user_id:
+        message = NOTIFICATION_EVENTS["lead_cross_reassigned"].format(
+            full_name=row["full_name"] or "(no name)", project=target_bucket
+        )
+        insert_notification(new_owner_user_id, cls_id, "lead_cross_reassigned", message, conn=conn)
+
+
 def update_lead_stage(cls_id, new_stage, actor, reason_code=None, reason_notes=None):
     """
     Change a lead's stage from the CRM, enforcing the SAME one-way
@@ -5714,6 +5933,12 @@ def update_lead_stage(cls_id, new_stage, actor, reason_code=None, reason_notes=N
         if new_stage in AUTO_CANCEL_ON_STAGES:
             _auto_cancel_open_schedules(conn, cls_id, new_stage, actor)
             cancelled_note = " Any open site visit/follow-up was auto-cancelled."
+
+            row = conn.execute(
+                "SELECT project_bucket FROM leads WHERE cls_id=?", (cls_id,)
+            ).fetchone()
+            if row and row["project_bucket"]:
+                _auto_cross_reassign_project(conn, cls_id, row["project_bucket"], new_stage, actor)
 
         conn.commit()
         return True, f"Stage changed: {live_stage} → {new_stage}.{cancelled_note}"
@@ -8036,6 +8261,61 @@ def update_property_details(cls_id, actor, funding_source=None, property_type=No
                       description="; ".join(changed))
         conn.commit()
         return True, "Property details updated."
+    finally:
+        conn.close()
+
+
+def update_lead_project(cls_id, new_bucket, actor):
+    """
+    (v2.76) Manually change a lead's project (Actions > Edit Property
+    Details). new_bucket must be one of get_all_bucket_names() — same
+    dropdown source already used by lead_new.html and the leads filter
+    screen.
+
+    No-op (returns ok=True, unchanged message) if new_bucket equals the
+    lead's current project_bucket — avoids a pointless activity_log row
+    and cls_updated_at bump on an unchanged resubmit, same discipline as
+    upsert_selldo_lead()'s existing "only write on actual change" fix.
+
+    Sets BOTH leads.project and leads.project_bucket to new_bucket (the
+    canonical bucket name), same as _auto_cross_reassign_project() does
+    — keeps the two columns in sync without a second get_project_bucket()
+    round-trip, since the admin/salesperson is choosing the bucket
+    directly here, not a raw alias string.
+
+    Does NOT touch current_stage, stage_reason, lead_owner, or
+    cross_reassigned_at — this is a pure project-field edit, orthogonal
+    to the auto-reassignment feature (Lost/Unqualified is not required
+    or checked here; Booked leads can have their project changed too —
+    no restriction).
+
+    Returns (ok: bool, message: str).
+    """
+    if new_bucket not in get_all_bucket_names():
+        return False, f"'{new_bucket}' is not a recognised project."
+
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT project_bucket FROM leads WHERE cls_id=?", (cls_id,)
+        ).fetchone()
+        if not row:
+            return False, "Lead not found."
+
+        old_bucket = row["project_bucket"]
+        if old_bucket == new_bucket:
+            return True, "Project unchanged."
+
+        conn.execute(
+            "UPDATE leads SET project=?, project_bucket=?, cls_updated_at=? WHERE cls_id=?",
+            (new_bucket, new_bucket, _now(), cls_id)
+        )
+        _log_activity(
+            conn, cls_id, "project_changed", actor,
+            description=f"Project changed: {old_bucket} -> {new_bucket} (manual)"
+        )
+        conn.commit()
+        return True, f"Project updated to {new_bucket}."
     finally:
         conn.close()
 

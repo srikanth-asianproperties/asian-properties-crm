@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.58
+Version : 0.59
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,17 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.59 (2026-08-31) — Manual Project Editor (Part A): update_property_
+  details_route() now also reads a new "project_bucket" form field
+  (Edit Property Details panel, lead_detail.html) and, if present, calls
+  cls_db.update_lead_project() as an ADDITIONAL call alongside the
+  existing cls_db.update_property_details(...) call already in this
+  route — same "one form, two backend calls" pattern already used in
+  new_lead() for budget/configuration vs. contact info.
+  update_property_details() itself is untouched — stays focused on
+  qualification fields only. Same ownership gate as every other writer
+  control on this page (_check_lead_ownership) — no admin gate, this is
+  a salesperson tool. Requires cls_db.py v2.76.
 v0.58 (2026-08-28) — BUG FIX to the Phase 2 Meta webhook work (v0.57):
   _process_leadgen_change()'s two outbound Graph API calls (meta_leads_
   fetcher.resolve_page_token() and .fetch_single_lead_by_id()) were
@@ -4122,6 +4133,13 @@ def update_property_details_route(cls_id):
         facing=", ".join(facing_list) if facing_list else None,
     )
     flash(message, "success" if ok else "error")
+
+    new_project = request.form.get("project_bucket") or None
+    if new_project:
+        ok, msg = cls_db.update_lead_project(cls_id, new_project, actor=_actor())
+        if not ok:
+            flash(msg, "error")
+
     return redirect(url_for("lead_detail", cls_id=cls_id))
 
 
