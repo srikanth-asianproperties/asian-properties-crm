@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.59
+Version : 0.60
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,17 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.60 (2026-08-31) — Cross-Reassign Rules Admin GUI (Part B): NEW
+  admin-only routes settings_cross_reassign() (GET lists rules + shows
+  add/edit form; POST calls cls_db.upsert_cross_reassign_rule(), same
+  try/except ValueError -> flash pattern as settings_campaign_routing_
+  save()) and settings_cross_reassign_delete(rule_id) (calls cls_db.
+  delete_cross_reassign_rule()). Mirrors settings_campaign_routing()'s
+  page shape (list + add/edit form on one page) but folds 'active' into
+  the same upsert call instead of a separate toggle route, since the
+  rule here is keyed on (source_bucket, target_bucket) rather than a
+  single campaign_name. New template settings_cross_reassign.html.
+  Requires cls_db.py v2.77.
 v0.59 (2026-08-31) — Manual Project Editor (Part A): update_property_
   details_route() now also reads a new "project_bucket" form field
   (Edit Property Details panel, lead_detail.html) and, if present, calls
@@ -4483,6 +4494,73 @@ def settings_campaign_routing_delete(campaign_name):
     cls_db.delete_campaign_routing_rule(campaign_name)
     flash(f"'{campaign_name}' deleted.", "success")
     return redirect(url_for("settings_campaign_routing"))
+
+
+@app.route("/settings/cross-reassign", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_cross_reassign():
+    """
+    v0.60 — admin Settings > Cross-Reassign Rules. Admin GUI for
+    cross_project_reassign_rules (cls_db.py v2.75/v2.77). Mirrors
+    settings_campaign_routing() in structure (list + add/edit form on
+    one page), adapted for a rule keyed on (source_bucket, target_bucket)
+    rather than a single campaign_name, and with 'active' folded into
+    the same add/edit form/upsert call instead of a separate toggle
+    route — upsert_cross_reassign_rule() takes active directly.
+
+    ?edit=<rule_id> prefills the add/edit form with that rule's current
+    values (source_bucket/target_bucket are locked once created, same
+    "identity fields aren't editable" convention as campaign_name on
+    the campaign-routing screen — editing a pair means changing rule_
+    type/owners/active for that same source->target route).
+
+    Owner choices sourced the same way as campaign routing's
+    owner_choices: active users with an owner_match_name set — the
+    value written as leads.lead_owner must be that exact string.
+    """
+    if request.method == "POST":
+        source_bucket = request.form.get("source_bucket", "").strip()
+        target_bucket = request.form.get("target_bucket", "").strip()
+        rule_type = request.form.get("rule_type", "").strip()
+        owners_list = [o.strip() for o in request.form.getlist("owners") if o.strip()]
+        active = request.form.get("active") == "1"
+        try:
+            cls_db.upsert_cross_reassign_rule(source_bucket, target_bucket, rule_type, owners_list, active=active)
+            flash(f"Rule for '{source_bucket} → {target_bucket}' saved.", "success")
+        except ValueError as e:
+            flash(str(e), "error")
+        return redirect(url_for("settings_cross_reassign"))
+
+    edit_id = request.args.get("edit", "").strip()
+    edit_rule = None
+    if edit_id.isdigit():
+        edit_rule = next(
+            (r for r in cls_db.list_cross_reassign_rules() if r["id"] == int(edit_id)),
+            None
+        )
+
+    owner_choices = [
+        u for u in cls_db.get_all_users_detailed()
+        if u["active"] and u["role"] in ("manager", "salesperson") and u["owner_match_name"]
+    ]
+
+    return render_template(
+        "settings_cross_reassign.html",
+        rules=cls_db.list_cross_reassign_rules(),
+        buckets=cls_db.get_all_bucket_names(),
+        owner_choices=owner_choices,
+        edit_rule=edit_rule,
+    )
+
+
+@app.route("/settings/cross-reassign/<int:rule_id>/delete", methods=["POST"])
+@login_required
+@admin_required
+def settings_cross_reassign_delete(rule_id):
+    cls_db.delete_cross_reassign_rule(rule_id)
+    flash("Rule removed.", "success")
+    return redirect(url_for("settings_cross_reassign"))
 
 
 @app.route("/settings/lead-scoring", methods=["GET", "POST"])

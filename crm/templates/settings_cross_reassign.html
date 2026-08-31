@@ -1,0 +1,173 @@
+{# settings_cross_reassign.html (v1, 2026-08-31) — admin Settings >
+   Cross-Reassign Rules. CRUD for cross_project_reassign_rules
+   (cls_db.py v2.75/v2.77). Cloned from settings_campaign_routing.html's
+   structure (list + add/edit form on one page, same card/badge/btn
+   language) — adapted for a rule keyed on (source_bucket, target_
+   bucket) instead of a single campaign_name, and with the active
+   checkbox folded into the same add/edit form/upsert call instead of a
+   separate toggle route. "Single" sends every matching lead's auto-
+   reassignment to one fixed owner; "Round Robin" cycles through 2+
+   owners in order. #}
+{% extends "base.html" %}
+{% block title %}Cross-Reassign Rules{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+<h2 style="margin-top:10px;">Cross-Reassign Rules</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  Decides where a lead automatically goes when it's marked Lost or Unqualified on a
+  project with a rule configured, and who picks it up on the new project. Fires at
+  most ONCE per lead, ever — see cls_db.py's changelog on the permanent guard.
+</p>
+
+{# ── Add / edit rule ── #}
+<div class="card" style="margin-top:16px; max-width:560px;">
+  <h3 style="margin-top:0; font-size:16px;">{{ 'Edit rule' if edit_rule else 'Add a cross-reassign rule' }}</h3>
+  <form method="post" action="{{ url_for('settings_cross_reassign') }}">
+    <div class="field-label">Source project *</div>
+    {% if edit_rule %}
+    <input type="text" name="source_bucket" required readonly
+           value="{{ edit_rule.source_bucket }}"
+           style="width:100%; margin-bottom:14px; background:var(--paper);">
+    {% else %}
+    <select name="source_bucket" required style="width:100%; margin-bottom:14px;">
+      <option value="" disabled selected>Choose the project a lead is leaving…</option>
+      {% for b in buckets %}
+      <option value="{{ b }}">{{ b }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+
+    <div class="field-label">Target project *</div>
+    {% if edit_rule %}
+    <input type="text" name="target_bucket" required readonly
+           value="{{ edit_rule.target_bucket }}"
+           style="width:100%; margin-bottom:14px; background:var(--paper);">
+    {% else %}
+    <select name="target_bucket" required style="width:100%; margin-bottom:14px;">
+      <option value="" disabled selected>Choose the project a lead moves to…</option>
+      {% for b in buckets %}
+      <option value="{{ b }}">{{ b }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+
+    <div class="field-label">Rule type *</div>
+    <div style="display:flex; gap:16px; margin-bottom:14px;">
+      <label style="font-size:14px; display:flex; align-items:center; gap:6px;">
+        <input type="radio" name="rule_type" value="single" id="ruleTypeSingle"
+               {{ 'checked' if not edit_rule or edit_rule.rule_type == 'single' }} onchange="toggleRuleType()"> Single
+      </label>
+      <label style="font-size:14px; display:flex; align-items:center; gap:6px;">
+        <input type="radio" name="rule_type" value="round_robin" id="ruleTypeRR"
+               {{ 'checked' if edit_rule and edit_rule.rule_type == 'round_robin' }} onchange="toggleRuleType()"> Round Robin
+      </label>
+    </div>
+
+    <div class="field-label">Owner(s) *</div>
+    <div id="ownerRows" style="display:flex; flex-direction:column; gap:8px;">
+      {% if edit_rule and edit_rule.owners %}
+        {% for o in edit_rule.owners %}
+        <div style="display:flex; gap:8px; align-items:center;">
+          <select name="owners" style="flex:1;">
+            {% for u in owner_choices %}
+            <option value="{{ u.owner_match_name }}" {{ 'selected' if u.owner_match_name == o }}>{{ u.full_name or u.owner_match_name }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" class="btn owner-row-remove" onclick="removeOwnerRow(this)" style="padding:5px 10px;">×</button>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div style="display:flex; gap:8px; align-items:center;">
+          <select name="owners" style="flex:1;">
+            {% for u in owner_choices %}
+            <option value="{{ u.owner_match_name }}">{{ u.full_name or u.owner_match_name }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" class="btn owner-row-remove" onclick="removeOwnerRow(this)" style="padding:5px 10px;">×</button>
+        </div>
+      {% endif %}
+    </div>
+    <button type="button" class="btn" id="addOwnerBtn" onclick="addOwnerRow()" style="margin-top:8px; padding:5px 12px; font-size:13px;">+ Add owner</button>
+
+    <div style="margin-top:14px;">
+      <label style="font-size:14px; display:flex; align-items:center; gap:6px;">
+        <input type="checkbox" name="active" value="1" {{ 'checked' if not edit_rule or edit_rule.active }}> Active
+      </label>
+    </div>
+
+    <div style="margin-top:16px;">
+      <button type="submit" class="btn btn-primary">{{ 'Save changes' if edit_rule else 'Add rule' }}</button>
+      {% if edit_rule %}
+      <a href="{{ url_for('settings_cross_reassign') }}" class="btn" style="margin-left:8px;">Cancel</a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+{# ── Existing rules ── #}
+<h3 style="margin-top:24px; font-size:16px;">Existing rules ({{ rules|length }})</h3>
+{% if rules %}
+<div style="display:flex; flex-direction:column; gap:12px;">
+  {% for r in rules %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+      <div>
+        <strong style="font-size:15px;">{{ r.source_bucket }} → {{ r.target_bucket }}</strong>
+        <span class="badge" style="background:{{ 'var(--blue)' if r.rule_type == 'single' else '#7C5CBF' }}; margin-left:6px;">
+          {{ 'Single' if r.rule_type == 'single' else 'Round Robin' }}
+        </span>
+        {% if not r.active %}
+        <span class="badge" style="background:var(--red); margin-left:6px;">Inactive</span>
+        {% endif %}
+        <div style="font-size:13px; color:var(--ink-soft); margin-top:4px;">{{ r.owners|join(', ') }}</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <a href="{{ url_for('settings_cross_reassign', edit=r.id) }}" class="btn" style="padding:5px 14px; font-size:13px;">Edit</a>
+        <form method="post" action="{{ url_for('settings_cross_reassign_delete', rule_id=r.id) }}"
+              onsubmit="return confirm('Delete the rule {{ r.source_bucket }} → {{ r.target_bucket }}?');">
+          <button type="submit" class="btn" style="color:var(--red); border-color:#F3C9C9; padding:5px 14px; font-size:13px;">Delete</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty-state">
+  <p>No cross-reassign rules yet. A Lost/Unqualified lead just stays on its current project.</p>
+</div>
+{% endif %}
+
+<script>
+var ownerOptionsHtml = document.querySelector('#ownerRows select') ? document.querySelector('#ownerRows select').innerHTML : '';
+
+function addOwnerRow() {
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex; gap:8px; align-items:center;';
+  wrap.innerHTML = '<select name="owners" style="flex:1;">' + ownerOptionsHtml + '</select>' +
+    '<button type="button" class="btn owner-row-remove" onclick="removeOwnerRow(this)" style="padding:5px 10px;">×</button>';
+  document.getElementById('ownerRows').appendChild(wrap);
+}
+
+function removeOwnerRow(btn) {
+  var rows = document.getElementById('ownerRows');
+  if (rows.children.length > 1) {
+    btn.parentElement.remove();
+  }
+}
+
+function toggleRuleType() {
+  var isSingle = document.getElementById('ruleTypeSingle').checked;
+  var rows = document.getElementById('ownerRows');
+  var addBtn = document.getElementById('addOwnerBtn');
+  if (isSingle) {
+    while (rows.children.length > 1) { rows.removeChild(rows.lastChild); }
+    addBtn.style.display = 'none';
+  } else {
+    addBtn.style.display = 'inline-block';
+  }
+}
+document.addEventListener('DOMContentLoaded', toggleRuleType);
+</script>
+{% endblock %}

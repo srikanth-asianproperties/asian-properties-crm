@@ -2,11 +2,32 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.76
+Version : 2.77
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.77 (2026-08-31) — Cross-Reassign Rules Admin GUI (Part B), backend
+  only, ADDITIVE ONLY.
+    - NEW list_cross_reassign_rules() / upsert_cross_reassign_rule() /
+      delete_cross_reassign_rule() — CRUD for cross_project_reassign_
+      rules (v2.75), mirroring list_campaign_routing_rules()/
+      upsert_campaign_routing_rule()/delete_campaign_routing_rule()
+      exactly in style and validation approach. upsert validates
+      source_bucket != target_bucket, rule_type in ('single',
+      'round_robin'), a non-empty owners_list, and exactly 1 owner for
+      'single'; raises ValueError with a clear message on rejection.
+      next_index resets to 0 only when the owners list actually changed
+      from what's stored (same live-rotation-preserving rule as
+      campaign routing's upsert) — re-saving to just flip active leaves
+      an in-progress round robin exactly where it was.
+    - Unlike campaign routing (separate toggle route, upsert always
+      forces active=1), upsert_cross_reassign_rule() takes active as a
+      direct parameter — the admin GUI's add/edit form includes the
+      active checkbox itself rather than a separate toggle action, so
+      one upsert call covers both create/edit AND activate/deactivate.
+    - Scope: cls_db.py ONLY, additive-only. Nothing existing removed or
+      modified.
 v2.76 (2026-08-31) — Manual Project Editor (Part A), ADDITIVE ONLY.
     - NEW function update_lead_project(cls_id, new_bucket, actor) — lets
       a lead's owner manually change its project via Actions > Edit
@@ -9389,6 +9410,119 @@ def delete_campaign_routing_rule(campaign_name):
     conn = _connect()
     try:
         conn.execute("DELETE FROM campaign_routing_rules WHERE campaign_name=?", (campaign_name,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_cross_reassign_rules():
+    """(v2.77) All cross-project reassign rules for the /settings/
+    cross-reassign admin screen. Same shape as
+    list_campaign_routing_rules() — owners JSON-decoded before
+    returning, ordered by source_bucket then target_bucket."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, source_bucket, target_bucket, rule_type, owners, next_index, "
+            "active, created_at, updated_at FROM cross_project_reassign_rules "
+            "ORDER BY source_bucket COLLATE NOCASE, target_bucket COLLATE NOCASE"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["owners"] = json.loads(d["owners"])
+        result.append(d)
+    return result
+
+
+def upsert_cross_reassign_rule(source_bucket, target_bucket, rule_type, owners_list, active=True):
+    """
+    (v2.77) Create or update one cross-project reassign rule — unique on
+    (source_bucket, target_bucket), the table's own UNIQUE constraint.
+    Mirrors upsert_campaign_routing_rule() exactly in style and
+    validation approach.
+
+    Validates:
+      - source_bucket != target_bucket (no self-loop)
+      - rule_type in ('single', 'round_robin')
+      - owners_list non-empty
+      - rule_type == 'single' requires exactly 1 owner
+
+    next_index resets to 0 ONLY if the owners list actually changed from
+    what's currently stored — same rule as upsert_campaign_routing_rule(),
+    so re-saving unchanged owners (e.g. just toggling active) doesn't
+    reset a live rotation.
+
+    Raises ValueError with a clear message on any validation failure.
+    """
+    source_bucket = (source_bucket or "").strip()
+    target_bucket = (target_bucket or "").strip()
+    if not source_bucket or not target_bucket:
+        raise ValueError("Source and target project are both required.")
+    if source_bucket.lower() == target_bucket.lower():
+        raise ValueError("Source and target project can't be the same.")
+    if rule_type not in ("single", "round_robin"):
+        raise ValueError("Rule type must be 'single' or 'round_robin'.")
+    if not owners_list:
+        raise ValueError("At least one owner is required.")
+    if rule_type == "single" and len(owners_list) != 1:
+        raise ValueError("A Single rule takes exactly one owner.")
+
+    now = _now()
+    conn = _connect()
+    try:
+        existing = conn.execute(
+            "SELECT owners FROM cross_project_reassign_rules WHERE source_bucket=? AND target_bucket=?",
+            (source_bucket, target_bucket)
+        ).fetchone()
+
+        owners_changed = True
+        if existing:
+            try:
+                owners_changed = json.loads(existing["owners"]) != list(owners_list)
+            except (ValueError, TypeError):
+                owners_changed = True
+
+        next_index = 0 if owners_changed else None  # None = "keep existing" below
+
+        if existing:
+            if next_index is None:
+                conn.execute("""
+                    UPDATE cross_project_reassign_rules
+                    SET rule_type=?, owners=?, active=?, updated_at=?
+                    WHERE source_bucket=? AND target_bucket=?
+                """, (rule_type, json.dumps(list(owners_list)), 1 if active else 0, now,
+                      source_bucket, target_bucket))
+            else:
+                conn.execute("""
+                    UPDATE cross_project_reassign_rules
+                    SET rule_type=?, owners=?, next_index=0, active=?, updated_at=?
+                    WHERE source_bucket=? AND target_bucket=?
+                """, (rule_type, json.dumps(list(owners_list)), 1 if active else 0, now,
+                      source_bucket, target_bucket))
+        else:
+            conn.execute("""
+                INSERT INTO cross_project_reassign_rules
+                    (source_bucket, target_bucket, rule_type, owners, next_index, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+            """, (source_bucket, target_bucket, rule_type, json.dumps(list(owners_list)),
+                  1 if active else 0, now, now))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_cross_reassign_rule(rule_id):
+    """(v2.77) Deletes one cross-project reassign rule row. No blocking
+    logic needed — same posture as delete_project_alias(): if a lead's
+    source_bucket has no active rule at the time it goes Lost/
+    Unqualified, _auto_cross_reassign_project() already no-ops safely."""
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM cross_project_reassign_rules WHERE id=?", (rule_id,))
         conn.commit()
     finally:
         conn.close()
