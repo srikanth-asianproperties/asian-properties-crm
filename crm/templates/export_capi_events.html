@@ -1,4 +1,4 @@
-{# export_capi_events.html (v1.0) — Settings > Export > Export CAPI
+{# export_capi_events.html (v1.1) — Settings > Export > Export CAPI
    Events. Admin-only, same as every other export screen (raw PII
    export). Structure copied from export_activity.html (plain
    <input type=date> filter form, no accordion, no preset dropdown
@@ -12,7 +12,22 @@
    optional)" field. cls_db.get_capi_events_export() (cls_db.py v2.78)
    takes only date_from/date_to — no cls_id param — so that field would
    silently filter nothing. Omitted rather than shipped non-functional;
-   see app.py v0.61's changelog for the full note. #}
+   see app.py v0.61's changelog for the full note.
+
+   v1.1 (2026-09-01) — on-screen pagination (app.py v0.62 / cls_db.py
+   v2.79). The results table now reads from `result` (cls_db.
+   get_capi_events_export_page()'s dict: rows/total/page/per_page/
+   total_pages/columns), NOT the old unpaginated `report` variable —
+   Excel/email export are UNCHANGED, still driven by the separate
+   unpaginated cls_db.get_capi_events_export() on the server side, so
+   they keep returning every matching row regardless of what's showing
+   on screen here. NEW pager block (Prev/Next/"Page X of Y") copied
+   from settings_telephony_recordings.html's exact pattern, only shown
+   when result.total_pages > 1. NEW "Rows per page" selector, a small
+   standalone GET form with no hidden page field — changing page size
+   always lands on page 1 of the new size, since a page number from
+   the OLD size (e.g. "page 7") is generally meaningless once per_page
+   changes. #}
 {% extends "base.html" %}
 {% block title %}Export CAPI Events{% endblock %}
 
@@ -43,7 +58,7 @@
   </div>
   {% endif %}
 </div>
-<p style="font-size:13px; color:var(--ink-soft); margin-top:4px;">Every CAPI (Conversions API) event fired to Meta, with the lead's snapshot at the moment it fired.</p>
+<p style="font-size:13px; color:var(--ink-soft); margin-top:4px;">Every CAPI (Conversions API) event fired to Meta, with the lead's snapshot at the moment it fired. Excel/Email export always includes every matching row, regardless of the page shown below.</p>
 
 <form method="get" action="{{ url_for('settings_export_capi_events_results') }}" class="no-print card" style="margin-top:14px; display:flex; flex-wrap:wrap; gap:10px; align-items:end;">
   <div>
@@ -59,17 +74,45 @@
 </form>
 
 {% if show_results %}
-{% if report.rows %}
+{% if result.rows %}
 <div class="report-table-wrap">
   <table class="report-table">
-    <thead><tr>{% for key, label in report.columns %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+    <thead><tr>{% for key, label in result.columns %}<th>{{ label }}</th>{% endfor %}</tr></thead>
     <tbody>
-      {% for row in report.rows %}
-      <tr>{% for key, label in report.columns %}<td>{{ row.get(key, '—') if row.get(key, '—') is not none else '—' }}</td>{% endfor %}</tr>
+      {% for row in result.rows %}
+      <tr>{% for key, label in result.columns %}<td>{{ row.get(key, '—') if row.get(key, '—') is not none else '—' }}</td>{% endfor %}</tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+
+<div class="no-print" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-top:14px;">
+  <form method="get" action="{{ url_for('settings_export_capi_events_results') }}" style="display:flex; align-items:center; gap:8px;">
+    <input type="hidden" name="date_from" value="{{ filters.date_from }}">
+    <input type="hidden" name="date_to" value="{{ filters.date_to }}">
+    <label for="perPageSelect" style="font-size:13px; color:var(--ink-soft);">Rows per page:</label>
+    <select id="perPageSelect" name="per_page" onchange="this.form.submit()" style="height:32px; font-size:13px; padding:2px 6px;">
+      {% for opt in per_page_options %}
+      <option value="{{ opt }}" {% if result.per_page == opt %}selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  <span style="font-size:13px; color:var(--ink-soft);">{{ result.total }} total event{{ 's' if result.total != 1 else '' }}</span>
+</div>
+
+{% if result.total_pages > 1 %}
+<div style="display:flex; justify-content:center; gap:10px; margin-top:16px; align-items:center;">
+  {% set base_args = {"date_from": filters.date_from, "date_to": filters.date_to, "per_page": result.per_page} %}
+  {% if result.page > 1 %}
+    <a class="btn" href="{{ url_for('settings_export_capi_events_results', page=result.page-1, **base_args) }}">← Previous</a>
+  {% endif %}
+  <span style="color:var(--ink-soft); font-size:14px;">Page {{ result.page }} of {{ result.total_pages }}</span>
+  {% if result.page < result.total_pages %}
+    <a class="btn" href="{{ url_for('settings_export_capi_events_results', page=result.page+1, **base_args) }}">Next →</a>
+  {% endif %}
+</div>
+{% endif %}
+
 {% else %}
 <div class="card empty-state" style="margin-top:14px;">
   <p>No CAPI events match these filters.</p>
