@@ -1,8 +1,13 @@
-{# dashboard.html (v0.16) — "Stats Overview" top-tab view, itself living
+{# dashboard.html (v0.17) — "Stats Overview" top-tab view, itself living
    inside the "Stats" tab of the 3-tab BOTTOM dashboard (Stats / Today's
    Performance / Pipeline Analysis). Bottom tab bar unchanged from v0.6.
    Kept at the /dashboard route/filename so every existing
    url_for('dashboard') link elsewhere still works.
+
+   v0.17 (2026-09-01) — Missed Calls card caption updated to "Last 7
+   days · tap to view" (was "Pending callback · tap to view"), to
+   match cls_db.py v2.81's new 7-day window on get_missed_calls_count().
+   No other changes.
 
    v0.16 (2026-08-16) — Task 3 Part A, Change 2/3: 2 new stat-cards, "No
    Future Activity" and "Missed Calls", added to the existing 4-card
@@ -114,7 +119,7 @@
     <div class="stat-card-header">Missed Calls</div>
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-amber">{{ missed_calls_count }}</div>
-      <div class="stat-card-caption">Pending callback &middot; tap to view</div>
+      <div class="stat-card-caption">Last 7 days &middot; tap to view</div>
     </div>
   </a>
 

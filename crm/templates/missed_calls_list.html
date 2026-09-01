@@ -1,10 +1,16 @@
-{# missed_calls_list.html (v1, 2026-08-16) — Task 3 Part A, Change 3.
+{# missed_calls_list.html (v1.1, 2026-09-01) — Task 3 Part A, Change 3.
    List behind the dashboard's new "Missed Calls" card. Mirrors
    due_list.html's markup (same lead-card-list/lead-card classes), but
    each row is a call_log_staging row (call_timestamp, raw_phone),
    not a lead row — cls_db.get_missed_calls_list() joins in
    full_name/crm_lead_no for display. Criteria: a missed call with no
-   later outgoing call back to the same matched lead. #}
+   later outgoing call back to the same matched lead.
+
+   v1.1 (2026-09-01) — Intro paragraph now says "from the last 7 days",
+   matching cls_db.py v2.81's new 7-day window on
+   get_missed_calls_list(). No other changes.
+
+   v1 (2026-08-16) — original version. #}
 {% extends "base.html" %}
 {% block title %}Missed Calls{% endblock %}
 
@@ -12,7 +18,7 @@
 <h2 style="margin-top:0;">Missed Calls <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ calls|length }})</span></h2>
 
 <p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:0;">
-  Missed calls with no callback made since. A call drops off this list the
+  Missed calls from the last 7 days with no callback made since. A call drops off this list the
   moment an outgoing call is placed to the same lead.
 </p>
 

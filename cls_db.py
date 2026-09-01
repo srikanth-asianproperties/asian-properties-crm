@@ -2,11 +2,22 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.80
+Version : 2.81
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.81 (2026-09-01) — Missed Calls dashboard card gets a 7-day window,
+  additive only, nothing else touched.
+    - NEW module constant MISSED_CALLS_WINDOW_DAYS = 7.
+    - get_missed_calls_count(owner=None, days=MISSED_CALLS_WINDOW_DAYS)
+      and get_missed_calls_list(owner=None, days=MISSED_CALLS_WINDOW_DAYS)
+      both gained a days= param and a
+      "AND m.call_timestamp >= datetime('now', 'localtime', ?)" WHERE
+      clause, superseding the v2.57 all-time behavior. Callers that
+      don't pass days= (app.py's dashboard()/missed_calls_list() routes)
+      are unaffected — they just get the new default of 7 days.
+
 v2.80 (2026-09-01) — CAPI Events column-logic consolidation, pure
   refactor, zero behavior change. Companion to crm/app.py v0.63.
     - get_capi_events_export(date_from, date_to) — BREAKING RETURN-
@@ -5188,7 +5199,10 @@ def get_no_future_activity_leads(owner=None):
         conn.close()
 
 
-def get_missed_calls_count(owner=None):
+MISSED_CALLS_WINDOW_DAYS = 7  # config-not-code: how far back get_missed_calls_count()/get_missed_calls_list() look
+
+
+def get_missed_calls_count(owner=None, days=MISSED_CALLS_WINDOW_DAYS):
     """
     (v2.57, Task 3 Part A) NEW — counts missed calls with no later
     outgoing call back to the same matched lead. A call only counts if
@@ -5204,6 +5218,10 @@ def get_missed_calls_count(owner=None):
 
     owner: optional, default None. Pass a lead_owner to scope to one
     salesperson's own leads.
+
+    (v2.81) Now windowed to `days` days (default MISSED_CALLS_WINDOW_DAYS
+    = 7), superseding the all-time v2.57 behavior — a missed call older
+    than the window no longer counts, even with no callback since.
     """
     conn = _connect()
     try:
@@ -5212,6 +5230,7 @@ def get_missed_calls_count(owner=None):
             JOIN leads l ON l.cls_id = m.matched_cls_id
             WHERE m.direction = 'MISSED'
               AND m.matched_cls_id IS NOT NULL
+              AND m.call_timestamp >= datetime('now', 'localtime', ?)
               AND NOT EXISTS (
                   SELECT 1 FROM call_log_staging o
                   WHERE o.matched_cls_id = m.matched_cls_id
@@ -5219,7 +5238,7 @@ def get_missed_calls_count(owner=None):
                     AND o.call_timestamp > m.call_timestamp
               )
         """
-        params = []
+        params = [f"-{days} days"]
         if owner:
             query += " AND l.lead_owner = ?"
             params.append(owner)
@@ -5229,7 +5248,7 @@ def get_missed_calls_count(owner=None):
         conn.close()
 
 
-def get_missed_calls_list(owner=None):
+def get_missed_calls_list(owner=None, days=MISSED_CALLS_WINDOW_DAYS):
     """
     (v2.57, Task 3 Part A) List-returning counterpart to
     get_missed_calls_count() above — SAME criteria, returning
@@ -5238,6 +5257,10 @@ def get_missed_calls_list(owner=None):
 
     owner: optional, default None. Pass a lead_owner to scope to one
     salesperson's own leads.
+
+    (v2.81) Now windowed to `days` days (default MISSED_CALLS_WINDOW_DAYS
+    = 7), superseding the all-time v2.57 behavior — a missed call older
+    than the window no longer counts, even with no callback since.
     """
     conn = _connect()
     try:
@@ -5247,6 +5270,7 @@ def get_missed_calls_list(owner=None):
             JOIN leads l ON l.cls_id = m.matched_cls_id
             WHERE m.direction = 'MISSED'
               AND m.matched_cls_id IS NOT NULL
+              AND m.call_timestamp >= datetime('now', 'localtime', ?)
               AND NOT EXISTS (
                   SELECT 1 FROM call_log_staging o
                   WHERE o.matched_cls_id = m.matched_cls_id
@@ -5254,7 +5278,7 @@ def get_missed_calls_list(owner=None):
                     AND o.call_timestamp > m.call_timestamp
               )
         """
-        params = []
+        params = [f"-{days} days"]
         if owner:
             query += " AND l.lead_owner = ?"
             params.append(owner)
