@@ -2,11 +2,76 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.78
+Version : 2.80
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.80 (2026-09-01) — CAPI Events column-logic consolidation, pure
+  refactor, zero behavior change. Companion to crm/app.py v0.63.
+    - get_capi_events_export(date_from, date_to) — BREAKING RETURN-
+      SHAPE CHANGE: now returns (rows, columns) instead of a bare rows
+      list, by delegating directly to _flatten_capi_events() (which
+      already computed both — the old version discarded the columns
+      half). _flatten_capi_events() itself is UNTOUCHED by this
+      version — this is a one-line change in its caller, not a
+      behavior change to the shared helper.
+    - _capi_events_columns_for_rows() / _prettify_capi_snapshot_
+      column() / _CAPI_EVENTS_FIXED_COLUMNS (all introduced v2.79) are
+      now the ONLY copy of this column-building logic anywhere in the
+      codebase — crm/app.py v0.61's separate copy (CAPI_EVENTS_EXPORT_
+      COLUMNS / _prettify_lead_column() / _capi_events_export_columns())
+      was deleted in app.py v0.63, and _export_capi_events_report()
+      there now just unpacks the columns this function already
+      returns. See app.py v0.63's changelog for that side.
+    - The ONLY caller of get_capi_events_export() in the whole
+      codebase (confirmed via grep before this shipped) is crm/app.py's
+      _export_capi_events_report(), updated in the same session to
+      unpack (rows, columns) — so this return-shape change has exactly
+      one call site to keep in sync, and it was kept in sync.
+    - REGRESSION TESTED before shipping: Excel export headers, email
+      export headers, and on-screen (paginated) table headers all
+      confirmed byte-identical to their pre-consolidation output for
+      the same test data — this is a pure refactor, not a feature or
+      output change.
+    - Scope: cls_db.py, this function pair only. Nothing else existing
+      removed or modified.
+v2.79 (2026-09-01) — CAPI Events pagination support.
+    - REFACTOR (behavior-preserving): get_capi_events_export()'s SQL-
+      fetch + JSON-flatten body extracted into new private helper
+      _flatten_capi_events(date_from, date_to), which now ALSO computes
+      the "Snapshot: "-labeled column list for the returned row set
+      (new _CAPI_EVENTS_FIXED_COLUMNS constant + _prettify_capi_
+      snapshot_column() + _capi_events_columns_for_rows() — this is new
+      logic in cls_db.py, not present here before this version; it
+      previously lived only in crm/app.py v0.61's CAPI_EVENTS_EXPORT_
+      COLUMNS/_prettify_lead_column()/_capi_events_export_columns()).
+      get_capi_events_export() itself still returns exactly what it
+      returned before this refactor — a plain list of row dicts, no
+      columns — confirmed via a regression test (same row count, same
+      lead_* keys, byte-identical) against pre-refactor output before
+      this version shipped.
+    - KNOWN DUPLICATION, FLAGGED NOT FIXED: crm/app.py's v0.61 column-
+      building helpers (used by the Excel/email export routes, which
+      call cls_db.get_capi_events_export() for rows exactly as before)
+      were NOT touched or consolidated with the new copy here — out of
+      scope for this pagination-only change, which explicitly left the
+      Excel/email routes untouched. Both copies must independently
+      produce the same column set for the same rows; verified this
+      version by comparing on-screen page-1 headers against an Excel
+      export for the same date range (identical). Consolidating them
+      into one copy is a reasonable follow-up, not done here since it
+      wasn't asked for and would have widened this change's footprint.
+    - NEW get_capi_events_export_page(date_from=None, date_to=None,
+      page=1, per_page=200) — paginated view for the on-screen results
+      table, same pagination shape/style as get_leads_page()/
+      list_call_recordings() (fetch all, slice in Python, page clamped
+      into [1, total_pages]). Columns computed from the FULL matching
+      set via _flatten_capi_events(), so headers stay identical across
+      pages. Returns {"rows", "total", "page", "per_page",
+      "total_pages", "columns"}.
+    - Scope: cls_db.py ONLY, this function family only. Nothing else
+      existing removed or modified.
 v2.78 (2026-09-01) — CAPI event snapshots, ADDITIVE ONLY. Freezes a
   lead's full state alongside every CAPI event fired, so events_log
   stops being just a log of WHAT fired and becomes a permanent record
@@ -10633,23 +10698,79 @@ def record_event(cls_id, leadgen_id, full_name, phone_norm, project,
         conn.close()
 
 
-def get_capi_events_export(date_from=None, date_to=None):
+# ── CAPI Events export — fixed columns + "Snapshot: " dynamic-column
+# derivation. Introduced here in v2.79 (so get_capi_events_export_
+# page() could compute column headers from the FULL matching row set
+# once and reuse them across every page — see _flatten_capi_events()'s
+# docstring), at which point crm/app.py v0.61 still carried its own
+# separate, not-yet-consolidated copy (CAPI_EVENTS_EXPORT_COLUMNS /
+# _prettify_lead_column() / _capi_events_export_columns(), used by the
+# Excel/email export routes) — flagged as known duplication in v2.79's
+# changelog. v2.80 CONSOLIDATES: this is now the ONLY copy anywhere in
+# the codebase. get_capi_events_export() (below) returns these same
+# columns too, so app.py's Excel/email routes no longer need — and no
+# longer have — a copy of their own; app.py v0.63 deleted it.
+_CAPI_EVENTS_FIXED_COLUMNS = [
+    ("fired_at", "Fired At"), ("meta_event", "Meta Event"),
+    ("crm_stage", "CRM Stage"), ("prev_stage", "Previous Stage"),
+    ("value_inr", "Value (INR)"), ("used_leadgen", "Used Leadgen ID"),
+    ("dataset_id", "Dataset ID"), ("lead_owner", "Lead Owner"),
+    ("snapshot_source", "Snapshot Source"),
+]
+
+
+def _prettify_capi_snapshot_column(key):
+    """"lead_full_name" -> "Snapshot: Full Name" — same generic strip +
+    title-case + "Snapshot: " prefix as crm/app.py's identically-behaved
+    _prettify_lead_column() (v0.61) — the prefix avoids a duplicate
+    "Lead Owner" header, since leads.lead_owner flattens to the row key
+    "lead_lead_owner", which without a prefix would collide with the
+    FIXED lead_owner column above (the fire-time capture)."""
+    label = key[len("lead_"):] if key.startswith("lead_") else key
+    return "Snapshot: " + label.replace("_", " ").title()
+
+
+def _capi_events_columns_for_rows(rows):
     """
-    (v2.78) Cross-event, date-ranged events_log export for the CAPI
-    Events Excel report — same date-filter convention as
+    _CAPI_EVENTS_FIXED_COLUMNS first, then every distinct "lead_*"
+    snapshot key actually present across `rows`, sorted alphabetically
+    and prettified — a union across rows because different events can
+    carry a different lead_* key set (a row never backfilled has none
+    at all). lead_owner (already a fixed column) and lead_snapshot_json
+    (the raw JSON blob) are both excluded from the dynamic scan — both
+    already start with "lead_" before this scan even runs, so without
+    exclusion they'd each surface as a spurious/duplicate column.
+    """
+    fixed_keys = {k for k, _ in _CAPI_EVENTS_FIXED_COLUMNS}
+    dynamic_keys = set()
+    for row in rows:
+        for k in row.keys():
+            if k.startswith("lead_") and k not in fixed_keys and k != "lead_snapshot_json":
+                dynamic_keys.add(k)
+    return _CAPI_EVENTS_FIXED_COLUMNS + [(k, _prettify_capi_snapshot_column(k)) for k in sorted(dynamic_keys)]
+
+
+def _flatten_capi_events(date_from=None, date_to=None):
+    """
+    (v2.79) SQL-fetch + JSON-flatten + column-derivation shared by
+    get_capi_events_export() and get_capi_events_export_page() — the
+    single place events_log rows become the flat "lead_*"-prefixed dict
+    shape both those functions expose. Same date-filter convention as
     get_activity_log_export() (substr(fired_at,1,10) BETWEEN ? AND ?).
 
-    Each row's lead_snapshot_json (if present) is expanded into the
-    row dict with a "lead_" prefix per key (e.g. lead_full_name,
-    lead_current_stage) so the export reads as one flat table — rows
-    with no snapshot (never backfilled, see
-    backfill_capi_event_snapshots()) simply carry no lead_* keys at
-    all rather than blanks, since different rows can carry a
-    different lead_* key set.
+    Each row's lead_snapshot_json (if present) is expanded into the row
+    dict with a "lead_" prefix per key (e.g. lead_full_name,
+    lead_current_stage) — rows with no snapshot yet (never backfilled,
+    see backfill_capi_event_snapshots()) simply carry no lead_* keys at
+    all rather than blanks, since different rows can carry a different
+    lead_* key set.
 
-    Returns a list of flat dicts, newest fired_at first. Column order
-    per row is the caller's concern (crm/app.py builds an explicit
-    columns list for Excel export).
+    Returns (rows, columns) — rows newest fired_at first; columns is
+    the FULL, fixed-then-alphabetical "Snapshot: "-labeled column list
+    for this exact row set (see _capi_events_columns_for_rows()), so a
+    caller that only wants some of the rows (get_capi_events_export_
+    page()'s per-page slice) can still show headers derived from every
+    matching row, not just the ones on screen.
     """
     conn = _connect()
     try:
@@ -10669,9 +10790,71 @@ def get_capi_events_export(date_from=None, date_to=None):
             for k, v in lead.items():
                 row[f"lead_{k}"] = v
             result.append(row)
-        return result
     finally:
         conn.close()
+
+    return result, _capi_events_columns_for_rows(result)
+
+
+def get_capi_events_export(date_from=None, date_to=None):
+    """
+    (v2.78; refactored v2.79 to delegate to _flatten_capi_events();
+    return shape CHANGED in v2.80 — see below)
+    Cross-event, date-ranged events_log export for the CAPI Events
+    Excel/email export routes (crm/app.py's unpaginated path — see
+    get_capi_events_export_page() below for the on-screen paginated
+    view).
+
+    Returns (rows, columns) — rows is a list of flat dicts, newest
+    fired_at first; columns is the same fixed-then-alphabetical
+    "Snapshot: "-labeled list get_capi_events_export_page() already
+    returns (see _capi_events_columns_for_rows()), now the ONE place
+    that logic lives (v2.80 — crm/app.py's previously-separate copy,
+    CAPI_EVENTS_EXPORT_COLUMNS/_prettify_lead_column()/
+    _capi_events_export_columns(), was deleted in app.py v0.63; the
+    Excel/email routes now use exactly the columns this function
+    returns instead of rebuilding their own).
+
+    v2.78-v2.79 callers took this as a bare rows list — this is a
+    BREAKING return-shape change. The only caller in the codebase
+    (crm/app.py's _export_capi_events_report()) was updated in the same
+    session (app.py v0.63) to unpack (rows, columns); confirmed via
+    grep before this version shipped that no other caller exists.
+    """
+    return _flatten_capi_events(date_from, date_to)
+
+
+def get_capi_events_export_page(date_from=None, date_to=None, page=1, per_page=200):
+    """
+    (v2.79) Paginated view of CAPI events for the on-screen results
+    table (crm/app.py's settings_export_capi_events_results route).
+    Same pagination shape/style as get_leads_page()/
+    list_call_recordings(): fetch all matching rows via
+    _flatten_capi_events(), slice in Python (no SQL LIMIT/OFFSET), page
+    clamped into [1, total_pages].
+
+    Columns are computed from the FULL matching set (not just the
+    current page) via _flatten_capi_events(), so column headers stay
+    identical across pages even if older/newer rows have a different
+    snapshot field set present.
+
+    Returns {"rows", "total", "page", "per_page", "total_pages",
+    "columns"}.
+    """
+    all_rows, columns = _flatten_capi_events(date_from, date_to)
+    total = len(all_rows)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    page_rows = all_rows[start:start + per_page]
+    return {
+        "rows": page_rows,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "columns": columns,
+    }
 
 
 def backfill_capi_event_snapshots(dry_run=True, verbose=False):

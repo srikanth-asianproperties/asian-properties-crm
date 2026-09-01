@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.61
+Version : 0.63
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,55 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.63 (2026-09-01) — CAPI Events column-logic consolidation, pure
+  refactor, zero behavior change. Companion to cls_db.py v2.80.
+    - DELETED CAPI_EVENTS_EXPORT_COLUMNS, _prettify_lead_column(), and
+      _capi_events_export_columns() — this file's own copy of the
+      "Snapshot: "-labeled column-building logic, duplicated against
+      cls_db.py v2.79's copy (used by get_capi_events_export_page(),
+      the on-screen paginated view) ever since v0.61 shipped the Excel/
+      email routes with their own separate copy. cls_db.py v2.80 is now
+      the single source of truth for this logic.
+    - _export_capi_events_report() (used by settings_export_capi_
+      events_excel() and settings_export_capi_events_email() — those
+      two routes themselves are UNCHANGED, still calling this same
+      helper the same way) now unpacks (rows, columns) from cls_db.
+      get_capi_events_export() instead of rebuilding columns itself —
+      cls_db.py v2.80 changed that function's return shape specifically
+      so this file no longer needed its own copy.
+    - REGRESSION TESTED before shipping: Excel export headers, email
+      export headers, and on-screen table headers all confirmed byte-
+      identical to their pre-consolidation output for the same test
+      data.
+    - CAPI_EVENTS_PER_PAGE_OPTIONS (v0.62, unrelated to this cleanup)
+      untouched.
+    - Scope: the 3 deleted items + _export_capi_events_report() only.
+      Nothing else in this file touched.
+v0.62 (2026-09-01) — CAPI Events on-screen pagination, ADDITIVE ONLY.
+    - settings_export_capi_events_results() (the on-screen results
+      route ONLY) now calls cls_db.get_capi_events_export_page()
+      (cls_db.py v2.79) instead of cls_db.get_capi_events_export() —
+      reads page/per_page from the query string, page defaulting to 1
+      (min-clamped to 1), per_page defaulting to 200 and validated
+      against NEW CAPI_EVENTS_PER_PAGE_OPTIONS = [200, 300, 400, 500]
+      (anything else silently falls back to 200, no 400 error — a
+      display preference, not worth failing the request over). Passes
+      the returned dict to the template as `result` (matching
+      settings_telephony_recordings()'s own naming for its paginated
+      result dict) plus `per_page_options`.
+    - settings_export_capi_events_excel() and
+      settings_export_capi_events_email() — UNTOUCHED. Both still call
+      _export_capi_events_report(f), which still calls cls_db.
+      get_capi_events_export(date_from, date_to) (the unpaginated,
+      all-rows function) exactly as in v0.61 — confirmed by re-reading
+      both routes after this edit; neither line differs from before.
+      Excel/email exports therefore continue to return every matching
+      row regardless of the on-screen page/per_page state.
+    - export_home.html — NOT touched this version (no new export type,
+      just pagination on an existing one).
+    - Scope: settings_export_capi_events_results() + the new
+      CAPI_EVENTS_PER_PAGE_OPTIONS constant only. Nothing else in this
+      file touched.
 v0.61 (2026-09-01) — CAPI Events Excel export, ADDITIVE ONLY. Part 3 of
   the CAPI event snapshots feature (cls_db.py v2.78 / cls_capi_core.py
   v1.1 shipped and committed in a prior session).
@@ -3217,68 +3266,30 @@ def settings_export_activity_email():
 # way. export_capi_events.html therefore mirrors export_site_visits.
 # html's simpler date-only filter form instead for that one piece.
 
-CAPI_EVENTS_EXPORT_COLUMNS = [
-    ("fired_at", "Fired At"), ("meta_event", "Meta Event"),
-    ("crm_stage", "CRM Stage"), ("prev_stage", "Previous Stage"),
-    ("value_inr", "Value (INR)"), ("used_leadgen", "Used Leadgen ID"),
-    ("dataset_id", "Dataset ID"), ("lead_owner", "Lead Owner"),
-    ("snapshot_source", "Snapshot Source"),
-]
+# v0.62 — allowed on-screen page sizes for the CAPI Events results
+# table (settings_export_capi_events_results). A value outside this
+# set silently falls back to 200 rather than erroring — see that
+# route's docstring.
+CAPI_EVENTS_PER_PAGE_OPTIONS = [200, 300, 400, 500]
 
-
-def _prettify_lead_column(key):
-    """"lead_full_name" -> "Snapshot: Full Name" — generic strip +
-    title-case so a column newly added to the leads table shows up with
-    a readable label automatically; no per-field lookup table to keep in
-    sync with that schema (see _capi_events_export_columns()).
-
-    The "Snapshot: " prefix matters for one real field: leads.lead_owner
-    flattens to the row key "lead_lead_owner" (the "lead_" prefix stacks
-    onto a column that's ALREADY named lead_owner), which without a
-    prefix would prettify to the same "Lead Owner" text as the FIXED
-    events_log.lead_owner column above — two different columns
-    (fire-time-captured owner vs. the snapshot's own owner field) with
-    an identical header, confusing in an exported sheet. Found via the
-    Flask test-client check for this file (a seeded row surfaced it) —
-    prefixing every dynamic column, not just this one field, avoids a
-    one-off special case that would only mask THIS particular collision
-    and leaves the labeling honest about where the data came from."""
-    label = key[len("lead_"):] if key.startswith("lead_") else key
-    return "Snapshot: " + label.replace("_", " ").title()
-
-
-def _capi_events_export_columns(rows):
-    """
-    CAPI_EVENTS_EXPORT_COLUMNS (the 9 fixed event columns) first, then
-    every distinct "lead_*" snapshot key actually present across the
-    returned rows, sorted alphabetically — a union across rows because
-    different events can carry a different lead_* key set (a row never
-    backfilled has none at all; see cls_db.backfill_capi_event_
-    snapshots()). Derived fresh per request rather than hardcoded, so
-    this never needs editing when the leads table gains a column.
-
-    Two events_log columns are themselves already prefixed "lead_"
-    before cls_db.get_capi_events_export()'s snapshot-flattening loop
-    even runs: lead_owner (a FIXED column above — the fire-time owner
-    capture, unrelated to the snapshot) and lead_snapshot_json (the raw
-    JSON blob itself). Both are excluded from the dynamic scan below so
-    neither shows up twice nor dumps raw JSON into a column.
-    """
-    fixed_keys = {k for k, _ in CAPI_EVENTS_EXPORT_COLUMNS}
-    dynamic_keys = set()
-    for row in rows:
-        for k in row.keys():
-            if k.startswith("lead_") and k not in fixed_keys and k != "lead_snapshot_json":
-                dynamic_keys.add(k)
-    return CAPI_EVENTS_EXPORT_COLUMNS + [(k, _prettify_lead_column(k)) for k in sorted(dynamic_keys)]
+# v0.63 — CAPI_EVENTS_EXPORT_COLUMNS / _prettify_lead_column() /
+# _capi_events_export_columns() (the fixed-9-then-"Snapshot: "-prefixed
+# column-building logic) REMOVED from this file. That logic was
+# duplicated across cls_db.py v2.79 (get_capi_events_export_page()'s
+# own copy, for the on-screen paginated view) and here (for the Excel/
+# email routes) — cls_db.py v2.80 consolidates to ONE copy, and
+# cls_db.get_capi_events_export() now returns (rows, columns) instead
+# of rows only, so _export_capi_events_report() below just uses what
+# it's given rather than rebuilding columns itself. See cls_db.py
+# v2.80's changelog for the full before/after.
 
 
 def _export_capi_events_report(f):
-    rows = cls_db.get_capi_events_export(
+    rows, columns = cls_db.get_capi_events_export(
         date_from=f["date_from"] or None, date_to=f["date_to"] or None,
     )
     return {
-        "title": "Export CAPI Events", "columns": _capi_events_export_columns(rows),
+        "title": "Export CAPI Events", "columns": columns,
         "rows": rows, "date_from": f["date_from"], "date_to": f["date_to"],
     }
 
@@ -3289,7 +3300,7 @@ def _export_capi_events_report(f):
 def settings_export_capi_events_view():
     f = _parse_bulk_filters()
     return render_template(
-        "export_capi_events.html", filters=f, show_results=False, report=None,
+        "export_capi_events.html", filters=f, show_results=False, result=None,
         date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
     )
 
@@ -3298,11 +3309,35 @@ def settings_export_capi_events_view():
 @login_required
 @admin_required
 def settings_export_capi_events_results():
+    """
+    v0.62 — on-screen results now come from cls_db.
+    get_capi_events_export_page() (paginated), NOT cls_db.
+    get_capi_events_export() (all rows) — that unpaginated call stays
+    exclusively on the Excel/email routes below, untouched by this
+    change. page/per_page follow settings_telephony_recordings()'s
+    own convention: page defaults to 1 (Flask's type=int already falls
+    back to the default on a non-numeric value; the min-clamp below
+    additionally guards a numeric-but-invalid value like 0 or -5).
+    per_page is validated against the 4 allowed CAPI_EVENTS_PER_PAGE_
+    OPTIONS values — anything else silently falls back to 200 rather
+    than erroring, since this is just a display preference, not
+    something worth a 400 over.
+    """
     f = _parse_bulk_filters()
+    page = request.args.get("page", 1, type=int)
+    if not page or page < 1:
+        page = 1
+    per_page = request.args.get("per_page", 200, type=int)
+    if per_page not in CAPI_EVENTS_PER_PAGE_OPTIONS:
+        per_page = 200
+    result = cls_db.get_capi_events_export_page(
+        date_from=f["date_from"] or None, date_to=f["date_to"] or None,
+        page=page, per_page=per_page,
+    )
     return render_template(
         "export_capi_events.html", filters=f, show_results=True,
         export_args=dict(f),
-        report=_export_capi_events_report(f),
+        result=result, per_page_options=CAPI_EVENTS_PER_PAGE_OPTIONS,
         date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
     )
 
