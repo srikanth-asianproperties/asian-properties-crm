@@ -2,11 +2,50 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.77
+Version : 2.78
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.78 (2026-09-01) — CAPI event snapshots, ADDITIVE ONLY. Freezes a
+  lead's full state alongside every CAPI event fired, so events_log
+  stops being just a log of WHAT fired and becomes a permanent record
+  of what the lead looked like at that moment too.
+    - Self-healing migration in init_db(): events_log gains
+      lead_snapshot_json (TEXT) and snapshot_source (TEXT), added
+      right alongside the existing prev_stage/lead_owner ALTER TABLE
+      block (same pattern, same idempotent guard).
+    - record_event() gains two new TRAILING optional params,
+      lead_snapshot_json=None and snapshot_source=None — existing
+      param order/defaults/positions untouched, every existing caller
+      keeps working unchanged. Both threaded into the INSERT.
+    - NEW get_capi_events_export(date_from=None, date_to=None) — reads
+      events_log with the SAME substr(fired_at,1,10) BETWEEN ? AND ?
+      convention get_activity_log_export() already uses, ordered
+      fired_at DESC. Expands each row's lead_snapshot_json into
+      lead_-prefixed flat keys (e.g. lead_full_name); rows with no
+      snapshot yet simply carry no lead_* keys. Feeds crm/app.py's new
+      CAPI Events export screen (Part 3, separate session).
+    - NEW backfill_capi_event_snapshots(dry_run=True, verbose=False) —
+      one-off, manually-invoked only (not called by any job or route).
+      For every events_log row with lead_snapshot_json IS NULL, looks
+      up the lead via get_lead_by_id() and freezes its CURRENT state
+      in (snapshot_source='backfill_current_state' — distinct from
+      the real fire-time capture cls_capi_core.py v1.1 now does going
+      forward). A lead that no longer exists is skipped and counted
+      as "orphaned", never raises. dry_run=True (default) counts only,
+      writes nothing. Exposed via a new --backfill-capi-snapshots /
+      --live / --verbose argparse gate in this file's own __main__
+      block — no prior one-off-admin-function convention existed
+      inside cls_db.py itself (the __main__ block was previously only
+      ever the unconditional self-test), so this mirrors the
+      --dry-run convention other one-off scripts in this codebase
+      already use (e.g. cls_call_recording_audit.py). Plain
+      `python cls_db.py` with no arguments is unaffected — still runs
+      the self-test exactly as before.
+    - Scope: cls_db.py ONLY, additive-only. Nothing existing removed
+      or modified. Does NOT touch cross-project auto-reassignment
+      (v2.75/2.76/2.77) — out of scope, not reopened.
 v2.77 (2026-08-31) — Cross-Reassign Rules Admin GUI (Part B), backend
   only, ADDITIVE ONLY.
     - NEW list_cross_reassign_rules() / upsert_cross_reassign_rule() /
@@ -3148,6 +3187,19 @@ def init_db():
     # ALTER TABLE pattern as prev_stage above.
     if "lead_owner" not in cols:
         conn.execute("ALTER TABLE events_log ADD COLUMN lead_owner TEXT;")
+
+    # ── Self-healing migration: add lead_snapshot_json/snapshot_source
+    # to events_log (v2.78) ──
+    # Freezes the lead's full row (json.dumps) at the moment each CAPI
+    # event fires, alongside the historical fields already captured
+    # above (prev_stage, lead_owner) — so a later report can show
+    # exactly what the lead looked like at fire time, not its
+    # current (possibly since-changed) state. Same ALTER TABLE
+    # pattern as prev_stage/lead_owner above.
+    if "lead_snapshot_json" not in cols:
+        conn.execute("ALTER TABLE events_log ADD COLUMN lead_snapshot_json TEXT;")
+    if "snapshot_source" not in cols:
+        conn.execute("ALTER TABLE events_log ADD COLUMN snapshot_source TEXT;")
 
     # ── comms_log table — every email Job D sends is logged here ──
     # Append-only, like events_log. One row per email sent. Job D checks
@@ -10535,7 +10587,8 @@ def bump_queue_attempt(queue_id, error):
 
 def record_event(cls_id, leadgen_id, full_name, phone_norm, project,
                  crm_stage, meta_event, value_inr, used_leadgen, dataset_id,
-                 prev_stage=None, lead_owner=None):
+                 prev_stage=None, lead_owner=None,
+                 lead_snapshot_json=None, snapshot_source=None):
     """
     Append one fire event to the events_log table — the historical record.
     Called by Job C for every event it successfully fires to the PRIMARY
@@ -10550,6 +10603,16 @@ def record_event(cls_id, leadgen_id, full_name, phone_norm, project,
                   here rather than joined live from `leads` at report time,
                   so attribution survives later reassignment. Optional and
                   defaults to None so any older caller still works unchanged.
+    lead_snapshot_json : (v2.78) json.dumps() of the lead's full row at fire
+                  time — a frozen record of what the lead looked like the
+                  moment this event fired, independent of later edits.
+                  Optional and defaults to None so any older caller still
+                  works unchanged.
+    snapshot_source : (v2.78) how lead_snapshot_json was captured — e.g.
+                  "fire_time" (cls_capi_core.fire_single_lead_event(), same
+                  call as this event) or "backfill_current_state"
+                  (backfill_capi_event_snapshots(), a later best-effort
+                  fill for pre-existing rows). Optional, defaults to None.
     """
     now = _now()
     conn = _connect()
@@ -10558,12 +10621,113 @@ def record_event(cls_id, leadgen_id, full_name, phone_norm, project,
             INSERT INTO events_log (
                 fired_at, cls_id, leadgen_id, full_name, phone_norm,
                 project, crm_stage, prev_stage, meta_event, value_inr,
-                used_leadgen, dataset_id, lead_owner
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                used_leadgen, dataset_id, lead_owner,
+                lead_snapshot_json, snapshot_source
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (now, cls_id, leadgen_id, full_name, phone_norm,
               project, crm_stage, prev_stage, meta_event, value_inr,
-              1 if used_leadgen else 0, dataset_id, lead_owner))
+              1 if used_leadgen else 0, dataset_id, lead_owner,
+              lead_snapshot_json, snapshot_source))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_capi_events_export(date_from=None, date_to=None):
+    """
+    (v2.78) Cross-event, date-ranged events_log export for the CAPI
+    Events Excel report — same date-filter convention as
+    get_activity_log_export() (substr(fired_at,1,10) BETWEEN ? AND ?).
+
+    Each row's lead_snapshot_json (if present) is expanded into the
+    row dict with a "lead_" prefix per key (e.g. lead_full_name,
+    lead_current_stage) so the export reads as one flat table — rows
+    with no snapshot (never backfilled, see
+    backfill_capi_event_snapshots()) simply carry no lead_* keys at
+    all rather than blanks, since different rows can carry a
+    different lead_* key set.
+
+    Returns a list of flat dicts, newest fired_at first. Column order
+    per row is the caller's concern (crm/app.py builds an explicit
+    columns list for Excel export).
+    """
+    conn = _connect()
+    try:
+        query = "SELECT * FROM events_log WHERE 1=1"
+        params = []
+        if date_from and date_to:
+            query += " AND substr(fired_at, 1, 10) BETWEEN ? AND ?"
+            params.extend([date_from, date_to])
+        query += " ORDER BY fired_at DESC"
+        rows = conn.execute(query, params).fetchall()
+
+        result = []
+        for r in rows:
+            row = dict(r)
+            snap = row.get("lead_snapshot_json")
+            lead = json.loads(snap) if snap else {}
+            for k, v in lead.items():
+                row[f"lead_{k}"] = v
+            result.append(row)
+        return result
+    finally:
+        conn.close()
+
+
+def backfill_capi_event_snapshots(dry_run=True, verbose=False):
+    """
+    (v2.78) One-off, manually-invoked backfill for events_log rows that
+    predate the lead_snapshot_json/snapshot_source columns (both NULL).
+    For each such row, looks up the lead's CURRENT state via
+    get_lead_by_id() and freezes it in. This is a best-effort backfill,
+    not a time machine — for pre-existing rows we only have the lead's
+    state NOW, not what it looked like at the original fire time, hence
+    snapshot_source='backfill_current_state' (distinct from 'fire_time',
+    see cls_capi_core.py v1.1, which captures the real thing going
+    forward).
+
+    A lead that no longer exists (e.g. deleted since it fired) is
+    skipped and counted as "orphaned" rather than raising — one missing
+    lead must never abort the whole backfill.
+
+    dry_run=True (default): counts only, writes nothing — safe to run
+    repeatedly to see how many rows are pending. Call this manually;
+    NOT invoked by any scheduled job or app.py route.
+    dry_run=False: performs the UPDATEs, then prints the same summary.
+
+    verbose=True additionally prints one line per row as it's
+    processed; default is the single summary line only.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT event_row_id, cls_id FROM events_log WHERE lead_snapshot_json IS NULL"
+        ).fetchall()
+
+        backfilled = 0
+        orphaned = 0
+        for r in rows:
+            lead = get_lead_by_id(r["cls_id"])
+            if lead is None:
+                orphaned += 1
+                if verbose:
+                    print(f"  [SKIP] event_row_id={r['event_row_id']} cls_id={r['cls_id']} — lead no longer exists")
+                continue
+            if not dry_run:
+                conn.execute(
+                    "UPDATE events_log SET lead_snapshot_json=?, snapshot_source=? WHERE event_row_id=?",
+                    (json.dumps(lead, default=str), "backfill_current_state", r["event_row_id"])
+                )
+            backfilled += 1
+            if verbose:
+                action = "Backfilled" if not dry_run else "Would backfill"
+                print(f"  [{action}] event_row_id={r['event_row_id']} cls_id={r['cls_id']}")
+
+        if not dry_run:
+            conn.commit()
+
+        verb = "Backfilled" if not dry_run else "Would backfill"
+        print(f"{verb} {backfilled} events. {orphaned} events skipped (lead no longer exists).")
     finally:
         conn.close()
 
@@ -13354,6 +13518,27 @@ def send_fcm_push(user_id, title, body):
 # then leaves a clean real DB behind (the test rows are isolated).
 
 if __name__ == "__main__":
+    # v2.78 — one-off admin invocation for backfill_capi_event_snapshots(),
+    # gated behind an explicit flag so plain `python cls_db.py` with no
+    # arguments still runs the unconditional self-test below, unchanged.
+    # No prior convention for a callable one-off function existed inside
+    # this file itself, so this mirrors the --dry-run flag convention
+    # already used by other one-off admin scripts in this codebase (e.g.
+    # cls_call_recording_audit.py).
+    import argparse
+    _parser = argparse.ArgumentParser(add_help=False)
+    _parser.add_argument("--backfill-capi-snapshots", action="store_true",
+                          help="Run backfill_capi_event_snapshots() and exit (dry-run unless --live is also passed).")
+    _parser.add_argument("--live", action="store_true",
+                          help="With --backfill-capi-snapshots: actually write, instead of the default dry-run.")
+    _parser.add_argument("--verbose", action="store_true",
+                          help="With --backfill-capi-snapshots: print one line per row, not just the summary.")
+    _args, _ = _parser.parse_known_args()
+
+    if _args.backfill_capi_snapshots:
+        backfill_capi_event_snapshots(dry_run=not _args.live, verbose=_args.verbose)
+        sys.exit(0)
+
     print("=" * 55)
     print(" CLS DATABASE LAYER — SELF TEST (v1.1)")
     print("=" * 55)

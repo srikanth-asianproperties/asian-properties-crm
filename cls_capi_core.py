@@ -2,11 +2,20 @@
 =============================================================
 cls_capi_core.py  —  CLS Shared CAPI Payload + Inline Fire Logic
 =============================================================
-Version : 1.0
+Version : 1.1
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.1 (2026-09-01) — CAPI event snapshots, ADDITIVE ONLY. The
+  cls_db.record_event(...) call inside fire_single_lead_event() now
+  also passes lead_snapshot_json=json.dumps(lead, default=str,
+  ensure_ascii=False) and snapshot_source="fire_time" — freezes the
+  lead's full state at the exact moment this event fires, using the
+  SAME `lead` dict already in scope (no extra DB read). Both are new
+  trailing kwargs on cls_db.py v2.78's record_event(); nothing else in
+  this function changed. NEW `import json` at the top of the file.
+  Nothing else in this file touched.
 v1.0 (2026-08-14) — NEW FILE. Part of the inline-CAPI-firing redesign
   that replaces Job C's full-table-scan cron model. Moved VERBATIM from
   cls_capi_firer.py v1.8 (hashing/payload logic unchanged):
@@ -51,6 +60,7 @@ cls_capi_firer.py v3.0's queue-processing loop.
 """
 
 import hashlib
+import json
 import time
 
 import requests
@@ -268,5 +278,7 @@ def fire_single_lead_event(lead, env, dry_run=False):
         meta_event=payload["event_name"], value_inr=payload["custom_data"]["value"],
         used_leadgen=used_leadgen, dataset_id=primary_dataset,
         lead_owner=lead.get("lead_owner"),
+        lead_snapshot_json=json.dumps(lead, default=str, ensure_ascii=False),
+        snapshot_source="fire_time",
     )
     return True, None
