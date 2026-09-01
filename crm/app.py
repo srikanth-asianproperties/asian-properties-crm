@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.60
+Version : 0.61
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,44 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.61 (2026-09-01) — CAPI Events Excel export, ADDITIVE ONLY. Part 3 of
+  the CAPI event snapshots feature (cls_db.py v2.78 / cls_capi_core.py
+  v1.1 shipped and committed in a prior session).
+    - NEW route group /settings/export/capi-events (+/results,
+      +/excel, +/email), same @login_required @admin_required shape
+      as the existing Export Activity History routes — raw PII
+      export, admin-only, same as every other export screen.
+    - NEW CAPI_EVENTS_EXPORT_COLUMNS (9 fixed event columns) +
+      _capi_events_export_columns(rows) — appends every "lead_*"
+      snapshot key actually present in the current result set, sorted
+      alphabetically, auto-labeled via new _prettify_lead_column() —
+      derived fresh per request rather than hardcoded, so this never
+      needs editing when the leads table gains a column. Explicitly
+      excludes lead_owner (already a fixed column, unrelated to the
+      snapshot) and lead_snapshot_json (the raw JSON blob) from that
+      dynamic scan — both happen to already start with "lead_" before
+      the snapshot-flattening loop inside cls_db.
+      get_capi_events_export() ever runs, so without this exclusion
+      they'd each show up as a spurious/duplicate column.
+    - NEW _export_capi_events_report(f) — same shape as
+      _export_activity_report(f, ...), calling cls_db.
+      get_capi_events_export(date_from, date_to) and feeding
+      cls_reports.export_to_excel() completely unchanged.
+    - DEVIATION FROM BUILD PROMPT: this screen has NO single-lead
+      cls_id filter, unlike Export Activity History — cls_db.
+      get_capi_events_export() (v2.78) takes only date_from/date_to,
+      so a cls_id field here would silently do nothing. Its filter
+      form (export_capi_events.html) instead mirrors export_site_
+      visits.html's simpler date-only form. Flagged for Srikanth
+      rather than shipped either silently non-functional or silently
+      diverging without a note.
+    - export_home.html gained a 4th tile, "Export CAPI Events",
+      alongside the existing "Export Activity History" tile.
+    - Scope: crm/app.py + new crm/templates/export_capi_events.html +
+      export_home.html ONLY. cls_reports.py, build_report(),
+      _report_sheets(), and the 22-report registry/templates
+      untouched, as instructed — this export is its own hand-written
+      route group, not a REPORTS entry.
 v0.60 (2026-08-31) — Cross-Reassign Rules Admin GUI (Part B): NEW
   admin-only routes settings_cross_reassign() (GET lists rules + shows
   add/edit form; POST calls cls_db.upsert_cross_reassign_rule(), same
@@ -3166,6 +3204,132 @@ def settings_export_activity_email():
     ok, message = _send_export_email(user, _export_activity_report(f, lead_filter_cls_id), "export-activity.xlsx")
     flash(message, "success" if ok else "error")
     return redirect(url_for("settings_export_activity_results", **f, cls_id=lead_filter_cls_id))
+
+
+# ── Export CAPI Events (v0.61) ──
+# Mirrors Export Activity History's route/helper shape exactly, EXCEPT
+# it has no single-lead cls_id filter: cls_db.get_capi_events_export()
+# (cls_db.py v2.78) takes only date_from/date_to, no cls_id param — a
+# cls_id field on this screen would silently do nothing, so it's
+# omitted here rather than shipped non-functional. This is a deliberate
+# deviation from "copy export_activity.html's filter form exactly" in
+# the build prompt; flagged for Srikanth rather than silently either
+# way. export_capi_events.html therefore mirrors export_site_visits.
+# html's simpler date-only filter form instead for that one piece.
+
+CAPI_EVENTS_EXPORT_COLUMNS = [
+    ("fired_at", "Fired At"), ("meta_event", "Meta Event"),
+    ("crm_stage", "CRM Stage"), ("prev_stage", "Previous Stage"),
+    ("value_inr", "Value (INR)"), ("used_leadgen", "Used Leadgen ID"),
+    ("dataset_id", "Dataset ID"), ("lead_owner", "Lead Owner"),
+    ("snapshot_source", "Snapshot Source"),
+]
+
+
+def _prettify_lead_column(key):
+    """"lead_full_name" -> "Snapshot: Full Name" — generic strip +
+    title-case so a column newly added to the leads table shows up with
+    a readable label automatically; no per-field lookup table to keep in
+    sync with that schema (see _capi_events_export_columns()).
+
+    The "Snapshot: " prefix matters for one real field: leads.lead_owner
+    flattens to the row key "lead_lead_owner" (the "lead_" prefix stacks
+    onto a column that's ALREADY named lead_owner), which without a
+    prefix would prettify to the same "Lead Owner" text as the FIXED
+    events_log.lead_owner column above — two different columns
+    (fire-time-captured owner vs. the snapshot's own owner field) with
+    an identical header, confusing in an exported sheet. Found via the
+    Flask test-client check for this file (a seeded row surfaced it) —
+    prefixing every dynamic column, not just this one field, avoids a
+    one-off special case that would only mask THIS particular collision
+    and leaves the labeling honest about where the data came from."""
+    label = key[len("lead_"):] if key.startswith("lead_") else key
+    return "Snapshot: " + label.replace("_", " ").title()
+
+
+def _capi_events_export_columns(rows):
+    """
+    CAPI_EVENTS_EXPORT_COLUMNS (the 9 fixed event columns) first, then
+    every distinct "lead_*" snapshot key actually present across the
+    returned rows, sorted alphabetically — a union across rows because
+    different events can carry a different lead_* key set (a row never
+    backfilled has none at all; see cls_db.backfill_capi_event_
+    snapshots()). Derived fresh per request rather than hardcoded, so
+    this never needs editing when the leads table gains a column.
+
+    Two events_log columns are themselves already prefixed "lead_"
+    before cls_db.get_capi_events_export()'s snapshot-flattening loop
+    even runs: lead_owner (a FIXED column above — the fire-time owner
+    capture, unrelated to the snapshot) and lead_snapshot_json (the raw
+    JSON blob itself). Both are excluded from the dynamic scan below so
+    neither shows up twice nor dumps raw JSON into a column.
+    """
+    fixed_keys = {k for k, _ in CAPI_EVENTS_EXPORT_COLUMNS}
+    dynamic_keys = set()
+    for row in rows:
+        for k in row.keys():
+            if k.startswith("lead_") and k not in fixed_keys and k != "lead_snapshot_json":
+                dynamic_keys.add(k)
+    return CAPI_EVENTS_EXPORT_COLUMNS + [(k, _prettify_lead_column(k)) for k in sorted(dynamic_keys)]
+
+
+def _export_capi_events_report(f):
+    rows = cls_db.get_capi_events_export(
+        date_from=f["date_from"] or None, date_to=f["date_to"] or None,
+    )
+    return {
+        "title": "Export CAPI Events", "columns": _capi_events_export_columns(rows),
+        "rows": rows, "date_from": f["date_from"], "date_to": f["date_to"],
+    }
+
+
+@app.route("/settings/export/capi-events")
+@login_required
+@admin_required
+def settings_export_capi_events_view():
+    f = _parse_bulk_filters()
+    return render_template(
+        "export_capi_events.html", filters=f, show_results=False, report=None,
+        date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
+    )
+
+
+@app.route("/settings/export/capi-events/results")
+@login_required
+@admin_required
+def settings_export_capi_events_results():
+    f = _parse_bulk_filters()
+    return render_template(
+        "export_capi_events.html", filters=f, show_results=True,
+        export_args=dict(f),
+        report=_export_capi_events_report(f),
+        date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
+    )
+
+
+@app.route("/settings/export/capi-events/excel")
+@login_required
+@admin_required
+def settings_export_capi_events_excel():
+    f = _parse_bulk_filters()
+    try:
+        buf = cls_reports.export_to_excel(_export_capi_events_report(f))
+    except RuntimeError as e:
+        flash(str(e), "error")
+        return redirect(url_for("settings_export_capi_events_results", **f))
+    return send_file(buf, as_attachment=True, download_name="export-capi-events.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/settings/export/capi-events/email", methods=["POST"])
+@login_required
+@admin_required
+def settings_export_capi_events_email():
+    user = cls_db.get_user_by_id(session["user_id"])
+    f = _parse_bulk_filters()
+    ok, message = _send_export_email(user, _export_capi_events_report(f), "export-capi-events.xlsx")
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("settings_export_capi_events_results", **f))
 
 
 # ─────────────────────────────────────────────────────────────

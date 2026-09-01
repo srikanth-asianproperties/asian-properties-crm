@@ -1,7 +1,11 @@
-{# export_home.html (v1.1) — Settings > Export hub. Admin-only (was
+{# export_home.html (v1.2) — Settings > Export hub. Admin-only (was
    role-agnostic in v1.0 — see app.py v0.18's changelog for the
-   reversal). Same visual pattern as reports.html's category grid,
-   trimmed to 3 static tiles (no categories needed for just 3 types). #}
+   reversal). Same visual pattern as reports.html's category grid.
+
+   v1.2 (2026-09-01) — NEW "Export CAPI Events" tile, alongside Export
+   Activity History (app.py v0.61 / cls_db.py v2.78's CAPI event
+   snapshots feature, Part 3). Now 4 static tiles (still no categories
+   needed at this count). #}
 {% extends "base.html" %}
 {% block title %}Export{% endblock %}
 
@@ -41,6 +45,16 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
       The full activity log, filtered by date range or a single lead.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_export_capi_events_view') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--red)" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      <span style="font-weight:700; font-size:16px;">Export CAPI Events</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Every Meta CAPI event fired, with the lead's snapshot at the moment it fired.
     </p>
   </a>
 
