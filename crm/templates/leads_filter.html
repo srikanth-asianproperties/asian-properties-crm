@@ -57,7 +57,7 @@
 .opt-row input { cursor:pointer; }
 </style>
 
-<a href="{{ url_for('leads_list') }}" style="font-size:14px;">← Back to leads</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px; margin-bottom:14px;">Filter Leads</h2>
 
 <form method="get" action="{{ url_for('leads_list') }}" id="filterForm">

@@ -16,7 +16,7 @@
 {% block title %}Confirm Bulk Reassign{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_bulk_reassign', **filters) }}" style="font-size:14px;">← Back to filters</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px; margin-bottom:14px;">Confirm Bulk Reassign</h2>
 
 <div class="card" style="background:#FBF6E9; border-color:#EAD9A0;">

@@ -7,7 +7,7 @@
 {% block title %}Project GPS &amp; Geofence{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_attendance') }}" style="font-size:14px;">&larr; Back to Attendance</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">Project GPS &amp; Geofence</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
   Punches aren't blocked outside the radius — a breach is only flagged (red marker) for review.

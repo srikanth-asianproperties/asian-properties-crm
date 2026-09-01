@@ -32,7 +32,7 @@
 {% block title %}Search Leads{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('leads_list') }}" style="font-size:14px;">← Back to leads</a>
+{% include "_back_button.html" %}
 
 <h2 style="margin-top:10px;">Search Leads</h2>
 <p style="font-size:13px; color:var(--ink-soft); margin-top:-8px;">

@@ -12,7 +12,7 @@
 {% block title %}Who's Present Today{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_attendance') }}" style="font-size:14px;">&larr; Back to Attendance</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">Who's Present Today — {{ today }}</h2>
 
 <div style="display:flex; flex-direction:column; gap:10px; margin-top:16px;">

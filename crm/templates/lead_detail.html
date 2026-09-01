@@ -261,7 +261,7 @@
   'project_changed'          : 'assignment_change',
 } %}
 
-<a href="{{ url_for('leads_list') }}" style="font-size:14px;">← Back to leads</a>
+{% include "_back_button.html" %}
 
 {% if restricted %}
 <div style="background:#FBEAEA; color:var(--red); border:1px solid #F3C9C9; padding:12px 16px; border-radius:8px; font-size:14px; font-weight:600; margin-top:12px;">

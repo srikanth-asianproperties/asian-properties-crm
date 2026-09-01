@@ -10,7 +10,7 @@
 {% block title %}Export{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Settings</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px; margin-bottom:4px;">Export</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:0;">
   Export leads, conducted site visits, or activity history to Excel, PDF, or your own inbox.

@@ -73,7 +73,7 @@
 {% block title %}Send WhatsApp{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('lead_detail', cls_id=lead.cls_id) }}" style="font-size:14px;">← Back to lead</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px; margin-bottom:4px;">Send WhatsApp</h2>
 <p style="font-size:13px; color:var(--ink-soft); margin-top:0;">
   To <strong>{{ lead.full_name or '(no name)' }}</strong> · {{ lead.phone_raw or lead.phone_norm }}

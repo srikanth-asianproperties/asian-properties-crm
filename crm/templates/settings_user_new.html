@@ -9,7 +9,7 @@
 {% block title %}Add User{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_users') }}" style="font-size:14px;">← Back to Team</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">Add User</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
   Creates a new CRM login. The person can sign in immediately with the email and

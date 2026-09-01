@@ -15,6 +15,7 @@
 {% block title %}Missed Calls{% endblock %}
 
 {% block content %}
+{% include "_back_button.html" %}
 <h2 style="margin-top:0;">Missed Calls <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ calls|length }})</span></h2>
 
 <p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:0;">
@@ -44,7 +45,4 @@
 </div>
 {% endif %}
 
-<div style="margin-top:24px;">
-  <a href="{{ url_for('dashboard') }}" class="btn">← Back to Dashboard</a>
-</div>
 {% endblock %}

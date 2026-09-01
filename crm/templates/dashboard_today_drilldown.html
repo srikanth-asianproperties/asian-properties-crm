@@ -12,6 +12,7 @@
 {% block title %}{{ label }}{% endblock %}
 
 {% block content %}
+{% include "_back_button.html" %}
 <h2 style="margin-top:0;">
   {{ label }}
   <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ items|length }})</span>
@@ -43,7 +44,4 @@
 </div>
 {% endif %}
 
-<div style="margin-top:24px;">
-  <a href="{{ url_for('dashboard_today') }}" class="btn">← Back to Today's Performance</a>
-</div>
 {% endblock %}

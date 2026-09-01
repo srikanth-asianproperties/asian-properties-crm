@@ -7,7 +7,7 @@
 {% block title %}Projects{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">Projects</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
   Sell.do exports store project names with spelling/spacing variation. Each alias below

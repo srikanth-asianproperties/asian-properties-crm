@@ -5,7 +5,7 @@
 {% block title %}WhatsApp Templates{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">WhatsApp Templates</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
   One message per project. When a salesperson taps WhatsApp on a lead, they pick a

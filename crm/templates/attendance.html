@@ -58,6 +58,7 @@
 {% block title %}Attendance{% endblock %}
 
 {% block content %}
+{% include "_back_button.html" %}
 {% if current_user.role == 'admin' %}
 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
   <h2 style="margin:0;">Attendance</h2>

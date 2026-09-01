@@ -70,7 +70,7 @@
 {% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_telephony') }}" style="font-size:14px;">← Back to Telephony</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">
   Synced Recordings
   <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ result.total }})</span>

@@ -76,6 +76,7 @@
 {% block title %}Settings{% endblock %}
 
 {% block content %}
+{% include "_back_button.html" %}
 <h2 style="margin-top:0;">Settings</h2>
 
 {% if current_user.role == 'admin' %}

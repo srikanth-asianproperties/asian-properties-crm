@@ -40,7 +40,8 @@
   .report-table-wrap { overflow-x: auto; }
 </style>
 
-<a href="{{ url_for('reports_home') }}" class="no-print" style="font-size:14px;">← All Reports</a>
+{% set back_button_class = 'no-print' %}
+{% include "_back_button.html" %}
 <div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; margin-top:10px;">
   <div>
     <h2 style="margin:0;">{{ report.title }}</h2>

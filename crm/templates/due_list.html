@@ -6,6 +6,7 @@
 {% block title %}{{ 'MISSED SITE VISITS' if kind == 'site_visit' else 'MISSED FOLLOWUPS' }}{% endblock %}
 
 {% block content %}
+{% include "_back_button.html" %}
 <h2 style="margin-top:0;">
   {{ 'MISSED SITE VISITS' if kind == 'site_visit' else 'MISSED FOLLOWUPS' }}
   <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ items|length }})</span>
@@ -37,7 +38,4 @@
 </div>
 {% endif %}
 
-<div style="margin-top:24px;">
-  <a href="{{ url_for('dashboard') }}" class="btn">← Back to Dashboard</a>
-</div>
 {% endblock %}

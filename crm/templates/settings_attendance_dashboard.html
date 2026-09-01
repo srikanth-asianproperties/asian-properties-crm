@@ -19,8 +19,8 @@
   main.wrap { max-width: 100%; padding: 0; }
 </style>
 
-<a href="{{ url_for('settings_attendance') if is_oversight else url_for('attendance_home') }}"
-   class="no-print" style="font-size:14px;">&larr; Back</a>
+{% set back_button_class = 'no-print' %}
+{% include "_back_button.html" %}
 
 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
   <h2 style="margin-top:10px;">Attendance Dashboard</h2>

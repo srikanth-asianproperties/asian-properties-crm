@@ -7,7 +7,7 @@
 {% block title %}WhatsApp Reminder Templates{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">WhatsApp Reminder Templates</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
   One reminder message per project, sent from the Reminders page the day before a scheduled

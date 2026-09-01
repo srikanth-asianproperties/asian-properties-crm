@@ -60,7 +60,7 @@
 .opt-search { width:100%; padding:7px 10px; margin-bottom:8px; border:1.5px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px; }
 </style>
 
-<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Settings</a>
+{% include "_back_button.html" %}
 <div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; margin-top:10px;">
   <h2 style="margin:0;">Bulk Reassign</h2>
   <a href="{{ url_for('settings_bulk_jobs') }}" class="btn" style="font-size:13px;">Past Bulk Jobs</a>

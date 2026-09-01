@@ -8,7 +8,7 @@
 {% block title %}Lead Scoring{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">Lead Scoring</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
   Points behind each lead's score badge. A lead scoring at or above the Hot threshold

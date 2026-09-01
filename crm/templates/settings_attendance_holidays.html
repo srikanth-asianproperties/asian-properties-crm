@@ -5,7 +5,7 @@
 {% block title %}Holidays{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_attendance') }}" style="font-size:14px;">&larr; Back to Attendance</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">Holidays</h2>
 
 <div class="card" style="margin-top:16px; max-width:480px;">

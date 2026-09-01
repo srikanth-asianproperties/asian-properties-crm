@@ -17,7 +17,7 @@
 {% block title %}Bulk Jobs{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_bulk_reassign') }}" style="font-size:14px;">← Bulk Reassign</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px; margin-bottom:14px;">Past Bulk Jobs</h2>
 
 {% if jobs %}

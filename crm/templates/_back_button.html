@@ -1,0 +1,8 @@
+{# _back_button.html (v1.0) — reusable back-navigation partial.
+   Uses browser history (history.back()) instead of a fixed URL, so it
+   always returns to wherever the user actually came from. Falls back to
+   /leads only when there's no history to go back to (history.length <= 1),
+   e.g. this page was opened directly via bookmark/deep link/new tab.
+   Include at the top of a page's {% block content %}, as the first
+   element, to match the top-left position used across the app. #}
+<a href="{{ url_for('leads_list') }}" onclick="if (window.history.length > 1) { window.history.back(); return false; }" class="{{ back_button_class|default('') }}" style="font-size:14px;">← Back</a>

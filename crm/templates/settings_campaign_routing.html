@@ -6,7 +6,7 @@
 {% block title %}Campaign Routing{% endblock %}
 
 {% block content %}
-<a href="{{ url_for('settings_home') }}" style="font-size:14px;">← Back to Settings</a>
+{% include "_back_button.html" %}
 <h2 style="margin-top:10px;">Campaign Routing</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
   Decides who a brand-new Meta lead is assigned to at insert time, before Sell.do syncs

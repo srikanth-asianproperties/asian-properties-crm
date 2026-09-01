@@ -25,7 +25,8 @@
   .report-table-wrap { overflow-x: auto; }
 </style>
 
-<a href="{{ url_for('settings_export_home') }}" class="no-print" style="font-size:14px;">← Export</a>
+{% set back_button_class = 'no-print' %}
+{% include "_back_button.html" %}
 <div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; margin-top:10px;">
   <h2 style="margin:0;">Export Activity History</h2>
   {% if show_results %}
