@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.63
+Version : 0.64
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,35 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.64 (2026-09-01) — BUG FIX: webhook-delivered new leads (Phase 2, v0.57)
+  never fired their CAPI event and were never queued for retry either,
+  because _process_leadgen_change() called cls_db.upsert_meta_lead()
+  directly but never replicated meta_leads_fetcher.py run()'s v1.8
+  post-upsert fire step. Job A's own scheduled polling does not catch
+  this as a safety net: by the time Job A polls the same leadgen_id,
+  upsert_meta_lead() takes the leadgen-refresh branch (not the new-
+  insert branch) since the webhook already inserted the row, so Job A's
+  own is_new_lead gate never fires it either. Confirmed via the new
+  cls_diag_new_lead_capi.py diagnostic: 33 leads created since
+  2026-08-30 23:51 (when the Meta app was published and webhook
+  deliveries started arriving for real) never fired and were never
+  queued.
+    - _process_leadgen_change(): on a genuinely new lead, added a
+      synchronous fire step mirroring meta_leads_fetcher.py run()'s
+      v1.8 post-upsert block — re-reads the lead, fires it if its stage
+      is in cls_capi_core.TARGET_STAGES, and queues it via cls_db.
+      queue_failed_fire() on failure so cls_capi_firer.py can retry it
+      later. Uses this file's own already-loaded _env dict (same
+      convention change_lead_stage(), v0.49, already uses). Wrapped in
+      try/except so a fire-path exception can never break webhook
+      processing itself.
+    - Purely additive — inserted after the existing "Webhook lead
+      processed OK" log line, nothing above it in the function changed.
+      No schema change, no .env change. Backfilling the 33 already-
+      affected leads (via cls_capi_firer.py --catchup) and restarting
+      the live Waitress server are separate steps, deliberately not
+      done as part of this change — pending Srikanth's review.
+
 v0.63 (2026-09-01) — CAPI Events column-logic consolidation, pure
   refactor, zero behavior change. Companion to cls_db.py v2.80.
     - DELETED CAPI_EVENTS_EXPORT_COLUMNS, _prettify_lead_column(), and
@@ -1957,7 +1986,7 @@ import meta_leads_fetcher  # v0.57 — Meta webhook Phase 2: fetch_single_lead_b
 # lockstep with this file's own docstring "Version :" line above (see
 # CHANGELOG v0.40) — surfaced into every template via
 # inject_current_user() as `app_version`.
-APP_VERSION = "0.41"
+APP_VERSION = "0.64"
 
 RECORDINGS_DIR = os.path.join(BASE_DIR, "call_recordings")
 
@@ -6545,6 +6574,43 @@ def _process_leadgen_change(leadgen_id, page_id, form_id):
     )
     status = "new lead" if is_new_lead else "updated lead"
     _log(f"Webhook lead processed OK ({status}): leadgen_id={leadgen_id} -> cls_id={cls_id}")
+
+    # v0.64 — BUG FIX: webhook-delivered new leads were never firing CAPI.
+    # This function calls cls_db.upsert_meta_lead() directly (same as
+    # meta_leads_fetcher.py's run()), but unlike run(), it never replicated
+    # run()'s v1.8 post-upsert fire step -- so a webhook-inserted new lead
+    # was written to `leads` correctly but its CAPI event was never fired
+    # AND never queued (queue_failed_fire() only runs from inside an actual
+    # fire attempt). Job A's polling, documented as "the safety net", does
+    # NOT catch this: by the time Job A polls the same leadgen_id,
+    # upsert_meta_lead() takes branch 1 (leadgen_id refresh) since the
+    # webhook already inserted it, not branch 3 (new insert) -- so Job A's
+    # own is_new_lead gate never fires it either. Confirmed via
+    # cls_diag_new_lead_capi.py: 33 leads created since 2026-08-30 23:51
+    # (when the Meta app was published and webhook deliveries started
+    # arriving for real) never fired and were never queued.
+    #
+    # Fix: mirror meta_leads_fetcher.py run()'s v1.8 post-upsert block --
+    # on a genuinely new lead, re-read it and fire synchronously, queueing
+    # on failure so cls_capi_firer.py can retry it later. Uses this file's
+    # own already-loaded _env dict, same convention change_lead_stage()
+    # (v0.49) already uses -- not a fresh load_env() call. Guards on
+    # TARGET_STAGES the same way cls_capi_firer.py's queue/catchup modes
+    # already do, since fire_single_lead_event() itself does not guard it.
+    if is_new_lead:
+        try:
+            lead = cls_db.get_lead_by_id(cls_id)
+            if lead and lead["current_stage"] in cls_capi_core.TARGET_STAGES:
+                fired, err = cls_capi_core.fire_single_lead_event(lead, _env)
+                if fired:
+                    _log(f"Webhook lead CAPI fired OK: leadgen_id={leadgen_id} -> cls_id={cls_id}")
+                else:
+                    cls_db.queue_failed_fire(cls_id, lead["current_stage"], err)
+                    _log(f"Webhook lead CAPI fire failed, queued for retry: "
+                         f"leadgen_id={leadgen_id} -> cls_id={cls_id} | {err}", "WARNING")
+        except Exception as e:
+            _log(f"Webhook lead CAPI fire block raised an exception (non-fatal): "
+                 f"leadgen_id={leadgen_id} -> cls_id={cls_id} | {e}", "WARNING")
 
 
 @app.route("/admin/webhook-test-leads")
