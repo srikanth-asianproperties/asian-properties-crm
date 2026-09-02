@@ -2,11 +2,63 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.86
+Version : 2.87
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.87 (2026-09-02) — Task 6 items 3 + 3b: Payroll v1.0 (admin-only, flat
+  salary, monthly, push-button) and late/early punch admin notifications,
+  additive only, nothing existing removed or modified. Admin (Srikanth)
+  fully excluded from payroll — no salary_slabs row accepted for a
+  role='admin' user, enforced in upsert_salary_slab() itself, not just
+  the GUI. NO half-day concept in payroll math specifically — a
+  'half_day'-status day is folded into "present" (zero cost) ONLY
+  inside compute_salary_for_month(); ATTENDANCE_STATUSES and every other
+  reader of 'half_day' elsewhere in this app is untouched.
+    - NEW import calendar (module-level) — calendar.monthrange() is the
+      single source of truth for both per-day-rate's denominator and
+      the 10-day freeze window.
+    - NEW salary_slabs / salary_snapshots tables (init_db(), self-
+      healing CREATE TABLE IF NOT EXISTS). Self-healing INSERT OR IGNORE
+      seed for Elohar Peddi (25000), Mounika Peddi (16000), Devender
+      Goud (18000), resolved by full_name against the live users table
+      at init time — skipped silently for any name that doesn't resolve
+      to an active user, never raises.
+    - NEW list_salary_slabs(), upsert_salary_slab(user_id,
+      monthly_salary, actor), _last_day_of_month(year, month),
+      is_salary_month_locked(year, month), _get_prev_month_snapshot
+      (user_id, year, month), compute_salary_for_month(year, month,
+      actor), list_salary_snapshots(year, month),
+      get_salary_month_status(year, month), get_leave_balance(user_id).
+      Paid-leave carry-forward capped at 5, state stored INSIDE each
+      month's own salary_snapshots row (not a separate ledger) so
+      recalculating the same month within the 10-day correction window
+      is idempotent. ASSUMPTION, explicitly flagged (not confirmed by
+      Srikanth): 'absent' days are deducted in full — only 'leave'/
+      'weekoff'/'half_day' were explicitly ruled on when this was
+      designed.
+    - NOTIFICATION_EVENTS: NEW 'late_punch_in'/'early_punch_out' keys,
+      other 9 keys untouched.
+    - NEW notify_admins(event_type, message, cls_id=None) — fans an
+      in-app + FCM notification out to every active admin, reusing
+      _get_admin_user_ids()/insert_notification()/send_fcm_push()
+      unchanged. IMPORTANT deviation from the original build spec,
+      confirmed with Srikanth: callers MUST pass a per-employee-unique
+      cls_id-like key (e.g. f"attn:{user_id}"), never the literal None
+      the spec first proposed — insert_notification()'s event_id
+      (md5(cls_id+event_type+today)) is GLOBALLY unique, so cls_id=None
+      for every call of one event_type on one day would have collapsed
+      every employee's late/early-punch event that day onto a single
+      row, silently swallowing all but the first. See notify_admins()'s
+      own docstring for the full reasoning; this does NOT fix the
+      pre-existing, separate multi-admin fan-out collision already
+      present in the new_enquiry hook — out of scope here.
+    - NEW compute_early_leave_minutes(punch_dt) — mirrors compute_
+      punch_in_timing()'s exact shape against WORKDAY_END_TIME ('17:30'
+      default, previously unused). Read-only signal only — never writes
+      to the attendance row, never affects status/late_minutes/payroll.
+
 v2.86 (2026-09-02) — Task 6 item 2: leave-aware round-robin lead routing
   (Naishka Homes: Elohar / Devender), additive only, nothing existing
   removed or modified. Applies ONLY to rule_type='round_robin' campaign_
@@ -2625,6 +2677,7 @@ import uuid
 import sqlite3
 import hashlib
 import secrets
+import calendar
 from datetime import datetime, timedelta, timezone
 
 # v2.74: IST offset constant, used ONLY by _format_meta_created_time() to
@@ -2717,6 +2770,8 @@ NOTIFICATION_EVENTS = {
     "visit_tomorrow":      "Site visit scheduled tomorrow: {full_name}",
     "visit_due_now":       "Site visit due now: {full_name}",
     "visit_overdue_1d":    "Site visit overdue by 1 day: {full_name}",
+    "late_punch_in":       "{full_name} punched in late by {minutes} min today",
+    "early_punch_out":     "{full_name} punched out early by {minutes} min today",
 }
 
 # Read by cls_notifications_poller.py only — new_enquiry/lead_reengaged/
@@ -4368,6 +4423,75 @@ def init_db():
         "INSERT OR IGNORE INTO project_aliases (alias, project_bucket, created_at) VALUES (?, ?, ?)",
         ("Naishka Homes", "Naishka Homes", _cross_reassign_seed_ts)
     )
+
+    # ── v2.87 — Payroll v1.0 ──
+    # Flat monthly salary per user, no incentive/commission component.
+    # salary_slabs is the input (admin-edited); salary_snapshots is the
+    # append/replace-per-month output of compute_salary_for_month(),
+    # storing its own leave-balance carry-forward state per row so
+    # recalculating one month is idempotent (reads the PRIOR month's row
+    # for its opening balance, never a separate mutable ledger). See
+    # compute_salary_for_month()'s docstring for the full formula.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS salary_slabs (
+            user_id         INTEGER PRIMARY KEY REFERENCES users(user_id),
+            monthly_salary  REAL NOT NULL,
+            updated_at      TEXT,
+            updated_by      TEXT
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS salary_snapshots (
+            snapshot_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id               INTEGER NOT NULL REFERENCES users(user_id),
+            year                  INTEGER NOT NULL,
+            month                 INTEGER NOT NULL,
+            base_salary           REAL NOT NULL,
+            calendar_days         INTEGER NOT NULL,
+            present_days          INTEGER NOT NULL DEFAULT 0,
+            absent_days           INTEGER NOT NULL DEFAULT 0,
+            leave_days_taken      INTEGER NOT NULL DEFAULT 0,
+            weekoff_days          INTEGER NOT NULL DEFAULT 0,
+            leave_balance_before  INTEGER NOT NULL DEFAULT 0,
+            leave_balance_accrued INTEGER NOT NULL DEFAULT 1,
+            leave_balance_available INTEGER NOT NULL DEFAULT 0,
+            paid_leave_days_used  INTEGER NOT NULL DEFAULT 0,
+            unpaid_leave_days     INTEGER NOT NULL DEFAULT 0,
+            leave_balance_after   INTEGER NOT NULL DEFAULT 0,
+            deducted_days         REAL NOT NULL DEFAULT 0,
+            net_salary            REAL NOT NULL,
+            calculated_at         TEXT NOT NULL,
+            calculated_by         TEXT,
+            UNIQUE(user_id, year, month)
+        );
+    """)
+
+    # Self-healing seed, same INSERT OR IGNORE pattern as the cross-
+    # reassign seed above — never clobbers a slab Srikanth already
+    # edited via /settings/payroll/slabs. Names verified against the
+    # live users table (same spellings the v2.75 cross-reassign seed
+    # verified: "Elohar Peddi", "Devender Goud", "Mounika Peddi") before
+    # this was written. Resolved by full_name at seed time; a name that
+    # doesn't resolve to an active user is skipped silently rather than
+    # raising, since init_db() must never fail because a seed name is
+    # momentarily stale.
+    _payroll_seed_ts = _now()
+    _payroll_seed_slabs = {
+        "Elohar Peddi":   25000,
+        "Mounika Peddi":  16000,
+        "Devender Goud":  18000,
+    }
+    for _seed_name, _seed_salary in _payroll_seed_slabs.items():
+        _seed_user = conn.execute(
+            "SELECT user_id FROM users WHERE full_name=? AND active=1", (_seed_name,)
+        ).fetchone()
+        if _seed_user:
+            conn.execute(
+                "INSERT OR IGNORE INTO salary_slabs (user_id, monthly_salary, updated_at, updated_by) "
+                "VALUES (?, ?, ?, ?)",
+                (_seed_user["user_id"], _seed_salary, _payroll_seed_ts, "system:init_db seed")
+            )
 
     conn.commit()
     conn.close()
@@ -13567,6 +13691,271 @@ def check_geofence_breach(project_bucket, lat, lng):
     return distance_m > loc["radius_meters"]
 
 
+# ─────────────────────────────────────────────────────────────
+# PAYROLL v1.0 (v2.87)
+# ─────────────────────────────────────────────────────────────
+# Flat monthly salary per user (salary_slabs), no incentive/commission
+# component. Admin is fully excluded — no salary_slabs row is ever
+# created or accepted for an admin (see upsert_salary_slab()'s refusal
+# below), same posture as get_today_attendance_overview()'s existing
+# role != 'admin' exclusion elsewhere in this file. Push-button, admin-
+# triggered only (compute_salary_for_month()) — NOT a scheduled job.
+#
+# 'half_day' is folded into "present" — zero cost — ONLY inside this
+# section's math. ATTENDANCE_STATUSES/the attendance schema itself is
+# untouched; 'half_day' still means whatever it always meant everywhere
+# else in this app.
+#
+# 'absent' days are deducted in full — ASSUMPTION, flagged here because
+# Srikanth has not explicitly ruled on 'absent'; only 'leave'/'weekoff'/
+# 'half_day' were addressed when this was designed.
+#
+# Paid-leave carry-forward, capped at 5, replaces the old "first leave
+# day free" rule entirely. All of this month's balance state is stored
+# INSIDE that month's own salary_snapshots row (leave_balance_before/
+# _accrued/_available/_after) — month N reads month N-1's
+# leave_balance_after as ITS leave_balance_before
+# (_get_prev_month_snapshot()), never a separate mutable ledger. This
+# makes recalculating the SAME month idempotent (INSERT OR REPLACE, safe
+# to re-run inside the 10-day correction window without double-accruing
+# or double-consuming). A missing prior-month snapshot is treated as a
+# balance of 0, not an error — months should be generated in order for
+# the balance to reflect reality (documented limitation, not enforced).
+
+def list_salary_slabs():
+    """(v2.87) Every active non-admin user LEFT JOINed to salary_slabs,
+    so a user with no slab yet still shows up (monthly_salary=None) —
+    the admin Payroll > Salary Slabs screen needs to see everyone it
+    could set a salary for, not just the ones already configured.
+    Ordered by full_name."""
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT u.user_id, u.full_name, u.email,
+                   s.monthly_salary, s.updated_at, s.updated_by
+            FROM users u
+            LEFT JOIN salary_slabs s ON s.user_id = u.user_id
+            WHERE u.active = 1 AND u.role != 'admin'
+            ORDER BY u.full_name COLLATE NOCASE
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_salary_slab(user_id, monthly_salary, actor):
+    """(v2.87) INSERT OR REPLACE keyed on user_id (the table's PK), same
+    idiom as set_fcm_token(). Validates monthly_salary > 0, raises
+    ValueError otherwise. Refuses (raises ValueError) if user_id
+    resolves to role='admin' — enforced here, not just at the GUI layer,
+    since salary data is the most sensitive data class in this database."""
+    try:
+        monthly_salary = float(monthly_salary)
+    except (TypeError, ValueError):
+        raise ValueError("Monthly salary must be a number")
+    if monthly_salary <= 0:
+        raise ValueError("Monthly salary must be greater than 0")
+
+    conn = _connect()
+    try:
+        user = conn.execute("SELECT role FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not user:
+            raise ValueError("Unknown user")
+        if user["role"] == "admin":
+            raise ValueError("Admin accounts are excluded from payroll")
+        conn.execute(
+            "INSERT OR REPLACE INTO salary_slabs (user_id, monthly_salary, updated_at, updated_by) "
+            "VALUES (?, ?, ?, ?)",
+            (user_id, monthly_salary, _now(), actor)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _last_day_of_month(year, month):
+    """(v2.87, internal) The date of the last calendar day of year/month
+    via calendar.monthrange — single source of truth for the 10-day
+    freeze window (is_salary_month_locked())."""
+    last_day = calendar.monthrange(year, month)[1]
+    return datetime(year, month, last_day).date()
+
+
+def is_salary_month_locked(year, month):
+    """(v2.87) True only if BOTH: (a) at least one salary_snapshots row
+    exists for this year/month, AND (b) today's date is more than 10
+    calendar days after _last_day_of_month(year, month). A month with
+    zero snapshots is never locked, no matter how late — this is what
+    lets a forgotten month always be generated for the first time."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) c FROM salary_snapshots WHERE year=? AND month=?",
+            (year, month)
+        ).fetchone()
+        has_snapshot = bool(row and row["c"] > 0)
+    finally:
+        conn.close()
+    if not has_snapshot:
+        return False
+    days_since_month_end = (datetime.now().date() - _last_day_of_month(year, month)).days
+    return days_since_month_end > 10
+
+
+def _get_prev_month_snapshot(user_id, year, month):
+    """(v2.87, internal) The salary_snapshots row for this user for the
+    calendar month immediately before (year, month), handling year
+    rollover (month=1 -> prev is December of year-1), or None if it
+    doesn't exist. Used only to read leave_balance_after as this
+    month's leave_balance_before."""
+    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM salary_snapshots WHERE user_id=? AND year=? AND month=?",
+            (user_id, prev_year, prev_month)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def compute_salary_for_month(year, month, actor):
+    """
+    (v2.87) Generates or recalculates salary_snapshots for every user in
+    salary_slabs, for the given year/month. Refuses (returns
+    (False, message)) if is_salary_month_locked(year, month) is True.
+
+    Per-user math (see this section's header comment for the paid-leave
+    carry-forward reasoning):
+      present_days   = attendance 'present' + 'late' + 'half_day'
+                        (half_day folded into present here only)
+      absent_days    = attendance 'absent'
+      leave_balance_available = min(prior month's leave_balance_after
+                                     (0 if no prior snapshot) + 1, 5)
+      paid_leave_days_used    = min(leave_days_taken, available)
+      unpaid_leave_days       = max(leave_days_taken - available, 0)
+      deducted_days  = unpaid_leave_days + absent_days
+                        [ASSUMPTION, flagged in this section's header:
+                        absent = full day deducted]
+      per_day_rate   = monthly_salary / calendar_days_in_month
+      net_salary     = max(monthly_salary - deducted_days * per_day_rate, 0)
+
+    Returns (True, "Salary calculated for N employee(s), <Month Year>.")
+    on success.
+    """
+    if is_salary_month_locked(year, month):
+        month_label = f"{calendar.month_name[month]} {year}"
+        return False, f"{month_label} is locked — more than 10 days have passed since it ended."
+
+    conn = _connect()
+    try:
+        slabs = conn.execute("SELECT user_id, monthly_salary FROM salary_slabs").fetchall()
+        calendar_days = calendar.monthrange(year, month)[1]
+        now = _now()
+        count = 0
+
+        for slab in slabs:
+            user_id = slab["user_id"]
+            monthly_salary = slab["monthly_salary"]
+
+            totals = get_attendance_totals_for_month(year, month, owner_scope=user_id)
+            if not totals:
+                continue
+            c = totals[0]
+            present_days = c.get("present", 0) + c.get("late", 0) + c.get("half_day", 0)
+            absent_days = c.get("absent", 0)
+            leave_days_taken = c.get("leave", 0)
+            weekoff_days = c.get("weekoff", 0)
+
+            prev = _get_prev_month_snapshot(user_id, year, month)
+            leave_balance_before = prev["leave_balance_after"] if prev else 0
+            leave_balance_accrued = 1
+            leave_balance_available = min(leave_balance_before + leave_balance_accrued, 5)
+            paid_leave_days_used = min(leave_days_taken, leave_balance_available)
+            unpaid_leave_days = max(leave_days_taken - leave_balance_available, 0)
+            leave_balance_after = leave_balance_available - paid_leave_days_used
+
+            deducted_days = unpaid_leave_days + absent_days
+            per_day_rate = monthly_salary / calendar_days
+            net_salary = max(monthly_salary - deducted_days * per_day_rate, 0)
+
+            conn.execute("""
+                INSERT OR REPLACE INTO salary_snapshots (
+                    user_id, year, month, base_salary, calendar_days,
+                    present_days, absent_days, leave_days_taken, weekoff_days,
+                    leave_balance_before, leave_balance_accrued, leave_balance_available,
+                    paid_leave_days_used, unpaid_leave_days, leave_balance_after,
+                    deducted_days, net_salary, calculated_at, calculated_by
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                user_id, year, month, monthly_salary, calendar_days,
+                present_days, absent_days, leave_days_taken, weekoff_days,
+                leave_balance_before, leave_balance_accrued, leave_balance_available,
+                paid_leave_days_used, unpaid_leave_days, leave_balance_after,
+                deducted_days, net_salary, now, actor
+            ))
+            count += 1
+
+        conn.commit()
+        month_label = f"{calendar.month_name[month]} {year}"
+        return True, f"Salary calculated for {count} employee(s), {month_label}."
+    finally:
+        conn.close()
+
+
+def list_salary_snapshots(year, month):
+    """(v2.87) All salary_snapshots rows for year/month, JOINed to
+    users.full_name, ordered by full_name — powers the admin payroll
+    page's results table."""
+    conn = _connect()
+    try:
+        rows = conn.execute("""
+            SELECT s.*, u.full_name
+            FROM salary_snapshots s
+            JOIN users u ON u.user_id = s.user_id
+            WHERE s.year = ? AND s.month = ?
+            ORDER BY u.full_name COLLATE NOCASE
+        """, (year, month)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_salary_month_status(year, month):
+    """(v2.87) {'has_snapshot': bool, 'locked': bool} for the admin page
+    to decide whether to show 'Generate' vs 'Recalculate' vs a disabled
+    locked state."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) c FROM salary_snapshots WHERE year=? AND month=?",
+            (year, month)
+        ).fetchone()
+        has_snapshot = bool(row and row["c"] > 0)
+    finally:
+        conn.close()
+    return {"has_snapshot": has_snapshot, "locked": is_salary_month_locked(year, month)}
+
+
+def get_leave_balance(user_id):
+    """(v2.87) Convenience read: this user's leave_balance_after from
+    their MOST RECENT salary_snapshots row (highest year, then month),
+    or 0 if no snapshot exists yet. For any future screen that wants to
+    show "current paid leave balance" without pulling a full snapshot
+    row."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT leave_balance_after FROM salary_snapshots WHERE user_id=? "
+            "ORDER BY year DESC, month DESC LIMIT 1",
+            (user_id,)
+        ).fetchone()
+        return row["leave_balance_after"] if row else 0
+    finally:
+        conn.close()
+
+
 def compute_punch_in_timing(punch_dt):
     """
     (v2.42) Given a punch-in datetime, compares its time-of-day against
@@ -13591,6 +13980,26 @@ def compute_punch_in_timing(punch_dt):
     if punch_minutes > threshold_minutes:
         return "late", punch_minutes - threshold_minutes
     return "present", 0
+
+
+def compute_early_leave_minutes(punch_dt):
+    """(v2.87) Minutes early a punch-out is vs WORKDAY_END_TIME ('17:30'
+    default). Returns 0 if at/after threshold. Does NOT write to the
+    attendance row or affect status/late_minutes — a real-time
+    notification signal only (see notify_admins()'s 'early_punch_out'
+    hook in api_attendance_punch_out()), no deduction. Falls back to
+    17:30 if the constant is somehow malformed, same posture as
+    compute_punch_in_timing()."""
+    raw = WORKDAY_END_TIME or "17:30"
+    try:
+        threshold_h, threshold_m = (int(p) for p in raw.split(":")[:2])
+    except (ValueError, AttributeError):
+        threshold_h, threshold_m = 17, 30
+    threshold_minutes = threshold_h * 60 + threshold_m
+    punch_minutes = punch_dt.hour * 60 + punch_dt.minute
+    if punch_minutes < threshold_minutes:
+        return threshold_minutes - punch_minutes
+    return 0
 
 
 def record_punch(user_id, direction, date_str, ts, lat, lng, geofence_breach, photo_path,
@@ -14023,6 +14432,38 @@ def send_fcm_push(user_id, title, body):
         if sys.stdout is not None:
             print(f"[send_fcm_push] Unexpected error sending FCM push to user_id={user_id}: {e}")
         return False
+
+
+def notify_admins(event_type, message, cls_id=None):
+    """
+    (v2.87) Fan-out an in-app + FCM notification to every active admin —
+    for events not about a specific lead (late/early punch alerts).
+    Opens its own connection/transaction.
+
+    cls_id: insert_notification()'s idempotency key is
+    event_id = md5(cls_id + event_type + today), which is GLOBALLY
+    unique across the whole notifications table — NOT scoped per
+    recipient or per employee. Passing cls_id=None (or the same literal
+    cls_id) for every call of a given event_type on a given day would
+    collapse every employee's late/early-punch event that day onto one
+    row: only the first one inserted would actually notify anyone.
+    Callers of this function MUST therefore pass a per-employee-unique
+    cls_id-like key (e.g. f"attn:{employee_user_id}") for attendance
+    events, so each employee's daily event stays distinct — see the two
+    call sites in api_attendance_punch_in()/api_attendance_punch_out().
+    (This still fans out only ONE admin per event_type per employee per
+    day if there are multiple admins — same pre-existing limitation as
+    the new_enquiry hook's own admin fan-out, not something new here.)
+    """
+    conn = _connect()
+    try:
+        for admin_id in _get_admin_user_ids(conn):
+            inserted = insert_notification(admin_id, cls_id, event_type, message, conn=conn)
+            if inserted:
+                send_fcm_push(admin_id, "CLS Attendance Alert", message)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ─────────────────────────────────────────────────────────────

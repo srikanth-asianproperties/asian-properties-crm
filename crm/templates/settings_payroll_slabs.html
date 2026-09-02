@@ -1,0 +1,50 @@
+{# settings_payroll_slabs.html (v1, 2026-09-02) — admin Settings > Payroll
+   > Salary Slabs. Flat monthly salary per user (cls_db.py v2.87's
+   salary_slabs table), no incentive/commission component. Admin
+   accounts never appear here — cls_db.list_salary_slabs() excludes
+   role='admin' at the source. Cloned from settings_cross_reassign.html's
+   card/form language: one row per employee, an editable amount input,
+   a Save button posting back to this same page. #}
+{% extends "base.html" %}
+{% block title %}Payroll — Salary Slabs{% endblock %}
+
+{% block content %}
+{% include "_back_button.html" %}
+<h2 style="margin-top:10px;">Payroll — Salary Slabs</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  Flat monthly salary per teammate — no incentive or commission component. Admin
+  accounts are excluded from payroll entirely.
+</p>
+
+<div style="display:flex; flex-direction:column; gap:12px; margin-top:16px; max-width:520px;">
+  {% for s in slabs %}
+  <div class="card">
+    <form method="post" action="{{ url_for('settings_payroll_slabs') }}"
+          style="display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap;">
+      <input type="hidden" name="user_id" value="{{ s.user_id }}">
+      <div>
+        <strong style="font-size:15px;">{{ s.full_name }}</strong>
+        {% if s.updated_at %}
+        <div style="font-size:12px; color:var(--ink-soft); margin-top:2px;">
+          Last updated {{ s.updated_at }}{% if s.updated_by %} by {{ s.updated_by }}{% endif %}
+        </div>
+        {% else %}
+        <div style="font-size:12px; color:var(--ink-soft); margin-top:2px;">No salary set yet</div>
+        {% endif %}
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:14px; color:var(--ink-soft);">₹</span>
+        <input type="number" name="monthly_salary" min="1" step="1"
+               value="{{ s.monthly_salary|int if s.monthly_salary is not none else '' }}"
+               placeholder="Monthly salary" required style="width:140px;">
+        <button type="submit" class="btn btn-primary" style="padding:6px 16px; font-size:13px;">Save</button>
+      </div>
+    </form>
+  </div>
+  {% else %}
+  <div class="card empty-state">
+    <p>No active non-admin users found.</p>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

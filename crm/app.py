@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.65
+Version : 0.66
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,38 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.66 (2026-09-02) — Task 6 items 3 + 3b: Payroll v1.0 admin GUI and
+  late/early punch admin notifications, additive only, nothing existing
+  removed or modified. Every new route is @login_required + @admin_required
+  stacked, same pattern as every other admin-only route in this file —
+  verified this is a real route-level hard gate (403 for non-admins),
+  not just template hiding, per this session's own security-review note.
+    - NEW GET/POST /settings/payroll/slabs (settings_payroll_slabs()) —
+      cls_db.list_salary_slabs()/upsert_salary_slab().
+    - NEW GET /settings/payroll (settings_payroll()) — ?year=&month=
+      query args, defaults to current month. Read-only.
+    - NEW POST /settings/payroll/generate (settings_payroll_generate())
+      — push-button trigger for cls_db.compute_salary_for_month(),
+      flashes its (True/False, message) result.
+    - api_attendance_punch_in(): after the existing compute_punch_in_
+      timing()/record_punch() calls, a 'late' punch now also calls
+      cls_db.notify_admins('late_punch_in', ..., cls_id=f"attn:
+      {user_id}") and adds an optional 'warning' string key to the
+      existing JSON response (None when not late) — no other change to
+      this route's shape or behavior.
+    - api_attendance_punch_out(): same addition using cls_db.
+      compute_early_leave_minutes(punch_dt) and 'early_punch_out'. No
+      deduction either way — these are heads-up notifications only, the
+      separate Payroll math above never reads them.
+    - NOTE (intentional sequencing, flagged so it isn't forgotten):
+      android_pilot's PunchActivity.kt is NOT touched this session —
+      'warning' is present-but-unused in the JSON response until a
+      future Android session surfaces it in the app UI.
+    - settings.html: 2 NEW admin-only tiles, "Payroll — Salary Slabs"
+      and "Payroll — Monthly Salary", placed after the existing "Bulk
+      job history" tile, inside the same {% if current_user.role ==
+      'admin' %} block as every other admin tile on this page.
+
 v0.65 (2026-09-02) — Fix client-side timeout on /api/telephony/report-calls
   for users with large call-log backlogs (confirmed on Elohar's device —
   vivo V2141). Root cause: cls_db.record_call_log_entry() opened its own
@@ -2679,6 +2711,7 @@ def dashboard_today():
     manager, v0.9.5) see the company-wide total. No "talk time" card —
     that needs telephony data (v1.0) that doesn't exist yet; see
     cls_db.get_todays_activity_counts()'s docstring.
+
     """
     user = cls_db.get_user_by_id(session["user_id"])
     # v0.9.5 — managers, like admins, supervise the whole team, so they
@@ -4807,6 +4840,68 @@ def settings_cross_reassign_delete(rule_id):
     return redirect(url_for("settings_cross_reassign"))
 
 
+@app.route("/settings/payroll/slabs", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_payroll_slabs():
+    """
+    v0.66 — admin Settings > Payroll > Salary Slabs. Flat monthly salary
+    per user, no incentive/commission component. Admin accounts never
+    appear here (cls_db.list_salary_slabs() excludes role='admin'), and
+    cls_db.upsert_salary_slab() independently refuses an admin user_id
+    even if one were somehow posted — belt-and-suspenders on top of the
+    @admin_required route gate itself.
+    """
+    if request.method == "POST":
+        user_id = request.form.get("user_id", "").strip()
+        monthly_salary = request.form.get("monthly_salary", "").strip()
+        try:
+            cls_db.upsert_salary_slab(int(user_id), monthly_salary, _actor())
+            flash("Salary slab saved.", "success")
+        except (ValueError, TypeError) as e:
+            flash(str(e), "error")
+        return redirect(url_for("settings_payroll_slabs"))
+
+    return render_template("settings_payroll_slabs.html", slabs=cls_db.list_salary_slabs())
+
+
+@app.route("/settings/payroll")
+@login_required
+@admin_required
+def settings_payroll():
+    """
+    v0.66 — admin Settings > Payroll > Monthly Salary. Reads ?year=&
+    month= query args, defaults to the CURRENT month. Push-button
+    generation only (settings_payroll_generate below) — this route
+    itself is read-only.
+    """
+    today = datetime.now()
+    year = request.args.get("year", type=int) or today.year
+    month = request.args.get("month", type=int) or today.month
+    return render_template(
+        "settings_payroll.html",
+        snapshots=cls_db.list_salary_snapshots(year, month),
+        status=cls_db.get_salary_month_status(year, month),
+        year=year,
+        month=month,
+    )
+
+
+@app.route("/settings/payroll/generate", methods=["POST"])
+@login_required
+@admin_required
+def settings_payroll_generate():
+    """v0.66 — push-button trigger for cls_db.compute_salary_for_month().
+    NOT a scheduled job — admin-initiated only, one calendar month at a
+    time. Refused (flash "error") if that month is past its 10-day
+    correction window and already has a snapshot."""
+    year = request.form.get("year", type=int)
+    month = request.form.get("month", type=int)
+    ok, message = cls_db.compute_salary_for_month(year, month, actor=_actor())
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("settings_payroll", year=year, month=month))
+
+
 @app.route("/settings/lead-scoring", methods=["GET", "POST"])
 @login_required
 @admin_required
@@ -6233,9 +6328,23 @@ def api_attendance_punch_in():
         status=status, late_minutes=late_minutes,
     )
 
+    # v0.66 — Task 6 item 3b: late-punch admin heads-up, no deduction (see
+    # cls_db.compute_salary_for_month() for the separate payroll math,
+    # which this does not touch). cls_id is a synthetic per-employee key
+    # (not the literal None the notify_admins() docstring warns against)
+    # so two different late employees on the same day don't collide on
+    # insert_notification()'s globally-unique event_id.
+    warning = None
+    if status == "late" and late_minutes > 0:
+        msg = cls_db.NOTIFICATION_EVENTS["late_punch_in"].format(
+            full_name=user["full_name"], minutes=late_minutes
+        )
+        cls_db.notify_admins("late_punch_in", msg, cls_id=f"attn:{user['user_id']}")
+        warning = f"You're marked late by {late_minutes} min today — this has been reported to admin."
+
     return jsonify({
         "success": True, "status": status, "late_minutes": late_minutes,
-        "geofence_breach": geofence_breach,
+        "geofence_breach": geofence_breach, "warning": warning,
     })
 
 
@@ -6265,7 +6374,18 @@ def api_attendance_punch_out():
 
     cls_db.record_punch(user["user_id"], "out", date_str, ts, lat, lng, geofence_breach, photo_filename)
 
-    return jsonify({"success": True, "geofence_breach": geofence_breach})
+    # v0.66 — Task 6 item 3b: early-leave admin heads-up, no deduction.
+    # Same synthetic per-employee cls_id reasoning as punch-in above.
+    early_minutes = cls_db.compute_early_leave_minutes(punch_dt)
+    warning = None
+    if early_minutes > 0:
+        msg = cls_db.NOTIFICATION_EVENTS["early_punch_out"].format(
+            full_name=user["full_name"], minutes=early_minutes
+        )
+        cls_db.notify_admins("early_punch_out", msg, cls_id=f"attn:{user['user_id']}")
+        warning = f"You left {early_minutes} min early today — this has been reported to admin."
+
+    return jsonify({"success": True, "geofence_breach": geofence_breach, "warning": warning})
 
 
 @app.route("/api/attendance/location-ping", methods=["POST"])
