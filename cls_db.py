@@ -2,11 +2,29 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.82
+Version : 2.83
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.83 (2026-09-02) — Fix duplicate-counting bug in Missed Calls dashboard
+  card, additive only, nothing else touched.
+    - get_missed_calls_count() and get_missed_calls_list() now wrap
+      their existing query in a dedup subquery — GROUP BY
+      m.matched_cls_id, m.call_timestamp — before joining to leads,
+      mirroring the precedent already established in
+      get_call_staging_rows() (v2.71): the Android app's periodic
+      re-sync re-stages already-seen calls, and record_call_log_entry()
+      never dedupes on insert, so the same missed call could be counted
+      (and listed) multiple times. get_missed_calls_list() additionally
+      uses MIN(raw_phone) AS raw_phone inside the dedup subquery so the
+      list has exactly one row per distinct (lead, call_timestamp) pair
+      — this guarantees the list's row count always matches the
+      count() badge exactly. Existing WHERE clause (direction='MISSED',
+      matched_cls_id IS NOT NULL, call_timestamp window, NOT EXISTS
+      outgoing callback) is unchanged inside the subquery. No data
+      deleted — read-only query fix.
+
 v2.82 (2026-09-02) — Prevent crm_lead_no race condition (UNIQUE index +
   retry-on-conflict), scoped fix only. Root-caused after Srikanth found
   lead #8447 duplicated (crm_lead_no had no uniqueness guard, just
@@ -5329,25 +5347,33 @@ def get_missed_calls_count(owner=None, days=MISSED_CALLS_WINDOW_DAYS):
     (v2.81) Now windowed to `days` days (default MISSED_CALLS_WINDOW_DAYS
     = 7), superseding the all-time v2.57 behavior — a missed call older
     than the window no longer counts, even with no callback since.
+
+    (v2.83) — deduped re-synced duplicate call_log_staging rows (same
+    root cause documented in get_call_staging_rows()'s v2.71 docstring);
+    no data deleted, this is a read-only query fix.
     """
     conn = _connect()
     try:
         query = """
-            SELECT COUNT(*) c FROM call_log_staging m
+            SELECT COUNT(*) c FROM (
+                SELECT m.matched_cls_id, m.call_timestamp
+                FROM call_log_staging m
+                WHERE m.direction = 'MISSED'
+                  AND m.matched_cls_id IS NOT NULL
+                  AND m.call_timestamp >= datetime('now', 'localtime', ?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM call_log_staging o
+                      WHERE o.matched_cls_id = m.matched_cls_id
+                        AND o.direction = 'OUTGOING'
+                        AND o.call_timestamp > m.call_timestamp
+                  )
+                GROUP BY m.matched_cls_id, m.call_timestamp
+            ) m
             JOIN leads l ON l.cls_id = m.matched_cls_id
-            WHERE m.direction = 'MISSED'
-              AND m.matched_cls_id IS NOT NULL
-              AND m.call_timestamp >= datetime('now', 'localtime', ?)
-              AND NOT EXISTS (
-                  SELECT 1 FROM call_log_staging o
-                  WHERE o.matched_cls_id = m.matched_cls_id
-                    AND o.direction = 'OUTGOING'
-                    AND o.call_timestamp > m.call_timestamp
-              )
         """
         params = [f"-{days} days"]
         if owner:
-            query += " AND l.lead_owner = ?"
+            query += " WHERE l.lead_owner = ?"
             params.append(owner)
         row = conn.execute(query, params).fetchone()
         return row["c"]
@@ -5368,28 +5394,36 @@ def get_missed_calls_list(owner=None, days=MISSED_CALLS_WINDOW_DAYS):
     (v2.81) Now windowed to `days` days (default MISSED_CALLS_WINDOW_DAYS
     = 7), superseding the all-time v2.57 behavior — a missed call older
     than the window no longer counts, even with no callback since.
+
+    (v2.83) — deduped re-synced duplicate call_log_staging rows (same
+    root cause documented in get_call_staging_rows()'s v2.71 docstring);
+    no data deleted, this is a read-only query fix.
     """
     conn = _connect()
     try:
         query = """
-            SELECT m.call_timestamp, m.raw_phone, l.full_name, l.cls_id, l.crm_lead_no
-            FROM call_log_staging m
-            JOIN leads l ON l.cls_id = m.matched_cls_id
-            WHERE m.direction = 'MISSED'
-              AND m.matched_cls_id IS NOT NULL
-              AND m.call_timestamp >= datetime('now', 'localtime', ?)
-              AND NOT EXISTS (
-                  SELECT 1 FROM call_log_staging o
-                  WHERE o.matched_cls_id = m.matched_cls_id
-                    AND o.direction = 'OUTGOING'
-                    AND o.call_timestamp > m.call_timestamp
-              )
+            SELECT d.call_timestamp, d.raw_phone, l.full_name, l.cls_id, l.crm_lead_no
+            FROM (
+                SELECT m.matched_cls_id, m.call_timestamp, MIN(m.raw_phone) AS raw_phone
+                FROM call_log_staging m
+                WHERE m.direction = 'MISSED'
+                  AND m.matched_cls_id IS NOT NULL
+                  AND m.call_timestamp >= datetime('now', 'localtime', ?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM call_log_staging o
+                      WHERE o.matched_cls_id = m.matched_cls_id
+                        AND o.direction = 'OUTGOING'
+                        AND o.call_timestamp > m.call_timestamp
+                  )
+                GROUP BY m.matched_cls_id, m.call_timestamp
+            ) d
+            JOIN leads l ON l.cls_id = d.matched_cls_id
         """
         params = [f"-{days} days"]
         if owner:
-            query += " AND l.lead_owner = ?"
+            query += " WHERE l.lead_owner = ?"
             params.append(owner)
-        query += " ORDER BY m.call_timestamp DESC"
+        query += " ORDER BY d.call_timestamp DESC"
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
     finally:
