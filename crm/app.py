@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.64
+Version : 0.65
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,22 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.65 (2026-09-02) — Fix client-side timeout on /api/telephony/report-calls
+  for users with large call-log backlogs (confirmed on Elohar's device —
+  vivo V2141). Root cause: cls_db.record_call_log_entry() opened its own
+  SQLite connection and committed once PER call in the reported batch,
+  so a 30+ call batch pushed total server response time past OkHttp's
+  client-side timeout — the app reported "report-calls failed: timeout"
+  even though the server eventually finished writing.
+    - api_telephony_report_calls(): kept the existing per-entry
+      validation (skips malformed entries), but now builds a clean list
+      of valid call dicts first, then makes ONE call to the new
+      cls_db.record_call_log_entries_batch() (cls_db.py v2.84) instead
+      of looping cls_db.record_call_log_entry() per entry. Response
+      shape unchanged ({"recording_folder_path": ..., "matched": [...]}).
+      Pure refactor of this one route body — no schema change, no
+      other route touched.
+
 v0.64 (2026-09-01) — BUG FIX: webhook-delivered new leads (Phase 2, v0.57)
   never fired their CAPI event and were never queued for retry either,
   because _process_leadgen_change() called cls_db.upsert_meta_lead()
@@ -5459,12 +5475,16 @@ def api_telephony_report_calls():
     Body: {"calls": [{"number": "...", "timestamp": "YYYY-MM-DD HH:MM:SS",
     "duration": <seconds>, "direction": "INCOMING"/"OUTGOING"/...}, ...]}
 
-    Every entry is normalized + matched via cls_db.record_call_log_entry()
-    (reuses norm_phone()/find_match() — no new matching logic) and logged
-    to call_log_staging regardless of outcome. The response contains
-    ONLY matched entries plus this user's configured recording folder —
-    unmatched numbers are never returned to the app and are never
-    persisted anywhere but call_log_staging.
+    Every entry is normalized + matched via
+    cls_db.record_call_log_entries_batch() (v0.65 — reuses
+    norm_phone()/find_match() — no new matching logic) and logged to
+    call_log_staging regardless of outcome, all on one open connection
+    committed once at the end (fixes a client-side timeout on large
+    call-log backlogs — confirmed on Elohar's device, vivo V2141 — see
+    cls_db.py v2.84's changelog). The response contains ONLY matched
+    entries plus this user's configured recording folder — unmatched
+    numbers are never returned to the app and are never persisted
+    anywhere but call_log_staging.
     """
     user = g.telephony_user
     body = request.get_json(silent=True) or {}
@@ -5472,7 +5492,7 @@ def api_telephony_report_calls():
     if not isinstance(calls, list):
         return jsonify({"error": "'calls' must be a list."}), 400
 
-    matched = []
+    clean_calls = []
     for entry in calls:
         if not isinstance(entry, dict):
             continue
@@ -5482,7 +5502,16 @@ def api_telephony_report_calls():
         direction = str(entry.get("direction", "")).strip()
         if not number or not timestamp:
             continue
-        result = cls_db.record_call_log_entry(user["user_id"], number, timestamp, duration, direction)
+        clean_calls.append({
+            "number": number,
+            "timestamp": timestamp,
+            "duration": duration,
+            "direction": direction,
+        })
+
+    matched = []
+    results = cls_db.record_call_log_entries_batch(user["user_id"], clean_calls)
+    for result in results:
         if result["matched"]:
             matched.append({
                 "lead_id": result["cls_id"],

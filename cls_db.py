@@ -2,11 +2,27 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.83
+Version : 2.84
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.84 (2026-09-02) — Add record_call_log_entries_batch(), additive only,
+  nothing existing removed or modified. Fixes a client-side timeout on
+  /api/telephony/report-calls for users with large call-log backlogs
+  (confirmed on Elohar's device — vivo V2141): the existing
+  record_call_log_entry() opens its own SQLite connection and commits
+  once PER call, so a 30+ call batch pushed total server response time
+  past OkHttp's client-side timeout — the app reported "report-calls
+  failed: timeout" even though the server eventually finished writing.
+    - NEW record_call_log_entries_batch(user_id, calls) — same
+      normalize+match+insert logic as record_call_log_entry() (reuses
+      norm_phone()/find_match() unchanged, no new matching logic), but
+      on ONE open connection for the whole batch, committing once at
+      the end. Returns a list of per-entry result dicts in the same
+      shape record_call_log_entry() returns, in input order.
+      record_call_log_entry() itself is untouched.
+
 v2.83 (2026-09-02) — Fix duplicate-counting bug in Missed Calls dashboard
   card, additive only, nothing else touched.
     - get_missed_calls_count() and get_missed_calls_list() now wrap
@@ -6448,6 +6464,62 @@ def record_call_log_entry(user_id, raw_phone, call_timestamp, duration_seconds, 
             "call_timestamp": call_timestamp,
             "duration_seconds": duration_seconds,
         }
+    finally:
+        conn.close()
+
+
+def record_call_log_entries_batch(user_id, calls):
+    """
+    (v2.84) Batch counterpart to record_call_log_entry() above — SAME
+    normalize+match+insert logic (norm_phone()/find_match() reused
+    unchanged, no new matching logic), but on ONE open connection for
+    the whole batch, committing once at the end instead of once per
+    entry. Added to fix a client-side timeout on
+    /api/telephony/report-calls for large call-log backlogs (confirmed
+    on Elohar's device — vivo V2141): a 30+ call batch, each opening
+    and committing its own SQLite connection via record_call_log_entry(),
+    pushed total server response time past OkHttp's client-side
+    timeout, so the app reported "report-calls failed: timeout" even
+    though the server eventually finished writing.
+
+    `calls` is a list of dicts with keys number/timestamp/duration/
+    direction — the same shape app.py already parses from the request
+    body. Returns a list of per-entry result dicts in the SAME shape
+    record_call_log_entry() returns (matched/cls_id/call_timestamp/
+    duration_seconds), in the same order as the input list, so the
+    route's existing response-building loop only needs to change which
+    function it calls, not its own logic.
+
+    record_call_log_entry() itself is untouched — this is a pure
+    addition, not a replacement.
+    """
+    results = []
+    conn = _connect()
+    try:
+        for entry in calls:
+            raw_phone = entry["number"]
+            call_timestamp = entry["timestamp"]
+            duration_seconds = entry["duration"]
+            direction = entry["direction"]
+            phone_norm = norm_phone(raw_phone)
+            cls_id, _tier = find_match(conn, phone_norm, "") if phone_norm else (None, "unmatched")
+            match_status = "matched" if cls_id else "no_lead_match"
+            conn.execute("""
+                INSERT INTO call_log_staging (
+                    user_id, raw_phone, phone_norm, call_timestamp,
+                    duration_seconds, direction, matched_cls_id,
+                    match_status, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?)
+            """, (user_id, raw_phone, phone_norm, call_timestamp,
+                  duration_seconds, direction, cls_id, match_status, _now()))
+            results.append({
+                "matched": bool(cls_id),
+                "cls_id": cls_id,
+                "call_timestamp": call_timestamp,
+                "duration_seconds": duration_seconds,
+            })
+        conn.commit()
+        return results
     finally:
         conn.close()
 
