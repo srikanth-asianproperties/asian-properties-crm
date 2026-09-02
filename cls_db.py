@@ -2,11 +2,57 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.81
+Version : 2.82
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.82 (2026-09-02) — Prevent crm_lead_no race condition (UNIQUE index +
+  retry-on-conflict), scoped fix only. Root-caused after Srikanth found
+  lead #8447 duplicated (crm_lead_no had no uniqueness guard, just
+  SELECT MAX(crm_lead_no)+1 as two separate steps in _next_crm_lead_no()
+  — a live risk once the Meta webhook (real-time, since 2026-08-13)
+  started running in parallel with Job A polling, doubling the chance
+  of two near-simultaneous inserts reading the same MAX before either
+  commits). Diagnosed with the new cls_diag_duplicate_lead_no.py
+  (v1.0); 11 pre-existing duplicate crm_lead_no groups found and fixed
+  with cls_fix_duplicate_lead_no.py (v1.1) before this migration ran —
+  9 stale legacy selldo_only/meta collisions (8 auto-renumbered, 1
+  manually deleted as a confirmed test row, 'Opted Out Person' /
+  optout@test.com) plus the #8443/#8447 genuine near-simultaneous
+  webhook/polling race pair (auto-renumbered). See those two scripts'
+  own changelogs for the full renumbering detail — this entry covers
+  only the schema + code hardening that stops it recurring.
+    - NEW self-healing migration in init_db(): CREATE UNIQUE INDEX IF
+      NOT EXISTS idx_leads_crm_lead_no ON leads(crm_lead_no), placed
+      AFTER the crm_lead_no column migration + backfill (crm_lead_no
+      is added via the drip_migrations self-healing ALTER TABLE loop,
+      not the original CREATE TABLE — same placement fix v2.65 and
+      v2.68 already applied here for idx_leads_owner/idx_leads_
+      reengaged_at, needed again since an earlier placement of this
+      index failed "no such column: crm_lead_no" against a fresh
+      throwaway test DB during this change's own verification).
+      Confirmed live against the production DB before this code
+      change was written — only possible once the 11 pre-existing
+      duplicates above were cleared, since a UNIQUE index create
+      fails outright over existing duplicate values.
+    - NEW _insert_lead_with_lead_no_retry(conn, do_insert, max_attempts=5)
+      — shared helper, sits right after _next_crm_lead_no(). Calls
+      do_insert(crm_lead_no) with a freshly recomputed crm_lead_no
+      (via _next_crm_lead_no()) on each attempt; retries ONLY on a
+      sqlite3.IntegrityError naming crm_lead_no (the exact race this
+      exists to guard against) — any other IntegrityError propagates
+      immediately without retrying, as does exhausting max_attempts.
+    - upsert_meta_lead()'s new-insert branch, upsert_selldo_lead()'s
+      new-insert branch, and create_manual_lead() — all three
+      crm_lead_no assignment call sites — now route their INSERT
+      through this helper instead of calling _next_crm_lead_no()
+      directly. No signature or return-contract change to any of the
+      three functions — every existing caller (app.py,
+      meta_leads_fetcher.py, selldo_to_cls.py) is unaffected.
+    - Scope: cls_db.py, this fix only. Nothing else existing removed
+      or modified.
+
 v2.81 (2026-09-01) — Missed Calls dashboard card gets a 7-day window,
   additive only, nothing else touched.
     - NEW module constant MISSED_CALLS_WINDOW_DAYS = 7.
@@ -3163,6 +3209,44 @@ def _next_crm_lead_no(conn):
     return row["m"] + 1
 
 
+def _insert_lead_with_lead_no_retry(conn, do_insert, max_attempts=5):
+    """
+    Race-condition guard for crm_lead_no (v2.82). _next_crm_lead_no()'s
+    SELECT MAX+1 is two separate steps with no atomic guard — fine at
+    this system's original write frequency, but a live risk since the
+    Meta webhook (real-time, since 2026-08-13) started running in
+    parallel with Job A polling: two near-simultaneous inserts can read
+    the same MAX before either commits, producing a duplicate
+    crm_lead_no (see idx_leads_crm_lead_no, the UNIQUE index added in
+    init_db() this same version, which is what actually surfaces the
+    collision as an error instead of silently allowing it).
+
+    do_insert(crm_lead_no) must perform the INSERT (and only the
+    INSERT) using the crm_lead_no it's given. On a sqlite3.IntegrityError
+    naming crm_lead_no, this recomputes a fresh next number (via
+    _next_crm_lead_no()) and retries, up to max_attempts times total.
+    Any OTHER IntegrityError (e.g. a real cls_id/PRIMARY KEY collision)
+    propagates immediately, unretried. Returns the crm_lead_no that
+    was actually used for the successful insert.
+
+    Safe to retry within the same open transaction: SQLite's default
+    ON CONFLICT behavior for a UNIQUE violation is ABORT, which rolls
+    back only the failed statement, not the whole transaction — no
+    connection/transaction reset needed between attempts.
+    """
+    last_err = None
+    for _attempt in range(1, max_attempts + 1):
+        crm_lead_no = _next_crm_lead_no(conn)
+        try:
+            do_insert(crm_lead_no)
+            return crm_lead_no
+        except sqlite3.IntegrityError as e:
+            if "crm_lead_no" not in str(e):
+                raise
+            last_err = e
+    raise last_err
+
+
 # ─────────────────────────────────────────────────────────────
 # SCHEMA  —  the CLS 'leads' table
 # ─────────────────────────────────────────────────────────────
@@ -3424,6 +3508,29 @@ def init_db():
         for r in unnumbered:
             conn.execute("UPDATE leads SET crm_lead_no=? WHERE cls_id=?", (next_no, r["cls_id"]))
             next_no += 1
+
+    # ── UNIQUE index on crm_lead_no (v2.82) ──
+    # crm_lead_no is meant to be unique but had no DB-level guard until
+    # this version — see _insert_lead_with_lead_no_retry()'s docstring
+    # above for the race condition this closes. Placed here, AFTER the
+    # crm_lead_no column migration and backfill immediately above —
+    # same fix v2.65 (idx_leads_owner) and v2.68 (idx_leads_reengaged_at)
+    # already applied to this file: crm_lead_no is added via the
+    # drip_migrations self-healing ALTER TABLE loop, not the original
+    # CREATE TABLE, so indexing it any earlier fails "no such column:
+    # crm_lead_no" on a genuinely fresh/empty database. Self-healing
+    # like every other migration here, but with one sharp edge specific
+    # to UNIQUE: this CREATE will fail outright if any duplicate
+    # crm_lead_no values already exist in the table. That's a feature,
+    # not a bug, on an existing database — it means a duplicate slipped
+    # through and needs cls_diag_duplicate_lead_no.py run again before
+    # this migration can succeed. On this system it was confirmed clean
+    # (all pre-existing duplicates fixed via cls_fix_duplicate_lead_no.py)
+    # before this line shipped.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_crm_lead_no "
+        "ON leads(crm_lead_no)"
+    )
 
     # ── activity_log table — CRM v0.5 (Writer) universal audit trail ──
     # One row per write action taken from the CRM: notes, stage changes,
@@ -7399,18 +7506,21 @@ def create_manual_lead(full_name, phone_raw, initial_stage, actor,
 
         now = _now()
         cls_id = str(uuid.uuid4())
-        crm_lead_no = _next_crm_lead_no(conn)
-        conn.execute("""
-            INSERT INTO leads (
-                cls_id, project, project_bucket, full_name, phone_raw, phone_norm,
-                email_raw, email_norm, current_stage, stage_updated_at,
-                match_tier, source, lead_owner, crm_lead_no,
-                lead_source_detail, cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (cls_id, project, get_project_bucket(project), full_name, phone_raw, phone_norm,
-              email_raw, email_norm, initial_stage, now,
-              "manual", "manual_crm", lead_owner, crm_lead_no,
-              source_detail or None, now, now))
+
+        def _do_insert(crm_lead_no):
+            conn.execute("""
+                INSERT INTO leads (
+                    cls_id, project, project_bucket, full_name, phone_raw, phone_norm,
+                    email_raw, email_norm, current_stage, stage_updated_at,
+                    match_tier, source, lead_owner, crm_lead_no,
+                    lead_source_detail, cls_created_at, cls_updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (cls_id, project, get_project_bucket(project), full_name, phone_raw, phone_norm,
+                  email_raw, email_norm, initial_stage, now,
+                  "manual", "manual_crm", lead_owner, crm_lead_no,
+                  source_detail or None, now, now))
+
+        crm_lead_no = _insert_lead_with_lead_no_retry(conn, _do_insert)
         _log_activity(conn, cls_id, "lead_entered", actor,
                       new_value=initial_stage,
                       description=f"Manually entered by {actor}"
@@ -9903,27 +10013,30 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
 
         # ── 3. Genuinely new lead — insert. ──
         cls_id = str(uuid.uuid4())
-        crm_lead_no = _next_crm_lead_no(conn)
         default_owner = resolve_owner_for_new_lead(conn, campaign)
-        conn.execute("""
-            INSERT INTO leads (
-                cls_id, leadgen_id, form_id, project, project_bucket, full_name,
-                phone_raw, phone_norm, email_raw, email_norm,
-                meta_created_time, source, crm_lead_no,
-                current_stage, stage_updated_at, lead_owner, campaign,
-                meta_campaign_id, meta_campaign_name,
-                meta_adset_id, meta_adset_name,
-                meta_ad_id, meta_ad_name, meta_platform,
-                cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (cls_id, leadgen_id, form_id, project, get_project_bucket(project), full_name,
-              phone_raw, phone_norm, email_raw, email_norm,
-              meta_created_time, "meta", crm_lead_no,
-              "Incoming", now, default_owner, campaign,
-              meta_campaign_id, meta_campaign_name,
-              meta_adset_id, meta_adset_name,
-              meta_ad_id, meta_ad_name, meta_platform,
-              now, now))
+
+        def _do_insert(crm_lead_no):
+            conn.execute("""
+                INSERT INTO leads (
+                    cls_id, leadgen_id, form_id, project, project_bucket, full_name,
+                    phone_raw, phone_norm, email_raw, email_norm,
+                    meta_created_time, source, crm_lead_no,
+                    current_stage, stage_updated_at, lead_owner, campaign,
+                    meta_campaign_id, meta_campaign_name,
+                    meta_adset_id, meta_adset_name,
+                    meta_ad_id, meta_ad_name, meta_platform,
+                    cls_created_at, cls_updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (cls_id, leadgen_id, form_id, project, get_project_bucket(project), full_name,
+                  phone_raw, phone_norm, email_raw, email_norm,
+                  meta_created_time, "meta", crm_lead_no,
+                  "Incoming", now, default_owner, campaign,
+                  meta_campaign_id, meta_campaign_name,
+                  meta_adset_id, meta_adset_name,
+                  meta_ad_id, meta_ad_name, meta_platform,
+                  now, now))
+
+        crm_lead_no = _insert_lead_with_lead_no_retry(conn, _do_insert)
 
         # v2.28 — Task 2.1: one lead_entered row at the exact moment
         # this lead first exists in CLS, backdated to Meta's own
@@ -10114,22 +10227,25 @@ def upsert_selldo_lead(selldo_lead_id, project, full_name,
 
         # ── No match anywhere -> INSERT selldo_only row (Risk 3) ──
         cls_id = str(uuid.uuid4())
-        crm_lead_no = _next_crm_lead_no(conn)
-        conn.execute("""
-            INSERT INTO leads (
-                cls_id, leadgen_id, project, project_bucket, full_name,
-                phone_raw, phone_norm, email_raw, email_norm,
-                selldo_lead_id, current_stage, stage_updated_at,
-                match_tier, source, lead_owner, selldo_url,
-                opportunity_temperature, crm_lead_no,
-                cls_created_at, cls_updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (cls_id, None, project, get_project_bucket(project), full_name,
-              phone_raw, phone_norm, email_raw, email_norm,
-              selldo_lead_id, current_stage, now,
-              "unmatched", "selldo_only", lead_owner, selldo_url,
-              opportunity_temperature or None, crm_lead_no,
-              now, now))
+
+        def _do_insert(crm_lead_no):
+            conn.execute("""
+                INSERT INTO leads (
+                    cls_id, leadgen_id, project, project_bucket, full_name,
+                    phone_raw, phone_norm, email_raw, email_norm,
+                    selldo_lead_id, current_stage, stage_updated_at,
+                    match_tier, source, lead_owner, selldo_url,
+                    opportunity_temperature, crm_lead_no,
+                    cls_created_at, cls_updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (cls_id, None, project, get_project_bucket(project), full_name,
+                  phone_raw, phone_norm, email_raw, email_norm,
+                  selldo_lead_id, current_stage, now,
+                  "unmatched", "selldo_only", lead_owner, selldo_url,
+                  opportunity_temperature or None, crm_lead_no,
+                  now, now))
+
+        crm_lead_no = _insert_lead_with_lead_no_retry(conn, _do_insert)
 
         # v2.28 — Task 2.1: matches upsert_meta_lead() branch 3's new
         # lead_entered row, for Job B's own ONGOING sync (not the
