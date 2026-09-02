@@ -1,6 +1,14 @@
-{# dashboard_today.html (v0.11) — "Today's Performance" tab. Deliberately
+{# dashboard_today.html (v0.12) — "Today's Performance" tab. Deliberately
    no "talk time" tile — see the banner below and cls_db.get_todays_
    activity_counts()'s docstring for why.
+
+   v0.12 (2026-09-02) — Task 6 item 7: NEW "Today's Call Activity" card
+   BELOW the existing stat-card-grid (own card, not squeezed into the
+   tile shape), from the new call_stats context var (app.py v0.67,
+   cls_db.get_todays_call_stats() v2.88). Provisional caveat text stays
+   until Telephony sync reliability improvements (Elohar's timeout fix,
+   Part B) are confirmed stable — remove in a FUTURE session, not now.
+   stat-card-grid/perf tiles and everything else unchanged.
 
    v0.11 (2026-09-02) — Task 6 item 1: NEW 6th stat-card tile, "Sittings
    Done", after "Follow-ups Completed" — links to the same
@@ -100,6 +108,21 @@
     </div>
   </a>
 
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3 style="margin-top:0; font-size:16px;">Today's Call Activity</h3>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; font-size:14px;">
+    <div>Outgoing Calls Attempted<br><strong style="font-size:20px;">{{ call_stats.outgoing_attempted }}</strong></div>
+    <div>Outgoing Calls Answered<br><strong style="font-size:20px;">{{ call_stats.outgoing_answered }}</strong></div>
+    <div>Incoming Calls Answered<br><strong style="font-size:20px;">{{ call_stats.incoming_answered }}</strong></div>
+    <div>Total Calls Synced<br><strong style="font-size:20px;">{{ call_stats.total_synced }}</strong></div>
+  </div>
+  <p style="font-size:12px; color:var(--ink-soft); margin-top:10px; margin-bottom:0;">
+    Provisional — Telephony sync reliability improvements (Elohar's
+    timeout fix, Part B) are still rolling out. Numbers may
+    undercount until the next APK build ships.
+  </p>
 </div>
 
 <p style="font-size:12px; color:var(--ink-soft); margin-top:18px; max-width:560px;">

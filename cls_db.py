@@ -2,11 +2,21 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.87
+Version : 2.88
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.88 (2026-09-02) — Task 6 item 7: "Today's Call Activity" card,
+  additive only, nothing existing removed or modified.
+    - NEW get_todays_call_stats(owner_scope=None) — deduped
+      call_log_staging counts for today (same DISTINCT-on-(user_id,
+      matched_cls_id, call_timestamp, duration_seconds, direction) dedup
+      get_call_staging_rows() (v2.71) already uses, avoiding the known
+      re-sync duplicate-inflation bug). owner_scope=None is company-wide;
+      a user_id scopes to one salesperson. Returns outgoing_attempted/
+      outgoing_answered/incoming_answered/total_synced.
+
 v2.87 (2026-09-02) — Task 6 items 3 + 3b: Payroll v1.0 (admin-only, flat
   salary, monthly, push-button) and late/early punch admin notifications,
   additive only, nothing existing removed or modified. Admin (Srikanth)
@@ -6870,6 +6880,45 @@ def get_call_staging_rows(user_id, date_str):
             }
             for r in rows
         ]
+    finally:
+        conn.close()
+
+
+def get_todays_call_stats(owner_scope=None):
+    """(v2.88) Deduped counts from call_log_staging for today, same
+    DISTINCT-on-(user_id, matched_cls_id, call_timestamp,
+    duration_seconds, direction) dedup get_call_staging_rows() (v2.71)
+    uses, avoiding the known re-sync duplicate-inflation bug.
+
+    owner_scope: a user_id to scope to one salesperson, or None for
+    company-wide. 'Answered' = duration_seconds > 0.
+
+    Returns: {outgoing_attempted, outgoing_answered,
+    incoming_answered, total_synced}."""
+    conn = _connect()
+    try:
+        today = _now()[:10]
+        query = """
+            SELECT DISTINCT user_id, matched_cls_id, call_timestamp,
+                   duration_seconds, direction
+            FROM call_log_staging
+            WHERE substr(call_timestamp, 1, 10) = ?
+        """
+        params = [today]
+        if owner_scope:
+            query += " AND user_id = ?"
+            params.append(owner_scope)
+        rows = conn.execute(query, params).fetchall()
+
+        outgoing_attempted = sum(1 for r in rows if r["direction"] == "OUTGOING")
+        outgoing_answered = sum(1 for r in rows if r["direction"] == "OUTGOING" and (r["duration_seconds"] or 0) > 0)
+        incoming_answered = sum(1 for r in rows if r["direction"] == "INCOMING" and (r["duration_seconds"] or 0) > 0)
+        return {
+            "outgoing_attempted": outgoing_attempted,
+            "outgoing_answered": outgoing_answered,
+            "incoming_answered": incoming_answered,
+            "total_synced": len(rows),
+        }
     finally:
         conn.close()
 

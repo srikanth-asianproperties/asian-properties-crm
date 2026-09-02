@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.66
+Version : 0.67
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,13 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.67 (2026-09-02) — Task 6 item 7: "Today's Call Activity" card,
+  additive only, nothing else in dashboard_today() touched.
+    - dashboard_today(): NEW call_stats=cls_db.get_todays_call_stats(
+      owner_scope=None if company_wide else user["user_id"]) context
+      var, same company_wide scoping this route already computes for
+      perf. Existing perf/company_wide logic unchanged.
+
 v0.66 (2026-09-02) — Task 6 items 3 + 3b: Payroll v1.0 admin GUI and
   late/early punch admin notifications, additive only, nothing existing
   removed or modified. Every new route is @login_required + @admin_required
@@ -2712,6 +2719,12 @@ def dashboard_today():
     that needs telephony data (v1.0) that doesn't exist yet; see
     cls_db.get_todays_activity_counts()'s docstring.
 
+    v0.67 — Task 6 item 7: NEW "Today's Call Activity" card below the
+    existing perf tiles, from cls_db.get_todays_call_stats() (v2.88).
+    Same company_wide/owner scoping this route already computes for
+    perf — owner_scope is a user_id (not an email/actor string, unlike
+    perf's actor-based scoping) since call_log_staging.user_id is who
+    the call landed on, not who logged an activity_log row.
     """
     user = cls_db.get_user_by_id(session["user_id"])
     # v0.9.5 — managers, like admins, supervise the whole team, so they
@@ -2722,11 +2735,15 @@ def dashboard_today():
     company_wide = cls_db.effective_company_wide(user)
     scope_email = None if company_wide else user["email"]
     perf = cls_db.get_todays_activity_counts(actor_email=scope_email)
+    call_stats = cls_db.get_todays_call_stats(
+        owner_scope=None if company_wide else user["user_id"]
+    )
     return render_template(
         "dashboard_today.html",
         active_tab="today",
         perf=perf,
         company_wide=company_wide,
+        call_stats=call_stats,
     )
 
 
