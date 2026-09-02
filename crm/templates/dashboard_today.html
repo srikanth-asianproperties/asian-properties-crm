@@ -1,6 +1,13 @@
-{# dashboard_today.html (v0.10) — "Today's Performance" tab. Deliberately
+{# dashboard_today.html (v0.11) — "Today's Performance" tab. Deliberately
    no "talk time" tile — see the banner below and cls_db.get_todays_
    activity_counts()'s docstring for why.
+
+   v0.11 (2026-09-02) — Task 6 item 1: NEW 6th stat-card tile, "Sittings
+   Done", after "Follow-ups Completed" — links to the same
+   /dashboard/today/<metric> drill-down as the other 5 tiles (cls_db.py
+   v2.85's TODAY_PERFORMANCE_METRICS['sittings_done']). No app.py
+   change needed (route is config-driven). Other 5 tiles/intro/outro
+   unchanged.
 
    v0.10 (2026-08-16) — Task 3 Part B CORRECTION / REVERT: removes the
    "Today's Agenda" block added in v0.9 (commit c33a36b). That was a
@@ -83,6 +90,13 @@
     <div class="stat-card-header">Follow-ups Completed</div>
     <div class="stat-card-body">
       <div class="stat-card-number stat-num-green">{{ perf.follow_ups_completed }}</div>
+    </div>
+  </a>
+
+  <a href="{{ url_for('dashboard_today_drilldown', metric='sittings_done') }}" class="stat-card">
+    <div class="stat-card-header">Sittings Done</div>
+    <div class="stat-card-body">
+      <div class="stat-card-number stat-num-green">{{ perf.sittings_done }}</div>
     </div>
   </a>
 

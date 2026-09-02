@@ -2,11 +2,22 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.84
+Version : 2.85
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.85 (2026-09-02) — Task 6 item 1: Sittings Done dashboard drill-down,
+  additive only, nothing existing removed or modified. The count itself
+  already existed (get_todays_activity_counts()'s METRIC_MAP has mapped
+  'sitting_done' -> 'sittings_done' since v2.70) — this only adds the
+  drill-down fetch function and its TODAY_PERFORMANCE_METRICS entry.
+    - NEW get_sittings_done_today(actor_email=None) — same
+      _activity_rows_today('sitting_done', ...) shape as the other 5
+      Today's Performance drill-downs.
+    - TODAY_PERFORMANCE_METRICS: NEW 'sittings_done' entry, other 5
+      entries untouched.
+
 v2.84 (2026-09-02) — Add record_call_log_entries_batch(), additive only,
   nothing existing removed or modified. Fixes a client-side timeout on
   /api/telephony/report-calls for users with large call-log backlogs
@@ -5905,10 +5916,18 @@ def get_follow_ups_completed_today(actor_email=None):
     return _activity_rows_today("follow_up_completed", actor_email)
 
 
+def get_sittings_done_today(actor_email=None):
+    """(v2.85) Drill-down behind the Today's Performance "Sittings
+    Done" tile — today's activity_log 'sitting_done' rows (see
+    log_sitting_done()), actor-scoped to match that tile's own
+    count."""
+    return _activity_rows_today("sitting_done", actor_email)
+
+
 # Config-not-code: metric-key -> (display label, drill-down fetch
 # function), one entry per Today's Performance tile. Drives app.py's
 # single /dashboard/today/<metric> route rather than 5 near-identical
-# routes/if-branches. Must stay AFTER the 5 functions above since it
+# routes/if-branches. Must stay AFTER the 6 functions above since it
 # references them directly.
 TODAY_PERFORMANCE_METRICS = {
     "calls_made":              {"label": "Calls Made",              "fetch": get_calls_made_today},
@@ -5916,6 +5935,7 @@ TODAY_PERFORMANCE_METRICS = {
     "site_visits_conducted":   {"label": "Site Visits Conducted",   "fetch": get_site_visits_conducted_today},
     "follow_ups_scheduled":    {"label": "Follow-ups Scheduled",    "fetch": get_follow_ups_scheduled_today},
     "follow_ups_completed":    {"label": "Follow-ups Completed",    "fetch": get_follow_ups_completed_today},
+    "sittings_done":           {"label": "Sittings Done",           "fetch": get_sittings_done_today},
 }
 
 
