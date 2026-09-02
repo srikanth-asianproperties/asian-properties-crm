@@ -2,11 +2,32 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.85
+Version : 2.86
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.86 (2026-09-02) — Task 6 item 2: leave-aware round-robin lead routing
+  (Naishka Homes: Elohar / Devender), additive only, nothing existing
+  removed or modified. Applies ONLY to rule_type='round_robin' campaign_
+  routing_rules — rule_type='single' is untouched. Only 'leave'/
+  'weekoff' (the two SELF_SERVICE_ATTENDANCE_STATUSES, known ahead of
+  time) are checked; 'absent' is deliberately not special-cased here
+  since it's only known after the fact.
+    - NEW _owner_on_leave_today(conn, owner_full_name, today_str) —
+      resolves owner_full_name -> attendance.status for today via
+      users.full_name, treating "can't resolve"/"no row today" as
+      available (never blocks routing on missing data).
+    - resolve_owner_for_new_lead()'s round_robin branch: the picked
+      owner (by cursor position) is skipped in favor of the next
+      available teammate in rotation order if _owner_on_leave_today() is
+      True, falling back to the originally-scheduled owner if everyone
+      in rotation is on leave/weekoff. next_index read/increment is
+      BYTE-FOR-BYTE unchanged — it still advances by exactly 1 per lead
+      regardless of any skip, so rotation resumes exactly where it left
+      off with zero extra state. _pick_cross_reassign_owner() (cross-
+      project reassignment, v2.75) is untouched — separate feature.
+
 v2.85 (2026-09-02) — Task 6 item 1: Sittings Done dashboard drill-down,
   additive only, nothing existing removed or modified. The count itself
   already existed (get_todays_activity_counts()'s METRIC_MAP has mapped
@@ -9625,6 +9646,24 @@ def _apply_reengagement_marker(conn, cls_id, prev_stage, now):
         conn.execute("UPDATE leads SET reengaged_at=? WHERE cls_id=?", (now, cls_id))
 
 
+def _owner_on_leave_today(conn, owner_full_name, today_str):
+    """(v2.86) True if owner_full_name's attendance.status for today_str
+    is 'leave' or 'weekoff' — the only two statuses set in advance via
+    self-service (SELF_SERVICE_ATTENDANCE_STATUSES), so the only ones a
+    real-time routing decision can act on. 'absent' is deliberately NOT
+    checked here — it's only known after the fact, never ahead of time.
+    Returns False (treat as available) if the owner can't be resolved
+    to a user_id, or has no attendance row for today at all — 'no data'
+    must never block a lead from being routed."""
+    row = conn.execute(
+        "SELECT a.status FROM attendance a "
+        "JOIN users u ON u.user_id = a.user_id "
+        "WHERE u.full_name = ? AND a.attendance_date = ?",
+        (owner_full_name, today_str)
+    ).fetchone()
+    return bool(row and row["status"] in ("leave", "weekoff"))
+
+
 def resolve_owner_for_new_lead(conn, campaign_name):
     """
     (v2.25) Decide the placeholder owner for a genuinely-new Meta lead
@@ -9642,6 +9681,15 @@ def resolve_owner_for_new_lead(conn, campaign_name):
       4. rule_type='round_robin' -> owners[next_index % len(owners)],
          then next_index is incremented on that same row (same conn,
          not yet committed here — the caller's own commit covers it).
+         (v2.86) Leave-aware: if that picked owner is on 'leave' or
+         'weekoff' today (_owner_on_leave_today()), the next available
+         owner in rotation order is picked instead — next_index itself
+         still advances by exactly 1, unaffected by the skip, so
+         rotation resumes exactly where it left off. Falls back to the
+         originally-scheduled owner if everyone in rotation is on
+         leave/weekoff today, rather than leaving the lead unassigned.
+         rule_type='single' is untouched by this — it always returns
+         owners[0] regardless of attendance.
 
     Job B's own upsert (upsert_selldo_lead()) always overwrites this
     placeholder with the real Sell.do "Attended By" the moment it syncs
@@ -9672,7 +9720,25 @@ def resolve_owner_for_new_lead(conn, campaign_name):
         return owners[0]
 
     # round_robin
-    picked = owners[rule["next_index"] % len(owners)]
+    # (v2.86) Leave-aware: the originally-scheduled owner (by cursor
+    # position) is skipped in favor of the next available teammate in
+    # rotation order if they're on 'leave'/'weekoff' today
+    # (_owner_on_leave_today) — but the cursor itself still advances by
+    # exactly 1 per lead, unaffected by any skip, so rotation resumes
+    # exactly where it left off with zero extra state. If EVERY owner is
+    # on leave/weekoff today, `picked` falls back to the originally
+    # scheduled owner rather than leaving the lead unassigned.
+    today_str = _now()[:10]
+    original_index = rule["next_index"] % len(owners)
+    picked = owners[original_index]
+    if _owner_on_leave_today(conn, picked, today_str):
+        for offset in range(1, len(owners)):
+            candidate = owners[(original_index + offset) % len(owners)]
+            if not _owner_on_leave_today(conn, candidate, today_str):
+                picked = candidate
+                break
+        # loop never broke -> everyone's on leave/weekoff -> `picked`
+        # stays the originally scheduled owner (intended fallback).
     conn.execute(
         "UPDATE campaign_routing_rules SET next_index = next_index + 1 WHERE id=?",
         (rule["id"],)
