@@ -1,8 +1,26 @@
-{# _back_button.html (v1.0) — reusable back-navigation partial.
+{# _back_button.html (v1.2) — reusable back-navigation partial.
    Uses browser history (history.back()) instead of a fixed URL, so it
    always returns to wherever the user actually came from. Falls back to
    /leads only when there's no history to go back to (history.length <= 1),
    e.g. this page was opened directly via bookmark/deep link/new tab.
    Include at the top of a page's {% block content %}, as the first
-   element, to match the top-left position used across the app. #}
+   element, to match the top-left position used across the app.
+
+   v1.2 — CORRECTION to v1.1: `breadcrumb` (inject_current_user(),
+   app.py v0.71's SETTINGS_BREADCRUMBS dict) is now a list of
+   (label, endpoint_or_None) tuples instead of one flat string, so
+   every middle segment (e.g. "Attendance") is its own link to that
+   hub route, not just a single link to Settings. Only the last
+   segment (endpoint=None) — the current page — renders as plain text.
+   v1.1 — NEW breadcrumb line above the back link, shown only when
+   `breadcrumb` is set. Every page that doesn't set a breadcrumb (the
+   vast majority) renders identically to v1.0. #}
+{% if breadcrumb %}
+<div style="margin-bottom:4px; font-size:12px; color:var(--ink-soft);">
+  {% for label, endpoint in breadcrumb %}
+    {%- if not loop.first %} → {% endif -%}
+    {% if endpoint %}<a href="{{ url_for(endpoint) }}" style="color:var(--ink-soft); text-decoration:none;">{{ label }}</a>{% else %}{{ label }}{% endif %}
+  {% endfor %}
+</div>
+{% endif %}
 <a href="{{ url_for('leads_list') }}" onclick="if (window.history.length > 1) { window.history.back(); return false; }" class="{{ back_button_class|default('') }}" style="font-size:14px;">← Back</a>

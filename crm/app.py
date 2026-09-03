@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.69
+Version : 0.71
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,43 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.71 (2026-09-04) — CORRECTION to v0.70 item 5: SETTINGS_BREADCRUMBS
+  entries changed from a flat "A → B → C" string per endpoint to a list
+  of (label, endpoint_or_None) tuples, so every middle segment links to
+  its actual hub route instead of always jumping straight to
+  settings_home — "Attendance" now points at settings_attendance (not
+  settings_home), "Telephony" at settings_telephony. Only the last
+  segment (endpoint=None) is the current page, unlinked.
+  inject_current_user()'s "breadcrumb": SETTINGS_BREADCRUMBS.get(
+  request.endpoint) line itself is UNCHANGED — it just returns a list
+  now. _back_button.html v1.2 renders the new shape.
+
+v0.70 (2026-09-03) — 5 small additive items batched together.
+    - leads_filter_screen(): NEW campaign_options=cls_db.
+      get_distinct_campaigns() context var, so leads_filter.html's
+      Campaign field can offer a datalist of real values instead of a
+      blind free-text box. No cls_db.py change — that function already
+      existed.
+    - NEW GET /settings/attendance/photo-lookup
+      (settings_attendance_photo_lookup()) and NEW GET /settings/
+      attendance/photo/<user_id>/<date_str>/<direction>
+      (settings_attendance_photo()), both @login_required +
+      @admin_required. The photo-serving route NEVER trusts a
+      client-supplied filename — photo_filename always comes from the
+      cls_db.get_attendance_row() lookup, matching the existing
+      punch-in/out route convention (see their own comments on
+      photo_filename being server-derived).
+    - settings_payroll(), settings_attendance_dashboard(),
+      settings_telephony_recordings(): NEW wrap_wide=True context var
+      (base.html v0.23's wider `main.wrap` for pages with wide
+      tables/calendars).
+    - NEW module-level SETTINGS_BREADCRUMBS dict (config-not-code,
+      endpoint -> breadcrumb string) + inject_current_user() now also
+      returns "breadcrumb": SETTINGS_BREADCRUMBS.get(request.endpoint)
+      — available globally, no per-route wiring needed. Routes not in
+      the dict just get no breadcrumb (falls back to the plain "< Back"
+      link).
+
 v0.69 (2026-09-03) — End-of-Day report: admin notifications + history
   view (cls_db.py v2.92's 4 new functions). The early_punch_out event
   type is RETIRED as of this version — its call site below no longer
@@ -2431,6 +2468,10 @@ def inject_current_user():
         "unread_notification_count": unread_notification_count,
         "impersonator": impersonator,
         "app_version": APP_VERSION,
+        # v0.70 — item 5: breadcrumb trail for Settings subpages, from
+        # SETTINGS_BREADCRUMBS above. None for any route not in that
+        # dict, which _back_button.html treats as "no breadcrumb".
+        "breadcrumb": SETTINGS_BREADCRUMBS.get(request.endpoint),
     }
 
 
@@ -2465,6 +2506,42 @@ ENDPOINT_LABELS = {
     "leads_search_screen": "Searched Leads",
     "lead_detail": "Viewed Lead",
     "settings_home": "Opened Settings",
+}
+
+# v0.70 — item 5: config-not-code breadcrumb trail shown by
+# _back_button.html on every Settings > Attendance / Telephony subpage,
+# keyed by request.endpoint. A route not listed here just shows no
+# breadcrumb (falls back to the plain "< Back" link) — nothing else
+# depends on this dict being exhaustive.
+# v0.71 — CORRECTION: each entry is now a list of (label, endpoint)
+# tuples instead of one flat string, so every middle segment is its
+# own link (e.g. "Attendance" -> settings_attendance, not just
+# settings_home) and only the last segment (endpoint=None) is the
+# current, non-linked page. inject_current_user()'s "breadcrumb" line
+# is unchanged — still SETTINGS_BREADCRUMBS.get(request.endpoint) —
+# it just returns a list now instead of a string.
+SETTINGS_BREADCRUMBS = {
+    "settings_attendance_dashboard": [
+        ("Settings", "settings_home"), ("Attendance", "settings_attendance"),
+        ("Dashboard & Export", None)],
+    "settings_attendance_today": [
+        ("Settings", "settings_home"), ("Attendance", "settings_attendance"),
+        ("Who's Present Today", None)],
+    "settings_attendance_corrections": [
+        ("Settings", "settings_home"), ("Attendance", "settings_attendance"),
+        ("Corrections", None)],
+    "settings_attendance_holidays": [
+        ("Settings", "settings_home"), ("Attendance", "settings_attendance"),
+        ("Holidays", None)],
+    "settings_attendance_projects": [
+        ("Settings", "settings_home"), ("Attendance", "settings_attendance"),
+        ("Project GPS & Geofence", None)],
+    "settings_attendance_photo_lookup": [
+        ("Settings", "settings_home"), ("Attendance", "settings_attendance"),
+        ("Photo Lookup", None)],
+    "settings_telephony_recordings": [
+        ("Settings", "settings_home"), ("Telephony", "settings_telephony"),
+        ("Synced Recordings", None)],
 }
 
 
