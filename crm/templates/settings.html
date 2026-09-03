@@ -1,5 +1,22 @@
-{# settings.html (v0.45) — Settings hub. A grid of tiles; each future
+{# settings.html (v0.46) — Settings hub. A grid of tiles; each future
    admin tool drops in here as another tile.
+
+   v0.46 (2026-09-03) — 2 items:
+   - Admin-only tiles regrouped under 3 <h3>-ish section labels (own
+     grid per section, same card style throughout): "User Management"
+     (Team, User Activity Log, Employee EOD Reports), "Bulk Activity"
+     (Bulk Reassign, Bulk job history), "Attendance" (Payroll — Salary
+     Slabs, Payroll — Monthly Salary, Attendance). Every other admin
+     tile (WhatsApp Templates, WhatsApp Reminder Templates, Projects,
+     Campaign Routing, Cross-Reassign Rules, Lead Scoring, Export,
+     Telephony) stays ungrouped, in its own unlabeled grid, same
+     relative order as before — no 4th group. This reorders tiles
+     within the admin block so each group renders contiguous; no tile
+     was added, removed, or had its target route/gating changed.
+   - "My Telephony Settings" tile (role-agnostic second block) now
+     wrapped in {% if current_user.role != 'admin' %}, same pattern
+     "My Attendance" right below it already used (v0.41) — admin
+     already has the separate company-wide "Telephony" tile above.
 
    v0.45 (2026-09-03) — NEW admin-only "Employee EOD Reports" tile
    (settings_eod_reports route/template, app.py v0.69), placed right
@@ -96,7 +113,8 @@
   Admin-only configuration for the CRM.
 </p>
 
-<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-top:16px;">
+<h3 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft); font-weight:700; margin:16px 0 8px;">User Management</h3>
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px;">
 
   <a href="{{ url_for('settings_users') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div style="display:flex; align-items:center; gap:10px;">
@@ -107,6 +125,30 @@
       Activate or deactivate a teammate's CRM login.
     </p>
   </a>
+
+  <a href="{{ url_for('settings_user_activity') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <span style="font-weight:700; font-size:16px;">User Activity Log</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Every login session and the actions taken during it.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_eod_reports') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="15" y2="11"/></svg>
+      <span style="font-weight:700; font-size:16px;">Employee EOD Reports</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Each employee's End-of-Day report, sent automatically on punch-out.
+    </p>
+  </a>
+
+</div>
+
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-top:16px;">
 
   <a href="{{ url_for('whatsapp_templates_admin') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div style="display:flex; align-items:center; gap:10px;">
@@ -125,16 +167,6 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
       One reminder message per project, sent the day before a scheduled site visit.
-    </p>
-  </a>
-
-  <a href="{{ url_for('settings_user_activity') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
-    <div style="display:flex; align-items:center; gap:10px;">
-      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      <span style="font-weight:700; font-size:16px;">User Activity Log</span>
-    </div>
-    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
-      Every login session and the actions taken during it.
     </p>
   </a>
 
@@ -178,6 +210,11 @@
     </p>
   </a>
 
+</div>
+
+<h3 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft); font-weight:700; margin:20px 0 8px;">Bulk Activity</h3>
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px;">
+
   <a href="{{ url_for('settings_bulk_reassign') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div style="display:flex; align-items:center; gap:10px;">
       <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--red)" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
@@ -197,6 +234,11 @@
       Every past Bulk Reassign job, who ran it, and how many leads it moved.
     </p>
   </a>
+
+</div>
+
+<h3 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft); font-weight:700; margin:20px 0 8px;">Attendance</h3>
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px;">
 
   <a href="{{ url_for('settings_payroll_slabs') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div style="display:flex; align-items:center; gap:10px;">
@@ -218,15 +260,19 @@
     </p>
   </a>
 
-  <a href="{{ url_for('settings_eod_reports') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+  <a href="{{ url_for('settings_attendance') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div style="display:flex; align-items:center; gap:10px;">
-      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="15" y2="11"/></svg>
-      <span style="font-weight:700; font-size:16px;">Employee EOD Reports</span>
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+      <span style="font-weight:700; font-size:16px;">Attendance</span>
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
-      Each employee's End-of-Day report, sent automatically on punch-out.
+      Corrections queue, holidays, project GPS/geofence, and project assignment (APX Attendance pilot).
     </p>
   </a>
+
+</div>
+
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-top:16px;">
 
   <a href="{{ url_for('settings_export_home') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div style="display:flex; align-items:center; gap:10px;">
@@ -248,21 +294,12 @@
     </p>
   </a>
 
-  <a href="{{ url_for('settings_attendance') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
-    <div style="display:flex; align-items:center; gap:10px;">
-      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
-      <span style="font-weight:700; font-size:16px;">Attendance</span>
-    </div>
-    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
-      Corrections queue, holidays, project GPS/geofence, and project assignment (APX Attendance pilot).
-    </p>
-  </a>
-
 </div>
 {% endif %}
 
 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-top:16px;">
 
+  {% if current_user.role != 'admin' %}
   <a href="{{ url_for('settings_telephony') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div style="display:flex; align-items:center; gap:10px;">
       <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
@@ -272,6 +309,7 @@
       Your recording folder path, API token, and your own synced recordings.
     </p>
   </a>
+  {% endif %}
 
   {% if current_user.role != 'admin' %}
   <a href="{{ url_for('attendance_home') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
