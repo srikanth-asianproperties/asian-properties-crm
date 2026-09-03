@@ -1,4 +1,4 @@
-{# settings_payroll.html (v2, 2026-09-02) — admin Settings > Payroll >
+{# settings_payroll.html (v3, 2026-09-03) — admin Settings > Payroll >
    Monthly Salary. Year/month selector (GET, same page) + a results
    table from cls_db.list_salary_snapshots(year, month), plus a push-
    button Generate/Recalculate trigger for cls_db.compute_salary_for_
@@ -6,6 +6,21 @@
    a plain-text note when status.locked is True (more than 10 calendar
    days have passed since that month ended AND it already has a
    snapshot — see cls_db.is_salary_month_locked()'s docstring).
+
+   v3 (2026-09-03) — Payroll bug fix, template side:
+     - Month/Year/Go row: explicit display:flex; align-items:flex-end;
+       gap:12px (was align-items:end; gap:10px) so the three controls'
+       bottoms reliably line up.
+     - NEW status.computable branch (cls_db.get_salary_month_status()
+       v2.91): when False, renders NEITHER the Generate/Recalculate
+       button NOR any results table — just a plain message that the
+       month hasn't ended yet and when it'll be calculable. Computed
+       entirely in-template from year/month (no new app.py context var
+       needed — next month's name/year is basic Jinja arithmetic).
+     - REMOVED "Absent" results column — Absent is no longer a distinct
+       payroll concept as of cls_db.py v2.91 (folded into Leave Taken).
+       "Leave Taken" is unchanged as a column, its meaning is just
+       wider now (see compute_salary_for_month()'s docstring).
 
    v2 (2026-09-02) — Fix 2: holiday-aware payroll. NEW "Holiday Days"
    results column (between Weekoff and Balance Before) and a caption
@@ -17,22 +32,24 @@
 {% extends "base.html" %}
 {% block title %}Payroll — Monthly Salary{% endblock %}
 
+{% set month_names = ['January','February','March','April','May','June','July','August','September','October','November','December'] %}
+
 {% block content %}
 {% include "_back_button.html" %}
 <h2 style="margin-top:10px;">Payroll — Monthly Salary</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:-6px;">
-  Flat monthly salary, minus unpaid leave and absent days. Paid-leave balance carries
-  forward month to month, capped at 5 days. A month can be recalculated for up to 10
-  days after it ends — after that it's locked permanently.
+  Flat monthly salary, minus unpaid leave. Paid-leave balance carries forward month to
+  month, capped at 5 days. A month can be recalculated for up to 10 days after it ends —
+  after that it's locked permanently.
 </p>
 
-<div class="card" style="margin-top:16px; max-width:280px;">
-  <form method="get" action="{{ url_for('settings_payroll') }}" style="display:flex; gap:10px; align-items:end;">
+<div class="card" style="margin-top:16px; max-width:320px;">
+  <form method="get" action="{{ url_for('settings_payroll') }}" style="display:flex; align-items:flex-end; gap:12px;">
     <div style="flex:1;">
       <div class="field-label">Month</div>
       <select name="month" style="width:100%;">
         {% for m in range(1, 13) %}
-        <option value="{{ m }}" {{ 'selected' if m == month }}>{{ ['January','February','March','April','May','June','July','August','September','October','November','December'][m-1] }}</option>
+        <option value="{{ m }}" {{ 'selected' if m == month }}>{{ month_names[m-1] }}</option>
         {% endfor %}
       </select>
     </div>
@@ -44,73 +61,86 @@
   </form>
 </div>
 
-<div class="card" style="margin-top:16px; max-width:640px;">
-  {% if status.locked %}
-  <p style="font-size:13px; color:var(--red); margin:0;">
-    Locked — more than 10 days have passed since this month ended.
-  </p>
-  {% else %}
-  <form method="post" action="{{ url_for('settings_payroll_generate') }}">
-    <input type="hidden" name="year" value="{{ year }}">
-    <input type="hidden" name="month" value="{{ month }}">
-    <button type="submit" class="btn btn-primary">
-      {{ 'Recalculate' if status.has_snapshot else 'Generate' }}
-    </button>
-  </form>
-  {% endif %}
-</div>
+{% if not status.computable %}
 
-<p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:20px;">
-  {% if holidays %}
-    Holidays this month: {% for h in holidays %}{{ h.date }} ({{ h.label }}){% if not loop.last %}, {% endif %}{% endfor %}.
-  {% else %}
-    No holidays declared this month.
-  {% endif %}
-</p>
+  {% set next_month_num = (month % 12) + 1 %}
+  {% set next_month_year = year + 1 if month == 12 else year %}
+  <div class="card" style="margin-top:16px; max-width:640px;">
+    <p style="font-size:13px; color:var(--ink-soft); margin:0;">
+      {{ month_names[month-1] }} {{ year }} hasn't ended yet — payroll can be calculated
+      starting {{ month_names[next_month_num-1] }} 1, {{ next_month_year }}.
+    </p>
+  </div>
 
-<h3 style="margin-top:8px; font-size:16px;">Results ({{ snapshots|length }})</h3>
-{% if snapshots %}
-<div style="overflow-x:auto; margin-top:8px;">
-<table style="width:100%; border-collapse:collapse; font-size:13px; min-width:1100px;">
-  <thead>
-    <tr style="text-align:left; border-bottom:1px solid var(--line);">
-      <th style="padding:8px 6px;">Name</th>
-      <th style="padding:8px 6px;">Present</th>
-      <th style="padding:8px 6px;">Absent</th>
-      <th style="padding:8px 6px;">Leave Taken</th>
-      <th style="padding:8px 6px;">Weekoff</th>
-      <th style="padding:8px 6px;">Holiday Days</th>
-      <th style="padding:8px 6px;">Balance Before</th>
-      <th style="padding:8px 6px;">Paid Leave Used</th>
-      <th style="padding:8px 6px;">Unpaid Leave</th>
-      <th style="padding:8px 6px;">Balance After</th>
-      <th style="padding:8px 6px;">Deducted Days</th>
-      <th style="padding:8px 6px;">Net Salary</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for s in snapshots %}
-    <tr style="border-bottom:1px solid var(--line);">
-      <td style="padding:8px 6px;"><strong>{{ s.full_name }}</strong></td>
-      <td style="padding:8px 6px;">{{ s.present_days }}</td>
-      <td style="padding:8px 6px;">{{ s.absent_days }}</td>
-      <td style="padding:8px 6px;">{{ s.leave_days_taken }}</td>
-      <td style="padding:8px 6px;">{{ s.weekoff_days }}</td>
-      <td style="padding:8px 6px;">{{ s.holiday_days }}</td>
-      <td style="padding:8px 6px;">{{ s.leave_balance_before }}</td>
-      <td style="padding:8px 6px;">{{ s.paid_leave_days_used }}</td>
-      <td style="padding:8px 6px;">{{ s.unpaid_leave_days }}</td>
-      <td style="padding:8px 6px;">{{ s.leave_balance_after }}</td>
-      <td style="padding:8px 6px;">{{ s.deducted_days }}</td>
-      <td style="padding:8px 6px;"><strong>₹{{ "{:,.2f}".format(s.net_salary) }}</strong></td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-</div>
 {% else %}
-<div class="card empty-state">
-  <p>No salary calculated for this month yet.</p>
-</div>
+
+  <div class="card" style="margin-top:16px; max-width:640px;">
+    {% if status.locked %}
+    <p style="font-size:13px; color:var(--red); margin:0;">
+      Locked — more than 10 days have passed since this month ended.
+    </p>
+    {% else %}
+    <form method="post" action="{{ url_for('settings_payroll_generate') }}">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="month" value="{{ month }}">
+      <button type="submit" class="btn btn-primary">
+        {{ 'Recalculate' if status.has_snapshot else 'Generate' }}
+      </button>
+    </form>
+    {% endif %}
+  </div>
+
+  <p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:20px;">
+    {% if holidays %}
+      Holidays this month: {% for h in holidays %}{{ h.date }} ({{ h.label }}){% if not loop.last %}, {% endif %}{% endfor %}.
+    {% else %}
+      No holidays declared this month.
+    {% endif %}
+  </p>
+
+  <h3 style="margin-top:8px; font-size:16px;">Results ({{ snapshots|length }})</h3>
+  {% if snapshots %}
+  <div style="overflow-x:auto; margin-top:8px;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:1000px;">
+    <thead>
+      <tr style="text-align:left; border-bottom:1px solid var(--line);">
+        <th style="padding:8px 6px;">Name</th>
+        <th style="padding:8px 6px;">Present</th>
+        <th style="padding:8px 6px;">Leave Taken</th>
+        <th style="padding:8px 6px;">Weekoff</th>
+        <th style="padding:8px 6px;">Holiday Days</th>
+        <th style="padding:8px 6px;">Balance Before</th>
+        <th style="padding:8px 6px;">Paid Leave Used</th>
+        <th style="padding:8px 6px;">Unpaid Leave</th>
+        <th style="padding:8px 6px;">Balance After</th>
+        <th style="padding:8px 6px;">Deducted Days</th>
+        <th style="padding:8px 6px;">Net Salary</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in snapshots %}
+      <tr style="border-bottom:1px solid var(--line);">
+        <td style="padding:8px 6px;"><strong>{{ s.full_name }}</strong></td>
+        <td style="padding:8px 6px;">{{ s.present_days }}</td>
+        <td style="padding:8px 6px;">{{ s.leave_days_taken }}</td>
+        <td style="padding:8px 6px;">{{ s.weekoff_days }}</td>
+        <td style="padding:8px 6px;">{{ s.holiday_days }}</td>
+        <td style="padding:8px 6px;">{{ s.leave_balance_before }}</td>
+        <td style="padding:8px 6px;">{{ s.paid_leave_days_used }}</td>
+        <td style="padding:8px 6px;">{{ s.unpaid_leave_days }}</td>
+        <td style="padding:8px 6px;">{{ s.leave_balance_after }}</td>
+        <td style="padding:8px 6px;">{{ s.deducted_days }}</td>
+        <td style="padding:8px 6px;"><strong>₹{{ "{:,.2f}".format(s.net_salary) }}</strong></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="card empty-state">
+    <p>No salary calculated for this month yet.</p>
+  </div>
+  {% endif %}
+
 {% endif %}
 {% endblock %}
