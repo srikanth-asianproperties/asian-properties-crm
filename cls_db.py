@@ -2,11 +2,20 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.88
+Version : 2.89
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.89 (2026-09-02) — Fix 1: Sittings Done date-range reporting, additive
+  only, nothing existing removed or modified. Previously "Sittings
+  Done" only existed in get_todays_activity_counts() (hardcoded to
+  today) — this makes it reportable over an arbitrary date range via
+  the already-built Salesperson Scorecard report.
+    - ACTIVITY_METRIC_MAP: NEW 'sitting_done' -> 'sittings_done' entry,
+      other 6 entries untouched. get_activity_counts_range() picks this
+      up automatically (no other change to that function needed).
+
 v2.88 (2026-09-02) — Task 6 item 7: "Today's Call Activity" card,
   additive only, nothing existing removed or modified.
     - NEW get_todays_call_stats(owner_scope=None) — deduped
@@ -12441,6 +12450,7 @@ ACTIVITY_METRIC_MAP = {
     "follow_up_scheduled":   "follow_ups_created",
     "follow_up_completed":   "follow_ups_completed",
     "note":                  "notes_added",
+    "sitting_done":          "sittings_done",
 }
 
 

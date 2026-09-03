@@ -2,7 +2,7 @@
 =============================================================
 cls_reports.py — Asian Properties CRM (APX) | v0.6.1 Reports Enhancements
 =============================================================
-Version : 1.4
+Version : 1.5
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -85,6 +85,19 @@ don't print reliably, and the underlying table is the honest fallback.
 
 CHANGELOG
 ---------
+v1.5 (2026-09-02) — Sittings Done, date-range reporting fix. Additive
+  only, nothing else touched. Reuses the already-built Salesperson
+  Scorecard (date-range picker, Last 7 Days quick-select) rather than
+  building anything new — "Sittings Done" previously only existed in
+  cls_db.get_todays_activity_counts() (hardcoded to today).
+    - _build_salesperson_scorecard()'s columns list: NEW
+      ("sittings_done", "Sittings Done") entry, positioned after
+      "site_visits_conducted". Data comes for free from cls_db.
+      ACTIVITY_METRIC_MAP's new 'sitting_done' -> 'sittings_done' entry
+      (cls_db.py this version) — _per_salesperson_activity()'s existing
+      cls_db.get_activity_counts_range() call already returns this key
+      once that map has it, no other code path change needed here.
+
 v1.4 (2026-08-17) — Monday Weekly Report, new Weekly Reports entry.
   NEW _build_monday_weekly_report() + "monday-weekly-report" REPORTS
   entry, added to the existing Weekly Reports category (after
@@ -622,6 +635,7 @@ def _build_salesperson_scorecard(current_user, date_from=None, date_to=None, **k
         ("follow_ups_completed", "Follow-ups Conducted"),
         ("site_visits_created", "Site Visits Created"),
         ("site_visits_conducted", "Site Visits Conducted"),
+        ("sittings_done", "Sittings Done"),
     ]
     rows = [{"name": name, **perf} for name, perf in _per_salesperson_activity(current_user, date_from, date_to)]
     if cls_db.can_view_all_leads(current_user["role"]):
