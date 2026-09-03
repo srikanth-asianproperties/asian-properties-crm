@@ -1,5 +1,10 @@
-{# settings.html (v0.44) — Settings hub. A grid of tiles; each future
+{# settings.html (v0.45) — Settings hub. A grid of tiles; each future
    admin tool drops in here as another tile.
+
+   v0.45 (2026-09-03) — NEW admin-only "Employee EOD Reports" tile
+   (settings_eod_reports route/template, app.py v0.69), placed right
+   after the Payroll — Monthly Salary tile. Same admin-only block/
+   gating convention as every other tile here.
 
    v0.44 (2026-09-02) — Task 6 items 3+3b: 2 NEW admin-only tiles,
    "Payroll — Salary Slabs" (settings_payroll_slabs route/template) and
@@ -210,6 +215,16 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
       Generate this month's salary calculation, one push of a button.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_eod_reports') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="15" y2="11"/></svg>
+      <span style="font-weight:700; font-size:16px;">Employee EOD Reports</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Each employee's End-of-Day report, sent automatically on punch-out.
     </p>
   </a>
 

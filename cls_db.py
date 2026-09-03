@@ -2,11 +2,29 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.91
+Version : 2.92
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.92 (2026-09-03) — End-of-Day report: admin notifications + history
+  view. 4 new functions, all additive — get_todays_achievements() and
+  check_geofence_breach() are NOT modified by this change.
+    - NEW get_attendance_row(user_id, date_str) — one attendance row as
+      a dict, or None. Standard single-row-getter shape.
+    - NEW get_eod_report(user_id, date_str, early_minutes=0) — bundles
+      get_todays_achievements() (reused unchanged), late_minutes and
+      both geofence-breach flags from the attendance row, plus the
+      early_minutes the caller already computed at punch-out. No
+      "unconfigured geofence" tri-state — see its own docstring.
+    - NEW format_eod_report_message(report) — renders the dict above
+      into the plain-text notifications.message string sent to admins,
+      omitting any zero/False line.
+    - NEW get_eod_reports_for_user(user_id, limit=10) — read-only
+      history query against the EXISTING notifications table
+      (event_type='eod_report', cls_id=f"attn:{user_id}"), no new
+      table. Powers app.py's new /settings/eod-reports page.
+
 v2.91 (2026-09-03) — Payroll bug fix: blocks generation for an
   incomplete month, and removes "Absent" as a distinct payroll concept
   (folded into Leave). Prompted by a bad September 2026 snapshot
@@ -13096,6 +13114,26 @@ def get_attendance_for_date(user_id, date_str):
         conn.close()
 
 
+def get_attendance_row(user_id, date_str):
+    """
+    (v2.92) One user's attendance row for one date ('YYYY-MM-DD'), as a
+    dict, or None if no row exists yet. Same shape/behavior as
+    get_attendance_for_date() just above — kept as its own named
+    function because get_eod_report() below calls it explicitly for
+    late_minutes/geofence flags, independent of that function's own
+    "today's status tile" purpose.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM attendance WHERE user_id=? AND attendance_date=?",
+            (user_id, date_str)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def get_attendance_month(user_id, year, month):
     """(v2.39) All of one user's attendance rows within one calendar
     month, keyed by 'YYYY-MM-DD', for the /attendance mini calendar.
@@ -14666,6 +14704,127 @@ def notify_admins(event_type, message, cls_id=None):
             if inserted:
                 send_fcm_push(admin_id, "CLS Attendance Alert", message)
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_eod_report(user_id, date_str, early_minutes=0):
+    """
+    (v2.92) Bundles one employee's End-of-Day report for date_str:
+    today's achievements (calls, visits, follow-ups, sittings, notes,
+    stage changes, time worked) plus attendance-side numbers (late
+    arrival, early departure, geofence breaches). Returns None if
+    user_id doesn't resolve to a user at all.
+
+    get_todays_achievements(user_id) is reused UNCHANGED and is not
+    itself passed date_str — it is always "today" by its own design
+    (see its docstring), which matches this function's only real
+    caller (punch-out, always called for today's date).
+
+    early_minutes is not looked up here — it's whatever the caller
+    (api_attendance_punch_out()) already computed via
+    compute_early_leave_minutes() moments earlier, passed straight
+    through into the returned dict.
+
+    No "geofence not configured" tri-state: if this user's
+    assigned_project has no geofence config, check_geofence_breach()
+    already returned False upstream, at the moment the attendance row
+    was written by record_punch(). This function only surfaces what's
+    already stored in that row — an unconfigured user's breach flags
+    simply read False here, same as a configured user who was inside
+    the fence. Nothing here re-derives or second-guesses that.
+    """
+    user = get_user_by_id(user_id)
+    if not user:
+        return None
+
+    achievements = get_todays_achievements(user_id)
+    row = get_attendance_row(user_id, date_str)
+
+    late_minutes = row["late_minutes"] if row and row["late_minutes"] else 0
+    login_breach = bool(row["login_geofence_breach"]) if row else False
+    logout_breach = bool(row["logout_geofence_breach"]) if row else False
+
+    return {
+        "full_name": user["full_name"],
+        "date": date_str,
+        "achievements": achievements,
+        "late_minutes": late_minutes,
+        "early_minutes": early_minutes,
+        "login_geofence_breach": login_breach,
+        "logout_geofence_breach": logout_breach,
+    }
+
+
+def format_eod_report_message(report):
+    """
+    (v2.92) Renders get_eod_report()'s dict into the plain-text,
+    multi-line string stored in notifications.message (that column
+    already holds arbitrary text — no schema change here). Lines whose
+    underlying number is 0/False are omitted entirely — no "Late: 0
+    min" noise for the common case.
+
+    achievements' time_worked line is only rendered if the key is
+    present at all — get_todays_achievements() OMITS time_worked
+    entirely (rather than zeroing it) when no attendance row exists
+    today, so this checks with "in" rather than .get(..., default).
+    """
+    a = report["achievements"] or {}
+    lines = [f"End-of-Day Report — {report['full_name']} — {report['date']}", ""]
+
+    if a.get("calls_attempted"):
+        lines.append(f"Calls attempted: {a['calls_attempted']}")
+    if a.get("site_visits_created"):
+        lines.append(f"Site visits created: {a['site_visits_created']}")
+    if a.get("site_visits_conducted"):
+        lines.append(f"Site visits conducted: {a['site_visits_conducted']}")
+    if a.get("follow_ups_created"):
+        lines.append(f"Follow-ups created: {a['follow_ups_created']}")
+    if a.get("follow_ups_completed"):
+        lines.append(f"Follow-ups completed: {a['follow_ups_completed']}")
+    if a.get("sittings_done"):
+        lines.append(f"Sittings done: {a['sittings_done']}")
+    if a.get("notes_added"):
+        lines.append(f"Notes added: {a['notes_added']}")
+    if a.get("stage_changes"):
+        lines.append(f"Stage changes: {a['stage_changes']}")
+    if "time_worked" in a:
+        lines.append(f"Time worked: {a['time_worked']}")
+
+    if report["late_minutes"]:
+        lines.append(f"Late arrival: {report['late_minutes']} min")
+    if report["early_minutes"]:
+        lines.append(f"Early departure: {report['early_minutes']} min")
+    if report["login_geofence_breach"] or report["logout_geofence_breach"]:
+        lines.append("Geofence breach recorded today")
+
+    return "\n".join(lines)
+
+
+def get_eod_reports_for_user(user_id, limit=10):
+    """
+    (v2.92) Read-only history of one employee's past EOD reports —
+    queries the EXISTING notifications table, no new table. Works
+    because notify_admins("eod_report", ...) (see api_attendance_
+    punch_out()) already persists one row per employee per day at
+    cls_id=f"attn:{user_id}", event_type='eod_report' — this function
+    adds no new writes, only reads what that call site produces.
+
+    Returns a list of dicts, newest first: {date, message, created_at}
+    — date is created_at's first 10 chars ('YYYY-MM-DD').
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT message, created_at FROM notifications "
+            "WHERE cls_id=? AND event_type='eod_report' "
+            "ORDER BY created_at DESC LIMIT ?",
+            (f"attn:{user_id}", limit)
+        ).fetchall()
+        return [
+            {"date": r["created_at"][:10], "message": r["message"], "created_at": r["created_at"]}
+            for r in rows
+        ]
     finally:
         conn.close()
 

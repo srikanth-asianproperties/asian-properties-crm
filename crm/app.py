@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.68
+Version : 0.69
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,44 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.69 (2026-09-03) — End-of-Day report: admin notifications + history
+  view (cls_db.py v2.92's 4 new functions). The early_punch_out event
+  type is RETIRED as of this version — its call site below no longer
+  exists, superseded by eod_report, which now fires on every punch-out
+  regardless of whether the employee left early (a reader of
+  cls_db.NOTIFICATION_EVENTS shouldn't go hunting for a call site that
+  no longer exists).
+    - api_attendance_punch_in(): the existing late-punch notify_admins()
+      block is UNCHANGED. NEW else branch: an on-time punch-in now ALSO
+      fires a plain "punched IN at HH:MM" notification to admins via
+      notify_admins("punch_in", ...). warning stays None on this path,
+      same as before.
+    - api_attendance_punch_out(): the old standalone early_minutes>0/
+      notify_admins("early_punch_out", ...) block is REMOVED. Replaced
+      by an unconditional cls_db.get_eod_report()/format_eod_report_
+      message()/notify_admins("eod_report", ...) call on every punch-
+      out — early_minutes is now just one line inside that report
+      rather than its own notification. record_punch() still runs
+      BEFORE get_eod_report() so get_todays_achievements()'s
+      time_worked reads the just-written logout_ts. Response gains a
+      new "eod_report" key (additive) — "warning" text is unchanged
+      when early_minutes>0, still None otherwise.
+    - NEW GET /settings/eod-reports (settings_eod_reports()),
+      @login_required + @admin_required (this file's standard
+      admin-only stack — settings_attendance_dashboard() itself is
+      NOT admin-only, since a salesperson also reaches it self-scoped;
+      this new page has no such self-scoped case, so it gets the
+      stricter Payroll-page-style gate instead). Employee dropdown
+      reuses the exact cls_db.get_all_users_detailed() active/non-admin
+      filter settings_attendance_dashboard() already uses — no second
+      "list employees" query added. ?user_id= optional; renders
+      crm/templates/settings_eod_reports.html with reports=[] when
+      absent/invalid, same soft-fallback posture as other settings
+      pages.
+    - settings.html: NEW admin-only "Employee EOD Reports" tile, same
+      {% if current_user.role == 'admin' %} block as every other admin
+      tile, placed after the Payroll — Monthly Salary tile.
+
 v0.68 (2026-09-02) — Fix 2: holiday-aware payroll, additive only.
     - settings_payroll(): NEW holidays=cls_db.get_holidays_in_month(
       year, month) context var, passed to settings_payroll.html so the
@@ -6270,6 +6308,40 @@ def settings_attendance_dashboard_export():
     )
 
 
+@app.route("/settings/eod-reports")
+@login_required
+@admin_required
+def settings_eod_reports():
+    """
+    v0.69 — admin-only End-of-Day report history viewer. Employee
+    dropdown reuses the exact active/non-admin cls_db.get_all_users_
+    detailed() filter settings_attendance_dashboard() already uses
+    above — no second "list employees" query. ?user_id= optional: when
+    present and valid, shows that employee's last 10 EOD reports
+    (cls_db.get_eod_reports_for_user()); when absent/invalid, renders
+    the same template with reports=[] — just the picker, no "error",
+    same soft-fallback posture as other settings pages.
+    """
+    employees = [u for u in cls_db.get_all_users_detailed() if u["active"] and u["role"] != "admin"]
+
+    selected_user_id = None
+    raw = (request.args.get("user_id") or "").strip()
+    if raw:
+        try:
+            selected_user_id = int(raw)
+        except ValueError:
+            selected_user_id = None
+
+    reports = cls_db.get_eod_reports_for_user(selected_user_id, limit=10) if selected_user_id else []
+
+    return render_template(
+        "settings_eod_reports.html",
+        employees=employees,
+        selected_user_id=selected_user_id,
+        reports=reports,
+    )
+
+
 # ── Token-auth API endpoints (v0.30, Build Order Step 4) ──
 # @token_required / g.telephony_user REUSED EXACTLY, same mechanism as
 # the 2 existing Telephony endpoints below — one bearer token per user,
@@ -6369,6 +6441,11 @@ def api_attendance_punch_in():
         )
         cls_db.notify_admins("late_punch_in", msg, cls_id=f"attn:{user['user_id']}")
         warning = f"You're marked late by {late_minutes} min today — this has been reported to admin."
+    else:
+        # v0.69 — on-time punch-in now also notifies admins (not just
+        # the late case above). warning stays None here, same as before.
+        msg = f"{user['full_name']} punched IN at {punch_dt.strftime('%H:%M')}."
+        cls_db.notify_admins("punch_in", msg, cls_id=f"attn:{user['user_id']}")
 
     return jsonify({
         "success": True, "status": status, "late_minutes": late_minutes,
@@ -6402,18 +6479,20 @@ def api_attendance_punch_out():
 
     cls_db.record_punch(user["user_id"], "out", date_str, ts, lat, lng, geofence_breach, photo_filename)
 
-    # v0.66 — Task 6 item 3b: early-leave admin heads-up, no deduction.
-    # Same synthetic per-employee cls_id reasoning as punch-in above.
+    # v0.69 — End-of-Day report replaces the old standalone early-leave
+    # notification: record_punch() above MUST run first so get_eod_report()'s
+    # reused get_todays_achievements() reads the freshly-written logout_ts
+    # when computing time_worked. Same synthetic per-employee cls_id
+    # reasoning as punch-in above.
     early_minutes = cls_db.compute_early_leave_minutes(punch_dt)
-    warning = None
-    if early_minutes > 0:
-        msg = cls_db.NOTIFICATION_EVENTS["early_punch_out"].format(
-            full_name=user["full_name"], minutes=early_minutes
-        )
-        cls_db.notify_admins("early_punch_out", msg, cls_id=f"attn:{user['user_id']}")
-        warning = f"You left {early_minutes} min early today — this has been reported to admin."
+    report = cls_db.get_eod_report(user["user_id"], date_str, early_minutes=early_minutes)
+    eod_message = cls_db.format_eod_report_message(report)
+    cls_db.notify_admins("eod_report", eod_message, cls_id=f"attn:{user['user_id']}")
+    warning = (f"You left {early_minutes} min early today — this has "
+               f"been reported to admin.") if early_minutes > 0 else None
 
-    return jsonify({"success": True, "geofence_breach": geofence_breach, "warning": warning})
+    return jsonify({"success": True, "geofence_breach": geofence_breach,
+                     "warning": warning, "eod_report": report})
 
 
 @app.route("/api/attendance/location-ping", methods=["POST"])

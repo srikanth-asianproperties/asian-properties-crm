@@ -1,0 +1,50 @@
+{# settings_eod_reports.html (v1, 2026-09-03) — admin Settings > Employee
+   EOD Reports. Employee <select> that reloads the page (GET, same route)
+   on change, then a list of that employee's last 10 End-of-Day reports
+   (cls_db.get_eod_reports_for_user(), read-only against the existing
+   notifications table). Each report's message (cls_db.format_eod_
+   report_message()) is rendered as preformatted text (white-space:
+   pre-wrap) — it's meant to be read exactly as the admin sees it in the
+   notification bell, not re-parsed into structured fields. #}
+{% extends "base.html" %}
+{% block title %}Employee EOD Reports{% endblock %}
+
+{% block content %}
+{% include "_back_button.html" %}
+<h2 style="margin-top:10px;">Employee EOD Reports</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:-6px;">
+  Each employee's End-of-Day report, sent to admin automatically on punch-out.
+</p>
+
+<div class="card" style="margin-top:16px; max-width:320px;">
+  <form method="get" action="{{ url_for('settings_eod_reports') }}" onchange="this.submit();">
+    <div class="field-label">Employee</div>
+    <select name="user_id" style="width:100%;">
+      <option value="">Select an employee</option>
+      {% for u in employees %}
+      <option value="{{ u.user_id }}" {{ 'selected' if selected_user_id == u.user_id }}>{{ u.full_name or u.email }}</option>
+      {% endfor %}
+    </select>
+    <noscript><button type="submit" class="btn" style="margin-top:10px;">View</button></noscript>
+  </form>
+</div>
+
+{% if reports %}
+<div style="margin-top:16px; display:flex; flex-direction:column; gap:12px;">
+  {% for r in reports %}
+  <div class="card">
+    <strong style="font-size:14px;">{{ r.date }}</strong>
+    <pre style="white-space:pre-wrap; font-family:inherit; font-size:13px; margin:8px 0 0;">{{ r.message }}</pre>
+  </div>
+  {% endfor %}
+</div>
+{% elif selected_user_id %}
+<div class="card empty-state" style="margin-top:16px;">
+  <p>No EOD reports yet for this employee.</p>
+</div>
+{% else %}
+<div class="card empty-state" style="margin-top:16px;">
+  <p>Select an employee.</p>
+</div>
+{% endif %}
+{% endblock %}
