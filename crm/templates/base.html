@@ -1,4 +1,13 @@
-<!-- base.html v0.22 — NEW pull-to-refresh gesture, installed-PWA-mode replacement
+<!-- base.html v0.23 — NEW `wrap_wide` context var support: <main class="wrap">
+     becomes <main class="wrap wrap-wide"> when a route passes
+     wrap_wide=True, and a new main.wrap.wrap-wide{ max-width:1400px }
+     rule (right after the existing main.wrap{ max-width:1080px; ... }
+     rule) widens the content column for pages with wide tables/
+     calendars (Payroll, Attendance Dashboard, Telephony Recordings).
+     Every other page is completely unaffected — wrap_wide defaults to
+     falsy, same "additive context var, no per-route wiring elsewhere"
+     pattern as app_version/breadcrumb.
+     v0.22 — NEW pull-to-refresh gesture, installed-PWA-mode replacement
      for the native browser gesture that standalone display mode suppresses.
      Touch-only (touchstart/touchmove/touchend), arms only when scrollY===0
      and no overlay (nav drawer / notif dropdown / fields popover) is open,
@@ -339,6 +348,7 @@
        extra whitespace on pages that don't. */
     padding-bottom: calc(78px + env(safe-area-inset-bottom));
   }
+  main.wrap.wrap-wide{ max-width: 1400px; }
 
   .card{
     background: var(--card);
@@ -717,7 +727,7 @@ header.appbar .bell-btn, header.appbar .sync-btn{
 </nav>
 {% endif %}
 
-<main class="wrap">
+<main class="wrap{% if wrap_wide %} wrap-wide{% endif %}">
 {% with messages = get_flashed_messages(with_categories=true) %}
   {% for category, message in messages %}
     <div class="flash flash-{{ category }}">{{ message }}</div>

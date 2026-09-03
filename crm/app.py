@@ -4954,6 +4954,7 @@ def settings_payroll():
         holidays=cls_db.get_holidays_in_month(year, month),
         year=year,
         month=month,
+        wrap_wide=True,
     )
 
 
@@ -5415,6 +5416,7 @@ def settings_telephony_recordings():
         date_preset_order=DATE_PRESET_ORDER, date_preset_labels=DATE_PRESET_LABELS,
         lead_owner_options=cls_db.get_distinct_owners(),
         activity_owner_options=cls_db.get_all_users_detailed(),
+        wrap_wide=True,
     )
 
 
@@ -6263,6 +6265,7 @@ def settings_attendance_dashboard():
         calendar_month_data=calendar_month_data,
         calendar_user_name=calendar_user_name,
         holidays=holidays,
+        wrap_wide=True,
     )
 
 
