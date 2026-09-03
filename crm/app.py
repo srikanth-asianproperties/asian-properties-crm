@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.67
+Version : 0.68
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,12 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.68 (2026-09-02) — Fix 2: holiday-aware payroll, additive only.
+    - settings_payroll(): NEW holidays=cls_db.get_holidays_in_month(
+      year, month) context var, passed to settings_payroll.html so the
+      month's declared holidays are visible on the page where they
+      actually affect a number. snapshots/status/year/month unchanged.
+
 v0.67 (2026-09-02) — Task 6 item 7: "Today's Call Activity" card,
   additive only, nothing else in dashboard_today() touched.
     - dashboard_today(): NEW call_stats=cls_db.get_todays_call_stats(
@@ -4891,6 +4897,10 @@ def settings_payroll():
     month= query args, defaults to the CURRENT month. Push-button
     generation only (settings_payroll_generate below) — this route
     itself is read-only.
+
+    v0.68 — Fix 2: NEW holidays=cls_db.get_holidays_in_month(year,
+    month) context var, so the one page where a declared holiday
+    actually affects a number also shows which days those were.
     """
     today = datetime.now()
     year = request.args.get("year", type=int) or today.year
@@ -4899,6 +4909,7 @@ def settings_payroll():
         "settings_payroll.html",
         snapshots=cls_db.list_salary_snapshots(year, month),
         status=cls_db.get_salary_month_status(year, month),
+        holidays=cls_db.get_holidays_in_month(year, month),
         year=year,
         month=month,
     )

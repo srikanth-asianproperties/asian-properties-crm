@@ -1,11 +1,19 @@
-{# settings_payroll.html (v1, 2026-09-02) — admin Settings > Payroll >
+{# settings_payroll.html (v2, 2026-09-02) — admin Settings > Payroll >
    Monthly Salary. Year/month selector (GET, same page) + a results
    table from cls_db.list_salary_snapshots(year, month), plus a push-
    button Generate/Recalculate trigger for cls_db.compute_salary_for_
    month() — admin-initiated only, never a scheduled job. Disabled with
    a plain-text note when status.locked is True (more than 10 calendar
    days have passed since that month ended AND it already has a
-   snapshot — see cls_db.is_salary_month_locked()'s docstring). #}
+   snapshot — see cls_db.is_salary_month_locked()'s docstring).
+
+   v2 (2026-09-02) — Fix 2: holiday-aware payroll. NEW "Holiday Days"
+   results column (between Weekoff and Balance Before) and a caption
+   above the table listing that month's declared holidays from the new
+   `holidays` context var (app.py v0.68, cls_db.get_holidays_in_month())
+   — the one page where a declared holiday actually changes a number
+   now shows which days those were, directly addressing Srikanth's "I
+   couldn't see it in the attendance report". #}
 {% extends "base.html" %}
 {% block title %}Payroll — Monthly Salary{% endblock %}
 
@@ -52,7 +60,15 @@
   {% endif %}
 </div>
 
-<h3 style="margin-top:24px; font-size:16px;">Results ({{ snapshots|length }})</h3>
+<p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:20px;">
+  {% if holidays %}
+    Holidays this month: {% for h in holidays %}{{ h.date }} ({{ h.label }}){% if not loop.last %}, {% endif %}{% endfor %}.
+  {% else %}
+    No holidays declared this month.
+  {% endif %}
+</p>
+
+<h3 style="margin-top:8px; font-size:16px;">Results ({{ snapshots|length }})</h3>
 {% if snapshots %}
 <div style="overflow-x:auto; margin-top:8px;">
 <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:1100px;">
@@ -63,6 +79,7 @@
       <th style="padding:8px 6px;">Absent</th>
       <th style="padding:8px 6px;">Leave Taken</th>
       <th style="padding:8px 6px;">Weekoff</th>
+      <th style="padding:8px 6px;">Holiday Days</th>
       <th style="padding:8px 6px;">Balance Before</th>
       <th style="padding:8px 6px;">Paid Leave Used</th>
       <th style="padding:8px 6px;">Unpaid Leave</th>
@@ -79,6 +96,7 @@
       <td style="padding:8px 6px;">{{ s.absent_days }}</td>
       <td style="padding:8px 6px;">{{ s.leave_days_taken }}</td>
       <td style="padding:8px 6px;">{{ s.weekoff_days }}</td>
+      <td style="padding:8px 6px;">{{ s.holiday_days }}</td>
       <td style="padding:8px 6px;">{{ s.leave_balance_before }}</td>
       <td style="padding:8px 6px;">{{ s.paid_leave_days_used }}</td>
       <td style="padding:8px 6px;">{{ s.unpaid_leave_days }}</td>

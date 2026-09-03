@@ -2,11 +2,35 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.89
+Version : 2.90
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.90 (2026-09-02) — Fix 2: holiday-aware, untracked-days-count-as-
+  absent payroll fix. Root cause confirmed: this codebase has no
+  automatic "mark absent" job — a day with no attendance row (no punch,
+  no self-service leave/weekoff) contributed ZERO to every status
+  bucket in get_attendance_totals_for_month(), invisible rather than
+  "absent". Locked fix, confirmed by Srikanth: any such day now counts
+  as absent for payroll deduction, UNLESS it's a company holiday
+  (attendance_holidays table already existed but was unused by any
+  consuming function before this — wired in for the first time here).
+    - NEW get_holidays_in_month(year, month) — every attendance_
+      holidays row in that month, first real consumer of that table.
+    - salary_snapshots: NEW holiday_days/untracked_absent_days columns
+      (self-healing PRAGMA table_info-checked ALTER TABLE, same idiom
+      as attendance.last_modified_by v2.40 — additive only, existing
+      rows default to 0).
+    - compute_salary_for_month(): absent_days is now attendance
+      'absent' PLUS untracked_absent_days = max((calendar_days -
+      holiday_days) - tracked_days, 0), where tracked_days is every day
+      that DID get an attendance row (present+late+half_day+absent+
+      leave+weekoff). Both figures stored on the snapshot row for full
+      auditability. present_days (half_day folded in) and per_day_rate
+      (still base_salary / FULL calendar_days — a holiday doesn't
+      shrink the rate denominator, same as a weekoff) are UNCHANGED.
+
 v2.89 (2026-09-02) — Fix 1: Sittings Done date-range reporting, additive
   only, nothing existing removed or modified. Previously "Sittings
   Done" only existed in get_todays_activity_counts() (hardcoded to
@@ -4485,6 +4509,19 @@ def init_db():
             UNIQUE(user_id, year, month)
         );
     """)
+
+    # ── Self-healing migration: holiday_days / untracked_absent_days
+    # (v2.90, Fix 2 — holiday-aware absent detection) ──
+    # Same PRAGMA table_info-check pattern as attendance.last_modified_by
+    # (v2.40) above. Existing salary_snapshots rows get 0 for both (their
+    # DEFAULT), same "no data" posture as every other DEFAULT 0 column on
+    # this table already has for a pre-migration row.
+    salary_snapshots_cols = [r["name"] for r in
+                             conn.execute("PRAGMA table_info(salary_snapshots)").fetchall()]
+    if "holiday_days" not in salary_snapshots_cols:
+        conn.execute("ALTER TABLE salary_snapshots ADD COLUMN holiday_days INTEGER NOT NULL DEFAULT 0;")
+    if "untracked_absent_days" not in salary_snapshots_cols:
+        conn.execute("ALTER TABLE salary_snapshots ADD COLUMN untracked_absent_days INTEGER NOT NULL DEFAULT 0;")
 
     # Self-healing seed, same INSERT OR IGNORE pattern as the cross-
     # reassign seed above — never clobbers a slab Srikanth already
@@ -13879,6 +13916,25 @@ def _get_prev_month_snapshot(user_id, year, month):
         conn.close()
 
 
+def get_holidays_in_month(year, month):
+    """(v2.90) List of {date, label} dicts for every attendance_holidays
+    row falling in year/month, ordered by date. First real consumer of
+    this table — it existed in the schema but nothing read from it
+    before Fix 2 (holiday-aware absent detection, compute_salary_for_
+    month() below)."""
+    conn = _connect()
+    try:
+        prefix = f"{year:04d}-{month:02d}"
+        rows = conn.execute(
+            "SELECT holiday_date, label FROM attendance_holidays "
+            "WHERE holiday_date LIKE ? ORDER BY holiday_date",
+            (f"{prefix}%",)
+        ).fetchall()
+        return [{"date": r["holiday_date"], "label": r["label"]} for r in rows]
+    finally:
+        conn.close()
+
+
 def compute_salary_for_month(year, month, actor):
     """
     (v2.87) Generates or recalculates salary_snapshots for every user in
@@ -13889,7 +13945,29 @@ def compute_salary_for_month(year, month, actor):
     carry-forward reasoning):
       present_days   = attendance 'present' + 'late' + 'half_day'
                         (half_day folded into present here only)
-      absent_days    = attendance 'absent'
+      (v2.90, Fix 2) absent_days = attendance 'absent' PLUS
+                        untracked_absent_days — see below. This codebase
+                        has no automatic "mark absent" job, so a day with
+                        NO attendance row at all (no punch, no self-
+                        service leave/weekoff) previously contributed
+                        ZERO to every status bucket — invisible, not
+                        "absent". Any such day now counts as absent for
+                        payroll purposes UNLESS it's a company holiday
+                        (attendance_holidays, get_holidays_in_month()
+                        above — first real consumer of that table).
+                          holiday_days = count of that month's declared
+                                         holidays
+                          workable_days = calendar_days - holiday_days
+                          tracked_days  = present+late+half_day+absent+
+                                          leave+weekoff (every day that
+                                          DID get an attendance row)
+                          untracked_absent_days = max(workable_days -
+                                                       tracked_days, 0)
+                        Stored separately in salary_snapshots (holiday_
+                        days/untracked_absent_days columns) alongside
+                        the combined absent_days, so a reviewer can see
+                        exactly how much of "Absent" came from an
+                        explicit correction vs. a genuine tracking gap.
       leave_balance_available = min(prior month's leave_balance_after
                                      (0 if no prior snapshot) + 1, 5)
       paid_leave_days_used    = min(leave_days_taken, available)
@@ -13897,7 +13975,10 @@ def compute_salary_for_month(year, month, actor):
       deducted_days  = unpaid_leave_days + absent_days
                         [ASSUMPTION, flagged in this section's header:
                         absent = full day deducted]
-      per_day_rate   = monthly_salary / calendar_days_in_month
+      per_day_rate   = monthly_salary / calendar_days_in_month (the FULL
+                        calendar month, UNCHANGED by Fix 2 — a holiday is
+                        a free day, like a weekoff: it doesn't shrink the
+                        rate denominator, it just can't be flagged absent)
       net_salary     = max(monthly_salary - deducted_days * per_day_rate, 0)
 
     Returns (True, "Salary calculated for N employee(s), <Month Year>.")
@@ -13911,6 +13992,8 @@ def compute_salary_for_month(year, month, actor):
     try:
         slabs = conn.execute("SELECT user_id, monthly_salary FROM salary_slabs").fetchall()
         calendar_days = calendar.monthrange(year, month)[1]
+        holidays = get_holidays_in_month(year, month)
+        holiday_days = len(holidays)
         now = _now()
         count = 0
 
@@ -13923,9 +14006,18 @@ def compute_salary_for_month(year, month, actor):
                 continue
             c = totals[0]
             present_days = c.get("present", 0) + c.get("late", 0) + c.get("half_day", 0)
-            absent_days = c.get("absent", 0)
             leave_days_taken = c.get("leave", 0)
             weekoff_days = c.get("weekoff", 0)
+
+            # (v2.90, Fix 2) A day with no attendance row at all is
+            # invisible to `c` above — neither present nor absent nor
+            # anything else. Any such day counts as absent unless it's
+            # a declared company holiday.
+            tracked_days = (c.get("present", 0) + c.get("late", 0) + c.get("half_day", 0)
+                             + c.get("absent", 0) + c.get("leave", 0) + c.get("weekoff", 0))
+            workable_days = calendar_days - holiday_days
+            untracked_absent_days = max(workable_days - tracked_days, 0)
+            absent_days = c.get("absent", 0) + untracked_absent_days
 
             prev = _get_prev_month_snapshot(user_id, year, month)
             leave_balance_before = prev["leave_balance_after"] if prev else 0
@@ -13945,14 +14037,16 @@ def compute_salary_for_month(year, month, actor):
                     present_days, absent_days, leave_days_taken, weekoff_days,
                     leave_balance_before, leave_balance_accrued, leave_balance_available,
                     paid_leave_days_used, unpaid_leave_days, leave_balance_after,
-                    deducted_days, net_salary, calculated_at, calculated_by
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    deducted_days, net_salary, calculated_at, calculated_by,
+                    holiday_days, untracked_absent_days
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 user_id, year, month, monthly_salary, calendar_days,
                 present_days, absent_days, leave_days_taken, weekoff_days,
                 leave_balance_before, leave_balance_accrued, leave_balance_available,
                 paid_leave_days_used, unpaid_leave_days, leave_balance_after,
-                deducted_days, net_salary, now, actor
+                deducted_days, net_salary, now, actor,
+                holiday_days, untracked_absent_days
             ))
             count += 1
 
