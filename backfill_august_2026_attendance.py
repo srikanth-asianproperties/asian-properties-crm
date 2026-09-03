@@ -1,6 +1,6 @@
 """
 backfill_august_2026_attendance.py
-v1.0 (2026-09-03)
+v1.1 (2026-09-03)
 
 ONE-TIME, STANDALONE backfill script — NOT a permanent addition to
 cls_db.py or any scheduled job. Same category as this codebase's other
@@ -81,6 +81,12 @@ is printed for Srikanth to review, not silently accepted.
 
 CHANGELOG
 ---------
+v1.1 (2026-09-03) — NEW EXCLUDED_DATES = {2026-08-07, 2026-08-08}: these
+  were internal attendance-feature testing days for all three
+  employees; Srikanth has explicitly instructed leaving whatever is
+  currently there untouched (blank, punched, or otherwise), checked
+  before — in addition to, not instead of — the existing "never
+  overwrite a real punch" rule.
 v1.0 (2026-09-03) — initial version.
 """
 import sys
@@ -98,6 +104,13 @@ def safe_print(*a, **k):
 YEAR, MONTH = 2026, 8
 HOLIDAY_DATE = "2026-08-28"
 HOLIDAY_LABEL = "Rakhi"
+
+# (v1.1) Internal attendance-feature testing days — Srikanth has
+# explicitly instructed leaving whatever is currently on these two
+# dates untouched, for ALL THREE employees, regardless of row state
+# (blank, punched, or otherwise). Checked BEFORE the existing
+# "never overwrite a real punch" rule, not instead of it.
+EXCLUDED_DATES = {"2026-08-07", "2026-08-08"}
 
 # Config-not-code: name -> {"weekoff": [days...], "leave": [days...]}.
 # Every other day in August (except HOLIDAY_DATE) backfills as 'present'.
@@ -167,6 +180,11 @@ def backfill_user(full_name, user_id, rules, dry_run, counts):
         date_str = f"{YEAR}-{MONTH:02d}-{day:02d}"
         target_status = target_status_for_day(rules, day)
 
+        if date_str in EXCLUDED_DATES:
+            safe_print(f"  {date_str}  {full_name:15s}  SKIPPED — excluded testing date, per Srikanth")
+            counts["skipped-excluded-date"] += 1
+            continue
+
         existing = cls_db.get_attendance_for_date(user_id, date_str)
 
         if existing and existing.get("login_ts"):
@@ -214,7 +232,8 @@ def main():
 
     ensure_holiday(dry_run)
 
-    counts = {"applied": 0, "skipped-punch-exists": 0, "skipped-already-correct": 0, "failed": 0}
+    counts = {"applied": 0, "skipped-punch-exists": 0, "skipped-already-correct": 0,
+              "skipped-excluded-date": 0, "failed": 0}
     for full_name, rules in LEGACY_HISTORY.items():
         user_id = resolved[full_name]
         safe_print(f"\n--- {full_name} (user_id={user_id}) ---")
