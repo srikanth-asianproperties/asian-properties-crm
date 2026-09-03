@@ -3956,6 +3956,10 @@ def leads_filter_screen():
         # v0.11.1 — item 4: date-range quick-select dropdown.
         date_preset_order=DATE_PRESET_ORDER,
         date_preset_labels=DATE_PRESET_LABELS,
+        # v0.70 — item 1: datalist-backed Campaign filter input, so
+        # typing suggests real campaign values instead of a blind
+        # free-text box.
+        campaign_options=cls_db.get_distinct_campaigns(),
     )
 
 

@@ -1,4 +1,4 @@
-{# leads_filter.html (v0.9) — dedicated filter screen (items 8 of
+{# leads_filter.html (v0.10) — dedicated filter screen (items 8 of
    Srikanth's spec). His spec described a two-pane "list of categories
    on the left, options revealed per category" layout — that's a
    desktop pattern that doesn't fit a phone-width screen, so this
@@ -11,6 +11,12 @@
    One GET form, submitted once via "Apply Filters" at the bottom —
    not per-category — so every selection across every category applies
    together in a single request, same as the old top-bar form did.
+
+   v0.10 — Campaign field is now a datalist-backed text input
+   (campaign_options=cls_db.get_distinct_campaigns(), app.py v0.70) —
+   native browser autocomplete/filtering off real values already in the
+   database, still free-text so an as-yet-unseen campaign name can be
+   typed. No JS needed.
 
    v0.9 (2026-08-04) — Pipeline Stage changed from radio (single-value
    name="stage") to checkbox multi-select (name="stages"), mirroring
@@ -138,7 +144,11 @@
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <input type="text" name="campaign" value="{{ filters.campaign }}" placeholder="e.g. FB_Naishka_July" style="width:100%;">
+        <input type="text" name="campaign" value="{{ filters.campaign }}"
+               list="campaign-datalist" placeholder="e.g. FB_Naishka_July" style="width:100%;">
+        <datalist id="campaign-datalist">
+          {% for c in campaign_options %}<option value="{{ c }}">{% endfor %}
+        </datalist>
       </div>
     </div>
 
