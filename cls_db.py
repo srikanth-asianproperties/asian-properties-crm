@@ -2,11 +2,41 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.90
+Version : 2.91
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.91 (2026-09-03) — Payroll bug fix: blocks generation for an
+  incomplete month, and removes "Absent" as a distinct payroll concept
+  (folded into Leave). Prompted by a bad September 2026 snapshot
+  generated mid-month (deleted from live CLS1.db, not a code change —
+  3 rows, Elohar/Devender/Mounika, calculated 2026-09-03 15:19:12,
+  drastically deflated net_salary since the still-to-come days of the
+  month were counted as absent).
+    - NEW is_salary_month_computable(year, month) — a month can only be
+      calculated once _last_day_of_month(year, month) is in the past.
+      Enforced in compute_salary_for_month() itself (defense in depth,
+      not just hidden in the UI) as the FIRST check, before the
+      existing is_salary_month_locked() check.
+    - get_salary_month_status(): NEW 'computable' key alongside the
+      existing has_snapshot/locked, for the admin page to show an
+      incomplete-month message instead of a Generate button.
+    - compute_salary_for_month(): 'absent' (explicit status rows AND
+      untracked gap days alike) now feeds into leave_days_taken instead
+      of a separate absent_days deduction — see this function's own
+      docstring for the full before/after semantics. This CHANGES what
+      leave_days_taken means going forward (every day not otherwise
+      accounted for, not just self-marked leave) — an admin reading
+      that column directly should know this.
+    - salary_snapshots.absent_days column is kept (additive-only
+      doctrine — old August rows still have real data in it) but is no
+      longer written by new INSERT OR REPLACE calls (stays at its
+      DEFAULT 0 for any month computed under this version).
+    - ATTENDANCE_STATUSES/'absent' as a legal status elsewhere in the
+      app (dashboard, corrections) is UNTOUCHED — this change is scoped
+      to payroll math only.
+
 v2.90 (2026-09-02) — Fix 2: holiday-aware, untracked-days-count-as-
   absent payroll fix. Root cause confirmed: this codebase has no
   automatic "mark absent" job — a day with no attendance row (no punch,
@@ -13877,6 +13907,17 @@ def _last_day_of_month(year, month):
     return datetime(year, month, last_day).date()
 
 
+def is_salary_month_computable(year, month):
+    """(v2.91) A month can only be calculated once it has fully ended —
+    payroll is an end-of-month computation, not a live running total.
+    Returns False for the current month (even on its last day, until
+    that day has fully passed) and for any future month. This is the
+    fix for the "future/remaining days counted as absent/leave" bug —
+    a month with days that haven't happened yet can never be safely
+    computed."""
+    return _last_day_of_month(year, month) < datetime.now().date()
+
+
 def is_salary_month_locked(year, month):
     """(v2.87) True only if BOTH: (a) at least one salary_snapshots row
     exists for this year/month, AND (b) today's date is more than 10
@@ -13939,51 +13980,56 @@ def compute_salary_for_month(year, month, actor):
     """
     (v2.87) Generates or recalculates salary_snapshots for every user in
     salary_slabs, for the given year/month. Refuses (returns
-    (False, message)) if is_salary_month_locked(year, month) is True.
+    (False, message)) if is_salary_month_computable(year, month) is
+    False (the month hasn't fully ended yet) or if
+    is_salary_month_locked(year, month) is True.
 
     Per-user math (see this section's header comment for the paid-leave
     carry-forward reasoning):
       present_days   = attendance 'present' + 'late' + 'half_day'
                         (half_day folded into present here only)
-      (v2.90, Fix 2) absent_days = attendance 'absent' PLUS
-                        untracked_absent_days — see below. This codebase
-                        has no automatic "mark absent" job, so a day with
-                        NO attendance row at all (no punch, no self-
-                        service leave/weekoff) previously contributed
-                        ZERO to every status bucket — invisible, not
-                        "absent". Any such day now counts as absent for
-                        payroll purposes UNLESS it's a company holiday
-                        (attendance_holidays, get_holidays_in_month()
-                        above — first real consumer of that table).
+      (v2.91) "Absent" is no longer a distinct payroll concept — folded
+                        into leave_days_taken instead. Both an explicit
+                        'absent' status row (legacy/rare, from an old
+                        admin correction) and any UNTRACKED gap day (no
+                        attendance row at all — this codebase has no
+                        automatic "mark absent" job, so such a day was
+                        previously invisible to every status bucket) now
+                        draw against the SAME leave balance a self-
+                        marked leave day does:
                           holiday_days = count of that month's declared
                                          holidays
                           workable_days = calendar_days - holiday_days
                           tracked_days  = present+late+half_day+absent+
                                           leave+weekoff (every day that
                                           DID get an attendance row)
-                          untracked_absent_days = max(workable_days -
-                                                       tracked_days, 0)
-                        Stored separately in salary_snapshots (holiday_
-                        days/untracked_absent_days columns) alongside
-                        the combined absent_days, so a reviewer can see
-                        exactly how much of "Absent" came from an
-                        explicit correction vs. a genuine tracking gap.
+                          untracked_days = max(workable_days -
+                                               tracked_days, 0)
+                          leave_days_taken = leave + absent + untracked_days
+                        salary_snapshots.absent_days is no longer written
+                        (column kept, additive-only doctrine — old rows
+                        still have real data in it). leave_days_taken's
+                        own meaning has therefore changed: it's no longer
+                        only self-marked leave, it's every day not
+                        otherwise accounted for.
       leave_balance_available = min(prior month's leave_balance_after
                                      (0 if no prior snapshot) + 1, 5)
       paid_leave_days_used    = min(leave_days_taken, available)
       unpaid_leave_days       = max(leave_days_taken - available, 0)
-      deducted_days  = unpaid_leave_days + absent_days
-                        [ASSUMPTION, flagged in this section's header:
-                        absent = full day deducted]
+      deducted_days  = unpaid_leave_days (absent_days no longer feeds
+                        this — see above)
       per_day_rate   = monthly_salary / calendar_days_in_month (the FULL
-                        calendar month, UNCHANGED by Fix 2 — a holiday is
-                        a free day, like a weekoff: it doesn't shrink the
-                        rate denominator, it just can't be flagged absent)
+                        calendar month — a holiday is a free day, like a
+                        weekoff: it doesn't shrink the rate denominator,
+                        it just can't be flagged as a day taken)
       net_salary     = max(monthly_salary - deducted_days * per_day_rate, 0)
 
     Returns (True, "Salary calculated for N employee(s), <Month Year>.")
     on success.
     """
+    if not is_salary_month_computable(year, month):
+        return (False, "This month hasn't ended yet — payroll can "
+                        "only be calculated once it's complete.")
     if is_salary_month_locked(year, month):
         month_label = f"{calendar.month_name[month]} {year}"
         return False, f"{month_label} is locked — more than 10 days have passed since it ended."
@@ -14006,18 +14052,18 @@ def compute_salary_for_month(year, month, actor):
                 continue
             c = totals[0]
             present_days = c.get("present", 0) + c.get("late", 0) + c.get("half_day", 0)
-            leave_days_taken = c.get("leave", 0)
             weekoff_days = c.get("weekoff", 0)
 
-            # (v2.90, Fix 2) A day with no attendance row at all is
-            # invisible to `c` above — neither present nor absent nor
-            # anything else. Any such day counts as absent unless it's
-            # a declared company holiday.
+            # (v2.91) A day with no attendance row at all is invisible
+            # to `c` above — neither present nor absent nor anything
+            # else. Any such day, plus any explicit 'absent' status row,
+            # now feeds into leave_days_taken instead of a separate
+            # "Absent" concept — see this function's docstring.
             tracked_days = (c.get("present", 0) + c.get("late", 0) + c.get("half_day", 0)
                              + c.get("absent", 0) + c.get("leave", 0) + c.get("weekoff", 0))
             workable_days = calendar_days - holiday_days
-            untracked_absent_days = max(workable_days - tracked_days, 0)
-            absent_days = c.get("absent", 0) + untracked_absent_days
+            untracked_days = max(workable_days - tracked_days, 0)
+            leave_days_taken = c.get("leave", 0) + c.get("absent", 0) + untracked_days
 
             prev = _get_prev_month_snapshot(user_id, year, month)
             leave_balance_before = prev["leave_balance_after"] if prev else 0
@@ -14027,26 +14073,26 @@ def compute_salary_for_month(year, month, actor):
             unpaid_leave_days = max(leave_days_taken - leave_balance_available, 0)
             leave_balance_after = leave_balance_available - paid_leave_days_used
 
-            deducted_days = unpaid_leave_days + absent_days
+            deducted_days = unpaid_leave_days
             per_day_rate = monthly_salary / calendar_days
             net_salary = max(monthly_salary - deducted_days * per_day_rate, 0)
 
             conn.execute("""
                 INSERT OR REPLACE INTO salary_snapshots (
                     user_id, year, month, base_salary, calendar_days,
-                    present_days, absent_days, leave_days_taken, weekoff_days,
+                    present_days, leave_days_taken, weekoff_days,
                     leave_balance_before, leave_balance_accrued, leave_balance_available,
                     paid_leave_days_used, unpaid_leave_days, leave_balance_after,
                     deducted_days, net_salary, calculated_at, calculated_by,
                     holiday_days, untracked_absent_days
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 user_id, year, month, monthly_salary, calendar_days,
-                present_days, absent_days, leave_days_taken, weekoff_days,
+                present_days, leave_days_taken, weekoff_days,
                 leave_balance_before, leave_balance_accrued, leave_balance_available,
                 paid_leave_days_used, unpaid_leave_days, leave_balance_after,
                 deducted_days, net_salary, now, actor,
-                holiday_days, untracked_absent_days
+                holiday_days, untracked_days
             ))
             count += 1
 
@@ -14076,9 +14122,10 @@ def list_salary_snapshots(year, month):
 
 
 def get_salary_month_status(year, month):
-    """(v2.87) {'has_snapshot': bool, 'locked': bool} for the admin page
-    to decide whether to show 'Generate' vs 'Recalculate' vs a disabled
-    locked state."""
+    """(v2.87) {'has_snapshot': bool, 'locked': bool, 'computable':
+    bool} for the admin page to decide whether to show 'Generate' vs
+    'Recalculate' vs a disabled locked state vs (v2.91 NEW) an
+    incomplete-month message with no button/table at all."""
     conn = _connect()
     try:
         row = conn.execute(
@@ -14088,7 +14135,11 @@ def get_salary_month_status(year, month):
         has_snapshot = bool(row and row["c"] > 0)
     finally:
         conn.close()
-    return {"has_snapshot": has_snapshot, "locked": is_salary_month_locked(year, month)}
+    return {
+        "has_snapshot": has_snapshot,
+        "locked": is_salary_month_locked(year, month),
+        "computable": is_salary_month_computable(year, month),
+    }
 
 
 def get_leave_balance(user_id):
