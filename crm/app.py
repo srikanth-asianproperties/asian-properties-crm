@@ -6346,6 +6346,59 @@ def settings_eod_reports():
     )
 
 
+@app.route("/settings/attendance/photo-lookup")
+@login_required
+@admin_required
+def settings_attendance_photo_lookup():
+    """
+    v0.70 — item 2: admin-only lookup of one employee's punch-in/out
+    photo for any past date. Same active/non-admin employee filter as
+    settings_attendance_dashboard()/settings_eod_reports() above. Reads
+    ?user_id=&date=; both must be present to attempt a lookup, else
+    `row` stays None and the template just shows the picker.
+    """
+    employees = [u for u in cls_db.get_all_users_detailed() if u["active"] and u["role"] != "admin"]
+
+    user_id = request.args.get("user_id", type=int)
+    date_str = request.args.get("date") or None
+
+    row = cls_db.get_attendance_row(user_id, date_str) if (user_id and date_str) else None
+
+    return render_template(
+        "settings_attendance_photo_lookup.html",
+        employees=employees,
+        selected_user_id=user_id,
+        selected_date=date_str,
+        row=row,
+    )
+
+
+@app.route("/settings/attendance/photo/<int:user_id>/<date_str>/<direction>")
+@login_required
+@admin_required
+def settings_attendance_photo(user_id, date_str, direction):
+    """
+    v0.70 — item 2: serves one punch photo file. The filename ALWAYS
+    comes from the attendance row looked up here, never from the URL
+    directly — same convention as the punch-in/out write routes above
+    (photo_filename is server-derived, not client-supplied), so this
+    route can't be used to read an arbitrary file off disk.
+    """
+    if direction not in ("in", "out"):
+        abort(404)
+
+    row = cls_db.get_attendance_row(user_id, date_str)
+    if not row:
+        abort(404)
+
+    photo_filename = row["login_photo_path"] if direction == "in" else row["logout_photo_path"]
+    if not photo_filename:
+        abort(404)
+
+    user_dir = os.path.join(ATTENDANCE_PHOTOS_DIR, secure_filename(str(user_id)))
+    return send_from_directory(user_dir, photo_filename)
+
+
 # ── Token-auth API endpoints (v0.30, Build Order Step 4) ──
 # @token_required / g.telephony_user REUSED EXACTLY, same mechanism as
 # the 2 existing Telephony endpoints below — one bearer token per user,

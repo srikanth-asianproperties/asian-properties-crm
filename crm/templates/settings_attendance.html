@@ -1,5 +1,7 @@
-{# settings_attendance.html (v0.30) — Attendance admin hub. Same
+{# settings_attendance.html (v0.31) — Attendance admin hub. Same
    card-grid pattern as settings.html.
+   v0.31 — NEW "Photo Lookup" tile (settings_attendance_photo_lookup.html /
+   app.py v0.70), placed right after Project GPS & Geofence.
    v0.30 — Chunk C: NEW "Who's Present Today" tile, pointing at
    settings_attendance_today() — @admin_required (not the looser
    can_view_all_leads() gate Dashboard/Export use).
@@ -66,6 +68,16 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
       Set the latitude/longitude/radius each project's punches are checked against.
+    </p>
+  </a>
+
+  <a href="{{ url_for('settings_attendance_photo_lookup') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--amber)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4"/><path d="M5 3l1.5-2h11L19 3"/></svg>
+      <span style="font-weight:700; font-size:16px;">Photo Lookup</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">
+      Look up an employee's punch-in/out photo for any past date.
     </p>
   </a>
 

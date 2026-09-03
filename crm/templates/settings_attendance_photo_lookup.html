@@ -1,0 +1,75 @@
+{# settings_attendance_photo_lookup.html (v1, 2026-09-03) — admin Settings >
+   Attendance > Photo Lookup. Employee <select> + date <input>, one "View"
+   submit button (GET, same route) — unlike settings_eod_reports.html's
+   onchange auto-submit, this needs BOTH fields filled before a lookup makes
+   sense, so it waits for an explicit submit instead of firing on either
+   field's change alone.
+
+   photo_filename is never read directly by this template — the <img> src
+   always points at the settings_attendance_photo route (app.py v0.70),
+   which re-derives the filename from the DB row server-side. This template
+   only decides WHETHER to render that <img> (row.login_photo_path /
+   row.logout_photo_path truthy) or an "No photo recorded" fallback. #}
+{% extends "base.html" %}
+{% block title %}Photo Lookup{% endblock %}
+
+{% block content %}
+{% include "_back_button.html" %}
+<h2 style="margin-top:10px;">Photo Lookup</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:-6px;">
+  Look up an employee's punch-in/out photo for any past date.
+</p>
+
+<div class="card" style="margin-top:16px; max-width:360px;">
+  <form method="get" action="{{ url_for('settings_attendance_photo_lookup') }}">
+    <div class="field-label">Employee</div>
+    <select name="user_id" style="width:100%;">
+      <option value="">Select an employee</option>
+      {% for u in employees %}
+      <option value="{{ u.user_id }}" {{ 'selected' if selected_user_id == u.user_id }}>{{ u.full_name or u.email }}</option>
+      {% endfor %}
+    </select>
+    <div class="field-label" style="margin-top:10px;">Date</div>
+    <input type="date" name="date" value="{{ selected_date or '' }}" style="width:100%;">
+    <button type="submit" class="btn btn-primary" style="margin-top:12px;">View</button>
+  </form>
+</div>
+
+{% if row %}
+<div style="margin-top:16px; display:flex; flex-direction:column; gap:12px;">
+  <div class="card">
+    <strong style="font-size:14px;">Login</strong>
+    <p style="font-size:13px; color:var(--ink-soft); margin:6px 0 10px;">
+      {{ row.login_ts or '—' }} · geofence breach: {{ 'yes' if row.login_geofence_breach else 'no' }}
+    </p>
+    {% if row.login_photo_path %}
+    <img src="{{ url_for('settings_attendance_photo', user_id=selected_user_id, date_str=selected_date, direction='in') }}"
+         style="max-width:100%; border-radius:8px; display:block;">
+    {% else %}
+    <p style="font-size:13px; color:var(--ink-soft);">No photo recorded.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <strong style="font-size:14px;">Logout</strong>
+    <p style="font-size:13px; color:var(--ink-soft); margin:6px 0 10px;">
+      {{ row.logout_ts or '—' }} · geofence breach: {{ 'yes' if row.logout_geofence_breach else 'no' }}
+    </p>
+    {% if row.logout_photo_path %}
+    <img src="{{ url_for('settings_attendance_photo', user_id=selected_user_id, date_str=selected_date, direction='out') }}"
+         style="max-width:100%; border-radius:8px; display:block;">
+    {% else %}
+    <p style="font-size:13px; color:var(--ink-soft);">No photo recorded.</p>
+    {% endif %}
+  </div>
+</div>
+{% elif selected_user_id and selected_date %}
+<div class="card empty-state" style="margin-top:16px;">
+  <p>No attendance record for that employee on that date.</p>
+</div>
+{% else %}
+<div class="card empty-state" style="margin-top:16px;">
+  <p>Select an employee and a date.</p>
+</div>
+{% endif %}
+{% endblock %}
