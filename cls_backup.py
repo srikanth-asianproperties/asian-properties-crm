@@ -2,11 +2,53 @@
 =============================================================
 cls_backup.py  —  CLS Daily Backup to Google Drive
 =============================================================
-Version : 1.6
+Version : 1.7
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.7  (2026-09-04) — Fixed "source file is being updated" failures from
+  2026-09-01/02/03 (3 consecutive nights).
+  ROOT CAUSE (distinct from the v1.3/v1.6 Drive-throttling issues):
+  CLS1.db is a live SQLite database the CRM app and background jobs
+  write to continuously, and the evening 18:35 backup window overlaps
+  with real end-of-day field-staff activity in the CRM. rclone was
+  copying CLS1.db as a plain file straight off disk — if a write
+  landed mid-upload, the file's mod time changed between rclone's
+  start-of-copy and end-of-copy checks, and rclone correctly refused
+  to upload a possibly-inconsistent file ("can't copy - source file is
+  being updated"). On 2026-09-03 this hit Step 1 itself (not just the
+  daily archive), so "latest" never received that day's data at all —
+  though rclone's own "not deleting files/directories as there were IO
+  errors" protection meant the PREVIOUS successful sync in "latest"
+  was never overwritten with a partial/corrupt one; no data was lost,
+  only delayed.
+  FIX — New snapshot_databases() step runs BEFORE any rclone call:
+  uses SQLite's own Online Backup API (sqlite3.Connection.backup(),
+  stdlib, no new dependency) to copy each live .db file in
+  DB_FILES_TO_SNAPSHOT (CLS1.db, CLS2.db) into a local STAGING_DIR.
+  This API is built for exactly this — it copies page-by-page with
+  automatic retry on SQLITE_BUSY and is explicitly safe to run against
+  a database with active WAL writers, unlike a raw file copy. Step 1's
+  sync and both daily-archive fallback copies now --exclude each
+  successfully-snapshotted db by name (via base_excludes) and instead
+  upload the static snapshot separately via new upload_snapshotted_dbs()
+  (one 'rclone copyto' call per db, so it can't collide with or delete
+  any other file at the destination). If a snapshot fails for any
+  reason, that file is simply left off the exclude list and rclone
+  copies the live file directly instead — the exact pre-v1.7 behavior
+  for that one file, not a new failure mode.
+  NOT ADDRESSED BY THIS FIX: the separate Step 2 (daily archive)
+  timeout seen on 2026-09-01 and 2026-09-02 (server-side copy timed
+  out at 600s, and the local-copy fallback then also timed out at
+  1800s) — that pattern matches the Drive API throttling first
+  diagnosed 2026-08-03, and persisted even after v1.6 removed the
+  .git/__pycache__ object-count contributor, which points back at
+  rclone's shared default OAuth client competing for a global quota
+  pool (the personal-OAuth-client-ID fix proposed 2026-08-03 was never
+  actually implemented). Flagging as a separate, still-open item — see
+  Resume-from-here.
+
 v1.6  (2026-08-19) — Exclude .git/ and __pycache__/ from backup per
   Srikanth's explicit decision (2026-08-19), following the same-day
   investigation session into Step 2's dated-archive timeout.
@@ -201,6 +243,7 @@ The script always exits with a clear success/failure message.
 
 import os
 import sys
+import sqlite3
 import subprocess
 import shutil
 from datetime import datetime, timedelta
@@ -269,6 +312,19 @@ RCLONE_EXCLUDE_GIT = ".git/**"
 # content, already gitignored by convention. Minor contributor (17
 # files) but no reason to carry it along.
 RCLONE_EXCLUDE_PYCACHE = "__pycache__/**"
+
+# v1.7 — Local staging folder for point-in-time db snapshots, created
+# fresh each run. Not backed up itself (lives inside BASE_DIR but only
+# ever holds a copy of files already covered elsewhere) — no exclude
+# flag needed for it since nothing else references it as a source path.
+STAGING_DIR = os.path.join(BASE_DIR, "_backup_staging")
+
+# v1.7 — Live SQLite databases that need a consistent snapshot before
+# upload (see v1.7 changelog for why a plain file copy is unsafe here).
+# Config-not-code: add/remove db filenames here, not in the logic below.
+# Missing files (e.g. CLS2.db on an install that never had it) are
+# silently skipped by snapshot_databases().
+DB_FILES_TO_SNAPSHOT = ["CLS1.db", "CLS2.db"]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -400,6 +456,97 @@ def get_folder_size_mb(folder):
 
 
 # ─────────────────────────────────────────────────────────────
+# DATABASE SNAPSHOT  —  v1.7
+# ─────────────────────────────────────────────────────────────
+
+def snapshot_databases():
+    """
+    v1.7: Creates a byte-consistent, point-in-time snapshot of each live
+    .db file into STAGING_DIR before rclone touches anything, using
+    SQLite's own Online Backup API (sqlite3.Connection.backup()).
+
+    WHY THIS EXISTS: investigation on 2026-09-04 found rclone failing
+    with "can't copy - source file is being updated (mod time changed
+    ...)" against CLS1.db on 2026-09-01/02/03 — the CRM app and/or
+    background jobs write to CLS1.db during the exact 18:35-18:40
+    backup window (evening is when field staff log end-of-day
+    updates), so a plain file copy of a live, actively-written SQLite
+    database is inherently racy. SQLite's backup API is built for
+    exactly this: it copies page-by-page with automatic retry on
+    SQLITE_BUSY, and is explicitly documented as safe to run against a
+    database with active WAL writers — a real "hot backup", not a
+    file-level copy.
+
+    Returns the list of filenames successfully snapshotted. Any file
+    that fails to snapshot is simply left off this list, so it won't
+    be added to Step 1's exclude list — rclone falls back to copying
+    that one file directly from BASE_DIR, exactly as it did before
+    v1.7 (not a new failure mode, just the old one for that one file).
+    """
+    os.makedirs(STAGING_DIR, exist_ok=True)
+    snapshotted = []
+
+    for name in DB_FILES_TO_SNAPSHOT:
+        src_path = os.path.join(BASE_DIR, name)
+        if not os.path.exists(src_path):
+            continue   # e.g. CLS2.db may not exist on every install
+
+        dest_path = os.path.join(STAGING_DIR, name)
+        try:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)   # start clean each run
+
+            # sqlite3 URI filenames want forward slashes even on Windows.
+            uri_path = src_path.replace("\\", "/")
+            src_conn = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True)
+            dest_conn = sqlite3.connect(dest_path)
+            # pages=100/sleep=0.1 (rather than the default single-step
+            # copy) makes the backup step through in small batches,
+            # so a transient SQLITE_BUSY from a concurrent writer is
+            # retried on the next step instead of failing the whole
+            # snapshot outright.
+            src_conn.backup(dest_conn, pages=100, sleep=0.1)
+            src_conn.close()
+            dest_conn.close()
+
+            log(f"Snapshotted {name} -> staging (consistent copy for upload).")
+            snapshotted.append(name)
+        except Exception as e:
+            log(f"Failed to snapshot {name} — falling back to direct copy "
+                f"of the live file for this one file (pre-v1.7 behavior): {e}",
+                "WARNING")
+
+    return snapshotted
+
+
+def upload_snapshotted_dbs(dest_folder, snapshotted_dbs):
+    """
+    v1.7: Uploads each pre-snapshotted db from STAGING_DIR as a static
+    file via 'rclone copyto' (single file -> single destination path;
+    never touches or deletes any other file at dest_folder, unlike
+    'sync' or 'copy' against a whole directory).
+
+    Returns True if every upload succeeded (or there was nothing to
+    upload) — False if any one db upload failed.
+    """
+    all_ok = True
+    for name in snapshotted_dbs:
+        ok_db, _ = run_rclone(
+            [
+                "copyto",
+                os.path.join(STAGING_DIR, name),
+                f"{dest_folder}/{name}",
+                "--progress",
+                "--stats-one-line",
+            ],
+            f"Snapshot upload → {dest_folder}/{name}"
+        )
+        if not ok_db:
+            all_ok = False
+    return all_ok
+
+
+# ─────────────────────────────────────────────────────────────
 # OLD DAILY BACKUP PRUNER
 # ─────────────────────────────────────────────────────────────
 
@@ -499,6 +646,21 @@ def run_backup():
     folder_size = get_folder_size_mb(BASE_DIR)
     log(f"C:\\CLS\\ folder size: {folder_size} MB")
 
+    # ── v1.7: Snapshot live databases before anything else touches them ──
+    snapshotted_dbs = snapshot_databases()
+
+    # Shared exclude list for every rclone call against BASE_DIR below —
+    # the usual folders, plus (v1.7) any db that got a clean snapshot,
+    # since that db is uploaded separately from the static staging copy.
+    base_excludes = [
+        "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
+        "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
+        "--exclude", RCLONE_EXCLUDE_GIT,
+        "--exclude", RCLONE_EXCLUDE_PYCACHE,
+    ]
+    for _name in snapshotted_dbs:
+        base_excludes += ["--exclude", _name]
+
     # ── Step 1: Sync to "latest" (the only step that uploads from this PC) ──
     log(f"Step 1: Syncing to {GDRIVE_LATEST} (latest) ...")
 
@@ -509,13 +671,15 @@ def run_backup():
             GDRIVE_LATEST,
             "--progress",
             "--stats-one-line",
-            "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
-            "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
-            "--exclude", RCLONE_EXCLUDE_GIT,
-            "--exclude", RCLONE_EXCLUDE_PYCACHE,
-        ],
+        ] + base_excludes,
         f"Latest backup → {GDRIVE_LATEST}"
     )
+
+    # v1.7: upload each snapshotted db separately — a static file with
+    # no concurrent writer, so it can't hit the mod-time race. Counted
+    # as part of Step 1's overall success/failure.
+    if ok1 and snapshotted_dbs:
+        ok1 = upload_snapshotted_dbs(GDRIVE_LATEST, snapshotted_dbs)
 
     # ── Step 2: Dated daily archive — server-side copy from "latest" ──
     daily_dest = f"{GDRIVE_DAILY}/{today_str}"
@@ -547,13 +711,11 @@ def run_backup():
                     daily_dest,
                     "--progress",
                     "--stats-one-line",
-                    "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
-                    "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
-                    "--exclude", RCLONE_EXCLUDE_GIT,
-                    "--exclude", RCLONE_EXCLUDE_PYCACHE,
-                ],
+                ] + base_excludes,
                 f"Daily backup fallback (local copy) → {daily_dest}"
             )
+            if ok2 and snapshotted_dbs:
+                ok2 = upload_snapshotted_dbs(daily_dest, snapshotted_dbs)
     else:
         # If Step 1 itself failed, "latest" may be stale/incomplete —
         # don't server-side copy a possibly-broken snapshot. Fall back
@@ -568,13 +730,11 @@ def run_backup():
                 daily_dest,
                 "--progress",
                 "--stats-one-line",
-                "--exclude", RCLONE_EXCLUDE_CALL_RECORDINGS,
-                "--exclude", RCLONE_EXCLUDE_ATTENDANCE,
-                "--exclude", RCLONE_EXCLUDE_GIT,
-                "--exclude", RCLONE_EXCLUDE_PYCACHE,
-            ],
+            ] + base_excludes,
             f"Daily backup fallback (local copy) → {daily_dest}"
         )
+        if ok2 and snapshotted_dbs:
+            ok2 = upload_snapshotted_dbs(daily_dest, snapshotted_dbs)
 
     # ── Step 3: Prune old daily backups ──
     prune_old_backups()
