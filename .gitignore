@@ -33,3 +33,4 @@ __pycache__/
 /git-log.txt
 /rclone-v1.74.3-windows-amd64/
 /cloudflared-windows-amd64.msi
+_backup_staging/
