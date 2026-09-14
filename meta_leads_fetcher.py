@@ -2,11 +2,21 @@
 =============================================================
 meta_leads_fetcher.py  —  CLS Job A  |  Meta Lead Ads Fetcher
 =============================================================
-Version : 1.10
+Version : 1.11
 Author  : Built for Asian Properties / Srikanth
 
 CHANGE LOG
 ----------
+v1.11 (2026-09-14) — Onboarded a new project's lead form. Added ONE new
+  entry to LEAD_FORMS: project="Bhanu Residency Balaji Nagar", page_id=
+  "153959157811960" (Page "Asian Properties" — first form onboarded from
+  this Page; Grace Classic and Naishka forms above are on their own,
+  separate Pages), form_id="1071854365709251", form_name=
+  "Cmp1_Bhanuresidency_12-09-026". No "campaign_name" key set, so Campaign
+  Routing (if configured later at /settings/campaign-routing) will match
+  on this form_name by default. partner_shared=False (own Page, same
+  Business Manager). Nothing else in this file changes — config-only
+  addition, per the "config-not-code" pattern this list already follows.
 v1.10 (2026-08-28) — Meta webhook Phase 2 (real-time lead capture). Added
   ONE new function, fetch_single_lead_by_id(leadgen_id, page_token,
   app_secret) — the webhook-delivered counterpart to fetch_leads_for_form()'s
@@ -232,6 +242,13 @@ LEAD_FORMS = [
         "page_id"       : "393908937139353",
         "form_id"       : "933648612881057",
         "form_name"     : "Camp5_Naishka_08-05-2026",
+        "partner_shared": False,
+    },
+    {
+        "project"       : "Bhanu Residency Balaji Nagar",
+        "page_id"       : "153959157811960",
+        "form_id"       : "1071854365709251",
+        "form_name"     : "Cmp1_Bhanuresidency_12-09-026",
         "partner_shared": False,
     },
 ]
