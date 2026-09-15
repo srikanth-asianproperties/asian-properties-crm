@@ -1,5 +1,15 @@
 """
-cls_pk_bundle.py  -- v1.5
+cls_pk_bundle.py  -- v1.6
+  v1.6 (2026-09-15) -- Bundle housekeeping. Locked in 5 active utility
+  files (check_page_subscription.py, debug_token.py,
+  cls_monday_weekly_report.py, cls_weekend_visits_report.py,
+  selldo_full_capture.py) via --lock-in. Deleted 10 stale one-off
+  diagnostic/fix scripts that were auto-discovered but no longer
+  needed: compare_page_tokens.py, generate_page_token.py,
+  diag_check.py, diag_check2.py, check_tokens.py,
+  cls_whatsapp_encoding_check.py, cls_diag_duplicate_lead_no.py,
+  cls_diag_new_lead_capi.py, cls_fix_duplicate_lead_no.py,
+  backfill_august_2026_attendance.py.
   v1.5 (2026-08-21): added cls_notifications_poller.py to INCLUDE_FILES
   (Notifications v1.0 build session) -- a permanent job, not left to
   auto-discovery.
@@ -179,6 +189,11 @@ INCLUDE_FILES = [
     "android_pilot/app/src/main/res/drawable/circle_button_bg.xml",
 
     "cls_attendance_photo.py",
+    "check_page_subscription.py",
+    "cls_monday_weekly_report.py",
+    "cls_weekend_visits_report.py",
+    "debug_token.py",
+    "selldo_full_capture.py",
     # --- AUTO_DISCOVER_INSERT_MARKER: do not remove or move this line ---
 ]
 
