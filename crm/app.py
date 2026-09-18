@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.75
+Version : 0.76
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,18 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.76 (2026-09-18) — CORRECTION to v0.75 item 2: the geofence picker's
+  maps_api_key context var now reads a NEW, dedicated env var,
+  CLS_MAPS_JS_API_KEY, instead of CLS_MAPS_API_KEY — settings_
+  attendance_projects() is the only call site changed. CLS_MAPS_API_KEY
+  itself is completely untouched everywhere else in the codebase,
+  including cls_attendance_photo.py's own separate Static Maps API
+  usage (punch photos), which keeps working exactly as before. Same
+  graceful-degrade behavior (falsy -> plain number-input UI) as before,
+  just pointed at the new env var name. Requires Srikanth to set
+  CLS_MAPS_JS_API_KEY as a real OS environment variable on the CRM
+  machine and restart the app/service before this takes effect.
+
 v0.75 (2026-09-18) — Task 8 item 2: interactive Google Maps geofence
   picker. settings_attendance_projects() now also passes
   maps_api_key=os.environ.get("CLS_MAPS_API_KEY") (same env var
@@ -6338,12 +6350,17 @@ def settings_attendance_projects():
         "settings_attendance_projects.html",
         projects=cls_db.get_all_bucket_names(),
         locations=locations,
-        # v0.75 — Task 8 item 2: interactive geofence picker. Same
-        # CLS_MAPS_API_KEY env var cls_attendance_photo.py already reads
-        # (Static Maps API) — no new env var. Template degrades to the
-        # plain number-input UI (unchanged) when this is falsy, so a
-        # missing key can never break this page.
-        maps_api_key=os.environ.get("CLS_MAPS_API_KEY"),
+        # v0.76 — CORRECTION to v0.75: this now reads its OWN dedicated
+        # env var, CLS_MAPS_JS_API_KEY, instead of CLS_MAPS_API_KEY.
+        # CLS_MAPS_API_KEY stays exactly as-is, untouched, still read
+        # ONLY by cls_attendance_photo.py for the Static Maps API (punch
+        # photos) — that usage is unrelated and was never meant to be
+        # shared with this client-side Maps JS embed. Real OS env var,
+        # never a .env line, same convention as CLS_MAPS_API_KEY/
+        # CLS_DB_PATH. Template degrades to the plain number-input UI
+        # (unchanged) when this is falsy, so a missing key can never
+        # break this page.
+        maps_api_key=os.environ.get("CLS_MAPS_JS_API_KEY"),
     )
 
 
