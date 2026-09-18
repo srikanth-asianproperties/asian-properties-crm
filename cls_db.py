@@ -2,11 +2,24 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.92
+Version : 2.93
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.93 (2026-09-18) — Task 8 item 3: holiday declaration notification,
+  additive only, nothing existing removed or modified.
+    - NOTIFICATION_EVENTS: NEW "holiday_declared" entry, all 11 existing
+      entries untouched.
+    - NEW notify_holiday_declared(holiday_date, label) — fans out an
+      in-app + FCM notification to every active, non-admin user.
+      Mirrors notify_admins()'s exact shape (one conn, commit once,
+      per-user send_fcm_push). cls_id is per-(holiday_date, user_id) —
+      NOT a single shared cls_id — same idempotency-landmine avoidance
+      notify_admins()'s own docstring already documents. Called from
+      crm/app.py's settings_attendance_holidays() POST handler,
+      immediately after the existing add_attendance_holiday() call.
+
 v2.92 (2026-09-03) — End-of-Day report: admin notifications + history
   view. 4 new functions, all additive — get_todays_achievements() and
   check_geofence_breach() are NOT modified by this change.
@@ -2863,6 +2876,7 @@ NOTIFICATION_EVENTS = {
     "visit_overdue_1d":    "Site visit overdue by 1 day: {full_name}",
     "late_punch_in":       "{full_name} punched in late by {minutes} min today",
     "early_punch_out":     "{full_name} punched out early by {minutes} min today",
+    "holiday_declared":    "Holiday declared: {label} on {holiday_date}",
 }
 
 # Read by cls_notifications_poller.py only — new_enquiry/lead_reengaged/
@@ -14703,6 +14717,49 @@ def notify_admins(event_type, message, cls_id=None):
             inserted = insert_notification(admin_id, cls_id, event_type, message, conn=conn)
             if inserted:
                 send_fcm_push(admin_id, "CLS Attendance Alert", message)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def notify_holiday_declared(holiday_date, label):
+    """
+    (v2.93) Task 8 item 3: fan out a 'holiday_declared' notification to
+    every ACTIVE, non-admin employee when admin adds/updates a holiday
+    (settings_attendance_holidays() POST, app.py). Mirrors notify_admins()'s
+    shape exactly — one conn, committed once at the end, send_fcm_push
+    called per user the same way.
+
+    cls_id is built per-(holiday_date, user_id) — e.g.
+    f"holiday:{holiday_date}:{user_id}" — NEVER a single shared cls_id
+    across recipients. insert_notification()'s event_id =
+    md5(cls_id + event_type + today's date) is globally unique across
+    the whole notifications table, not scoped per recipient: a shared
+    cls_id would mean only the FIRST employee in the loop actually gets
+    notified and every later insert silently no-ops. This is the exact
+    landmine notify_admins()'s own docstring already documents for its
+    multi-admin fan-out — this function avoids it the same way
+    reassign_lead_owner()/upsert_meta_lead()'s per-lead cls_ids do.
+
+    Re-saving the SAME holiday_date on the same calendar day (e.g. admin
+    fixes a typo in the label) does NOT re-spam employees — the
+    per-user, per-day event_id dedup already guarantees this for free;
+    no extra guarding logic is added on top of it.
+    """
+    message = NOTIFICATION_EVENTS["holiday_declared"].format(
+        label=label or "Holiday", holiday_date=holiday_date
+    )
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT user_id FROM users WHERE role != 'admin' AND active=1"
+        ).fetchall()
+        for row in rows:
+            user_id = row["user_id"]
+            cls_id = f"holiday:{holiday_date}:{user_id}"
+            inserted = insert_notification(user_id, cls_id, "holiday_declared", message, conn=conn)
+            if inserted:
+                send_fcm_push(user_id, "Holiday Declared", message)
         conn.commit()
     finally:
         conn.close()

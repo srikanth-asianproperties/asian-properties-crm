@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.71
+Version : 0.72
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,13 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.72 (2026-09-18) — Task 8 item 3: holiday declaration notification.
+  settings_attendance_holidays()'s POST branch, immediately after the
+  existing cls_db.add_attendance_holiday(holiday_date, label) call,
+  now also calls cls_db.notify_holiday_declared(holiday_date, label)
+  (cls_db.py v2.93) — one line, additive, nothing else in this route
+  changed.
+
 v0.71 (2026-09-04) — CORRECTION to v0.70 item 5: SETTINGS_BREADCRUMBS
   entries changed from a flat "A → B → C" string per endpoint to a list
   of (label, endpoint_or_None) tuples, so every middle segment links to
@@ -6098,6 +6105,7 @@ def settings_attendance_holidays():
             flash("Date is required.", "error")
         else:
             cls_db.add_attendance_holiday(holiday_date, label)
+            cls_db.notify_holiday_declared(holiday_date, label)
             flash(f"Holiday saved for {holiday_date}.", "success")
         return redirect(url_for("settings_attendance_holidays"))
 
