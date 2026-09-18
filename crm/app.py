@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.73
+Version : 0.74
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,23 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.74 (2026-09-18) — Task 8 item 1: "Work As" top-level menu entry point.
+  impersonate_start()'s body extracted into a new shared helper
+  _do_impersonate(admin, target) — same validation (not self, not
+  another admin, not deactivated), same log_impersonation() call, same
+  session swap. impersonate_start() (existing URL-param route, Settings
+  > Team's "View as" button) now just resolves admin/target and calls
+  it — behavior unchanged. 2 NEW routes: GET /admin/work-as
+  (settings_work_as(), renders work_as.html with the active/non-admin
+  user list — same role!='admin' and active filter settings_users.html's
+  own "View as" button already uses) and POST /admin/work-as/start
+  (settings_work_as_start(), reads user_id from the form and calls the
+  same _do_impersonate()). NEW template crm/templates/work_as.html. NEW
+  admin-only "Work As" nav drawer link in base.html v0.24, placed above
+  Settings, gated on {% if current_user.role == 'admin' %} — the first
+  top-level drawer item using that gate (the Settings link itself was
+  deliberately left un-admin-gated in v0.16). No cls_db.py change.
+
 v0.73 (2026-09-18) — Task 8 item 5: EOD report also pushed to the
   employee themselves. api_attendance_punch_out(), immediately after
   the existing cls_db.notify_admins("eod_report", ...) call (unchanged),
@@ -5590,24 +5607,17 @@ def settings_user_toggle(user_id):
     return redirect(url_for("settings_users"))
 
 
-@app.route("/admin/impersonate/<int:user_id>", methods=["POST"])
-@login_required
-@admin_required
-def impersonate_start(user_id):
+def _do_impersonate(admin, target):
     """
-    v0.11 — admin "View as": full session swap into a target
-    salesperson/manager's account, for diagnosing what they see without
-    asking them to screen-share. Every write made from here on is
-    dual-attributed via _actor() until Exit to admin is tapped.
+    (v0.74) Task 8 item 1: shared body extracted from impersonate_start()
+    below, so the existing URL-param "View as" route (Settings > Team's
+    button, unchanged) and the new Work As form-param route
+    (settings_work_as_start()) apply IDENTICAL validation (not self, not
+    another admin, not deactivated), the same log_impersonation() call,
+    and the same session swap — zero behavior drift between the two
+    entry points. Returns the same redirect+flash outcome the inline
+    body used to.
     """
-    admin = cls_db.get_user_by_id(session["user_id"])
-    # get_user_by_id() only ever returns an ACTIVE account (WHERE
-    # active=1 — see its docstring) — so a deactivated target already
-    # comes back None here and is rejected by the "not found" branch
-    # below, same as a genuinely unknown user_id. No separate active
-    # check needed.
-    target = cls_db.get_user_by_id(user_id)
-
     if not target:
         flash("That user couldn't be found or is deactivated.", "error")
         return redirect(url_for("settings_users"))
@@ -5623,6 +5633,73 @@ def impersonate_start(user_id):
     cls_db.log_impersonation(admin["email"], target["email"], event="start")
     flash(f"Now viewing as {target['full_name'] or target['email']}.", "success")
     return redirect(url_for("dashboard"))
+
+
+@app.route("/admin/impersonate/<int:user_id>", methods=["POST"])
+@login_required
+@admin_required
+def impersonate_start(user_id):
+    """
+    v0.11 — admin "View as": full session swap into a target
+    salesperson/manager's account, for diagnosing what they see without
+    asking them to screen-share. Every write made from here on is
+    dual-attributed via _actor() until Exit to admin is tapped.
+
+    v0.74 — body extracted into _do_impersonate() (see above), shared
+    with the new Work As entry point (settings_work_as_start()). This
+    route's own behavior is unchanged: same validation, same redirects.
+    """
+    admin = cls_db.get_user_by_id(session["user_id"])
+    # get_user_by_id() only ever returns an ACTIVE account (WHERE
+    # active=1 — see its docstring) — so a deactivated target already
+    # comes back None here and is rejected by _do_impersonate()'s "not
+    # found" branch, same as a genuinely unknown user_id. No separate
+    # active check needed.
+    target = cls_db.get_user_by_id(user_id)
+    return _do_impersonate(admin, target)
+
+
+@app.route("/admin/work-as")
+@login_required
+@admin_required
+def settings_work_as():
+    """
+    (v0.74) Task 8 item 1: admin-only "Work As" page — a dropdown of
+    active, non-admin teammates, submitting into the SAME impersonation
+    flow Settings > Team's "View as" button already uses
+    (settings_work_as_start() below -> _do_impersonate()). This route
+    only renders the picker.
+
+    Filter (role != 'admin' and active) is the EXACT SAME condition
+    settings_users.html's own "View as" button already gates on
+    ({% if u.role != 'admin' and u.active %}) — reused here instead of
+    writing a second query, against the same cls_db.get_all_users_detailed()
+    source.
+    """
+    users = [u for u in cls_db.get_all_users_detailed() if u["role"] != "admin" and u["active"]]
+    return render_template("work_as.html", users=users)
+
+
+@app.route("/admin/work-as/start", methods=["POST"])
+@login_required
+@admin_required
+def settings_work_as_start():
+    """
+    (v0.74) Work As's submit target — reads user_id from the form and
+    hands off to the SAME _do_impersonate() helper impersonate_start()
+    uses above, so this is byte-for-byte the same outcome as the
+    existing "View as" button: same validation messages, same
+    log_impersonation() call, same session swap.
+    """
+    try:
+        user_id = int(request.form.get("user_id", ""))
+    except ValueError:
+        flash("Choose a teammate.", "error")
+        return redirect(url_for("settings_work_as"))
+
+    admin = cls_db.get_user_by_id(session["user_id"])
+    target = cls_db.get_user_by_id(user_id)
+    return _do_impersonate(admin, target)
 
 
 @app.route("/admin/impersonate/exit", methods=["POST"])

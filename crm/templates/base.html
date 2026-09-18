@@ -1,4 +1,12 @@
-<!-- base.html v0.23 — NEW `wrap_wide` context var support: <main class="wrap">
+<!-- base.html v0.24 — Task 8 item 1: NEW admin-only "Work As" nav drawer
+     link (settings_work_as, app.py v0.74), placed right above the
+     existing Settings link, gated on the same
+     {% raw %}{% if current_user.role == 'admin' %}{% endraw %}
+     convention used elsewhere in this app (settings.html, dashboard.html,
+     etc.) — the FIRST top-level drawer item using that gate, since the
+     Settings link itself was deliberately un-admin-gated in v0.16 (see
+     its own comment just below). Nothing else in the drawer changed.
+     base.html v0.23 — NEW `wrap_wide` context var support: <main class="wrap">
      becomes <main class="wrap wrap-wide"> when a route passes
      wrap_wide=True, and a new main.wrap.wrap-wide{ max-width:1400px }
      rule (right after the existing main.wrap{ max-width:1080px; ... }
@@ -720,6 +728,19 @@ header.appbar .bell-btn, header.appbar .sync-btn{
        before for everything else, but they need to be able to find the
        page at all. Un-admin-gating this link is what makes that
        reachable via normal navigation instead of only a raw URL. -->
+  {% if current_user.role == 'admin' %}
+  {# v0.20 — Task 8 item 1: "Work As" top-level nav entry, admin-only.
+     Note: unlike most role-gated UI elsewhere in this app (settings.html,
+     dashboard.html, lead_detail.html, etc., which all use this same
+     {% raw %}{% if current_user.role == 'admin' %}{% endraw %} check),
+     this drawer had NO existing admin-only top-level link to mirror —
+     the Settings link just below was deliberately un-admin-gated in
+     v0.16 (see its own comment) so every role can reach Device Sync.
+     "Work As" is the first top-level drawer item that IS admin-gated,
+     using the same conditional this app already uses everywhere else,
+     just newly applied here. #}
+  <a href="{{ url_for('settings_work_as') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_work_as', 'settings_work_as_start'] }}">Work As</a>
+  {% endif %}
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   <div class="drawer-divider"></div>
   <a href="{{ url_for('logout') }}" class="btn-pill-green" style="margin:10px 20px; display:block;">Log out</a>

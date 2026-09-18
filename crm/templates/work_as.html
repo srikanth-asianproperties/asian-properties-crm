@@ -1,0 +1,40 @@
+{# work_as.html (v1, 2026-09-18) — admin-only "Work As" page (Task 8 item
+   1). A <select> of active, non-admin teammates + one explicit "Work As"
+   submit button (POST /admin/work-as/start) — deliberately NOT an
+   onchange-auto-submit pattern (unlike settings_eod_reports.html): this
+   triggers a real session swap, a consequential action, so it needs a
+   deliberate click, same "dropdown + explicit submit" posture as
+   settings_attendance_photo_lookup.html. Submitting hands off to the SAME
+   impersonation flow ("View as") Settings > Team's button already uses —
+   see app.py's _do_impersonate(). #}
+{% extends "base.html" %}
+{% block title %}Work As{% endblock %}
+
+{% block content %}
+{% include "_back_button.html" %}
+<h2 style="margin-top:10px;">Work As</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
+  View the CRM as one of your teammates — same as Settings &gt; Team's "View as" button.
+  Any actions you take will be recorded as BOTH you and them.
+</p>
+
+<div class="card" style="margin-top:16px; max-width:360px;">
+  <form method="post" action="{{ url_for('settings_work_as_start') }}"
+        onsubmit="return confirm('View the CRM as the selected teammate? Any actions you take will be recorded as BOTH you and them.');">
+    <div class="field-label">Teammate</div>
+    <select name="user_id" style="width:100%;" required>
+      <option value="">Select a teammate</option>
+      {% for u in users %}
+      <option value="{{ u.user_id }}">{{ u.full_name or u.email }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn btn-primary" style="margin-top:12px;">Work As</button>
+  </form>
+</div>
+
+{% if not users %}
+<div class="card empty-state" style="margin-top:16px;">
+  <p>No active teammates to view as.</p>
+</div>
+{% endif %}
+{% endblock %}
