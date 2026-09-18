@@ -2,11 +2,34 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.93
+Version : 2.94
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.94 (2026-09-18) — Task 8 item 4: re-engaged leads now re-route via
+  current campaign rules. *** BEHAVIOR CHANGE, not purely additive ***
+  — this changes existing lead-routing semantics: upsert_meta_lead()'s
+  re-engagement branch (branch 2, the contact-match/enrich path) used
+  to always leave lead_owner exactly as it was before the lead went
+  cold. It now RE-COMPUTES the owner via resolve_owner_for_new_lead()
+  — the SAME campaign-routing rules a brand-new lead (branch 3) would
+  use — and, if that lands on someone different, calls the existing
+  reassign_lead_owner(conn=conn) to actually move the lead (UPDATE
+  lead_owner, "assignment_change" activity_log row, 'lead_reassigned'
+  notification to the new owner — nothing hand-duplicated). Same owner
+  = harmless no-op, no duplicate notification/activity_log noise.
+  Routes on `campaign` (the function's own routing-key param, what
+  branch 3 already passes to resolve_owner_for_new_lead()) — NOT
+  meta_campaign_name, a different field that campaign_routing_rules
+  isn't keyed on. The existing 'lead_reengaged' notification (unchanged
+  in every other respect) now targets whichever owner the lead actually
+  ends up with, not unconditionally the pre-update owner. Stage-reset
+  logic (RESET_STAGES_ON_REENGAGEMENT) is completely untouched — this
+  change is scoped to ownership only. Round-robin next_index advances
+  exactly once per re-engagement (one resolve_owner_for_new_lead() call,
+  same as branch 3), never double-advanced.
+
 v2.93 (2026-09-18) — Task 8 item 3: holiday declaration notification,
   additive only, nothing existing removed or modified.
     - NOTIFICATION_EVENTS: NEW "holiday_declared" entry, all 11 existing
@@ -10421,6 +10444,50 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
             # inconsistently) COALESCE'd in SQL.
             effective_project = (prev_row["project"] if prev_row and prev_row["project"] else project)
 
+            # v2.94 — Task 8 item 4: BEHAVIOR CHANGE. A re-engaged lead's
+            # owner is now RE-COMPUTED via the SAME campaign-routing
+            # rules a brand-new lead would use (resolve_owner_for_new_
+            # lead(), branch 3's own function below), instead of
+            # silently staying with whoever owned the lead before it
+            # went cold. Must run on the SAME open conn, BEFORE this
+            # branch's own UPDATE further down, for the same round-
+            # robin-transactionality reason resolve_owner_for_new_lead()'s
+            # own docstring already gives for branch 3.
+            #
+            # Uses `campaign` — this function's own routing-key param,
+            # what branch 3 below actually passes to
+            # resolve_owner_for_new_lead() (e.g. Job A's call site passes
+            # form.get("campaign_name", form["form_name"])) — NOT
+            # meta_campaign_name (Meta's raw ad-platform campaign name, a
+            # separate field with different semantics; see this
+            # function's own docstring on the two). campaign_routing_
+            # rules.campaign_name is matched against the former. Using
+            # meta_campaign_name here would silently mismatch every
+            # configured rule and always fall through to the fallback
+            # owner — defeating the point of this change.
+            #
+            # reassign_lead_owner() (below) already does everything a
+            # reassignment needs on this same conn — UPDATE lead_owner,
+            # an "assignment_change" activity_log row, and a
+            # 'lead_reassigned' notification to the new owner — so it is
+            # called directly instead of hand-writing a second lead_owner
+            # UPDATE + a second set of logging/notification. It is only
+            # called when the routed owner actually differs from who the
+            # lead already had: same owner = a harmless no-op, no
+            # duplicate notification or activity_log noise. (Its own
+            # send_fcm_push() call is skipped here because conn is
+            # passed in and open — same owns_conn=False behavior
+            # bulk_reassign_leads() already relies on — the in-app bell
+            # notification still lands either way.)
+            prev_owner = prev_row["lead_owner"] if prev_row else None
+            new_owner = resolve_owner_for_new_lead(conn, campaign)
+            if new_owner and new_owner != prev_owner:
+                reassign_lead_owner(cls_id, new_owner, "system", conn=conn)
+            # Whoever the lead ends up with (reassigned or unchanged) is
+            # who the 'lead_reengaged' notification below should reach —
+            # not necessarily the PRE-update owner.
+            effective_owner = new_owner if (new_owner and new_owner != prev_owner) else prev_owner
+
             # v2.57 — Task 3 Part A, Change 4: log a lead_reengaged
             # activity_log row at the SAME `now` used to stamp
             # reengaged_at above (not a fresh _now() call) — a second,
@@ -10446,16 +10513,22 @@ def upsert_meta_lead(leadgen_id, form_id, project, full_name,
             _log_activity(conn, cls_id, "lead_reengaged", "system",
                           description=reengage_description, created_at=now)
 
-            # v2.72 — Notifications v1.0: notify the CURRENT owner (the
-            # pre-update row's lead_owner — this branch's UPDATE below
-            # never changes lead_owner, only project/leadgen_id/etc, so
-            # prev_row's value is also the post-update value). Uses
+            # v2.72 — Notifications v1.0: notify the lead's owner. Uses
             # prev_row's own full_name (COALESCE(NULLIF(...))'d the same
             # way the UPDATE below does) so the message shows the name
             # already on file, not a blank incoming Meta name.
-            reengaged_owner_user_id = resolve_user_id_from_owner_name(
-                prev_row["lead_owner"] if prev_row else None
-            )
+            #
+            # v2.94 — was unconditionally prev_row["lead_owner"] (this
+            # branch's UPDATE never touched lead_owner before this
+            # version). Now uses effective_owner (set just above): the
+            # NEW owner if this re-engagement was just re-routed to
+            # someone else, otherwise the same prev_owner as before —
+            # so the "lead re-engaged" notice always reaches whoever
+            # actually owns the lead going forward, never someone who
+            # was just reassigned away from it. Old owner is NOT
+            # separately notified that they lost it — out of scope for
+            # this change, flagged as a possible future add.
+            reengaged_owner_user_id = resolve_user_id_from_owner_name(effective_owner)
             if reengaged_owner_user_id:
                 reengaged_full_name = (prev_row["full_name"] if prev_row and prev_row["full_name"] else full_name) or "(no name)"
                 message = NOTIFICATION_EVENTS["lead_reengaged"].format(full_name=reengaged_full_name)
