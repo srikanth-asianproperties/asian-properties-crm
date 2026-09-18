@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.72
+Version : 0.73
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,16 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.73 (2026-09-18) — Task 8 item 5: EOD report also pushed to the
+  employee themselves. api_attendance_punch_out(), immediately after
+  the existing cls_db.notify_admins("eod_report", ...) call (unchanged),
+  now also inserts a second notification row for the employee's own
+  copy at self_cls_id=f"attn:{user_id}:self" (distinct from the admin
+  copy's f"attn:{user_id}", so event_id can't collide) and pushes FCM
+  if that insert actually happened. get_eod_reports_for_user() (the
+  admin EOD history viewer) queries the original cls_id only —
+  confirmed untouched, still shows exactly 1 row per employee per day.
+
 v0.72 (2026-09-18) — Task 8 item 3: holiday declaration notification.
   settings_attendance_holidays()'s POST branch, immediately after the
   existing cls_db.add_attendance_holiday(holiday_date, label) call,
@@ -6633,6 +6643,20 @@ def api_attendance_punch_out():
     report = cls_db.get_eod_report(user["user_id"], date_str, early_minutes=early_minutes)
     eod_message = cls_db.format_eod_report_message(report)
     cls_db.notify_admins("eod_report", eod_message, cls_id=f"attn:{user['user_id']}")
+
+    # v0.73 — Task 8 item 5: the employee also sees their OWN copy of
+    # this EOD report (bell + push), in addition to the admin copy
+    # above. self_cls_id is genuinely distinct from the admin copy's
+    # f"attn:{user_id}" (it appends ":self"), so insert_notification()'s
+    # event_id = md5(cls_id+event_type+today) can never collide between
+    # the two rows. get_eod_reports_for_user() (admin's EOD history
+    # viewer) queries the ORIGINAL cls_id only and is untouched by this
+    # — it keeps showing exactly what it shows today, not doubled up.
+    self_cls_id = f"attn:{user['user_id']}:self"
+    inserted = cls_db.insert_notification(user["user_id"], self_cls_id, "eod_report", eod_message)
+    if inserted:
+        cls_db.send_fcm_push(user["user_id"], "Your End-of-Day Report", eod_message)
+
     warning = (f"You left {early_minutes} min early today — this has "
                f"been reported to admin.") if early_minutes > 0 else None
 
