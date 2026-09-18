@@ -1,8 +1,21 @@
-{# settings_attendance_projects.html (v0.28) — admin Settings >
+{# settings_attendance_projects.html (v0.29) — admin Settings >
    Attendance > Project GPS & Geofence. One form per project bucket
    (sourced from cls_db.get_all_bucket_names(), same source as every
    other project dropdown in this app), each pre-filled with its
-   current lat/long/radius if already configured. #}
+   current lat/long/radius if already configured.
+
+   v0.29 — Task 8 item 2: interactive click-to-place-pin + draggable-
+   radius-circle map per project card, built on the Google Maps
+   JavaScript API (app.py's maps_api_key, same CLS_MAPS_API_KEY env var
+   cls_attendance_photo.py already reads for the Static Maps API — no
+   new env var). The 3 existing form fields remain the ONLY values this
+   form ever submits — the map is UI on top of them, not a new
+   submission mechanism, so app.py's POST handler needed zero changes.
+   When maps_api_key is unset, this degrades to the original plain
+   number-input UI (latitude/longitude become editable again) — the
+   page must never break just because the key isn't configured yet.
+   Each card's map is its own closure over that card's DOM (no global
+   per-project state), so cards can never clobber each other. #}
 {% extends "base.html" %}
 {% block title %}Project GPS &amp; Geofence{% endblock %}
 
@@ -11,19 +24,25 @@
 <h2 style="margin-top:10px;">Project GPS &amp; Geofence</h2>
 <p style="font-size:13px; color:var(--ink-soft); max-width:600px; margin-top:-6px;">
   Punches aren't blocked outside the radius — a breach is only flagged (red marker) for review.
+  {% if maps_api_key %}Click the map to place the pin; drag the circle's edge to resize the radius.{% endif %}
 </p>
 
-<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin-top:16px;">
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:14px; margin-top:16px;">
   {% for p in projects %}
   {% set loc = locations.get(p) %}
-  <div class="card">
+  <div class="card geofence-picker" data-bucket="{{ p }}">
     <strong style="font-size:15px;">{{ p }}</strong>
+    {% if maps_api_key %}
+    <div class="geofence-map" style="width:100%; height:220px; margin-top:10px; border-radius:8px; border:1px solid var(--line); background:var(--paper-soft, #f2f2f2);"></div>
+    {% endif %}
     <form method="post" style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
       <input type="hidden" name="project_bucket" value="{{ p }}">
       <label style="font-size:12px; color:var(--ink-soft);">Latitude</label>
-      <input type="number" step="any" name="latitude" value="{{ loc.latitude if loc else '' }}" style="width:100%;">
+      <input type="number" step="any" name="latitude" value="{{ loc.latitude if loc else '' }}"
+             style="width:100%;" {% if maps_api_key %}readonly{% endif %}>
       <label style="font-size:12px; color:var(--ink-soft);">Longitude</label>
-      <input type="number" step="any" name="longitude" value="{{ loc.longitude if loc else '' }}" style="width:100%;">
+      <input type="number" step="any" name="longitude" value="{{ loc.longitude if loc else '' }}"
+             style="width:100%;" {% if maps_api_key %}readonly{% endif %}>
       <label style="font-size:12px; color:var(--ink-soft);">Radius (meters)</label>
       <input type="number" step="1" name="radius_meters" value="{{ loc.radius_meters if loc else 1500 }}" style="width:100%;">
       <button type="submit" class="btn btn-primary" style="align-self:flex-start; margin-top:4px;">Save</button>
@@ -36,5 +55,94 @@
 <div class="card empty-state" style="margin-top:16px;">
   <p>No projects configured yet — add one from Settings &gt; Projects first.</p>
 </div>
+{% endif %}
+
+{% if maps_api_key %}
+<script>
+  // v0.29 — Task 8 item 2. Runs once the Maps JS API finishes loading
+  // (callback= below). Each .geofence-picker card gets its own map,
+  // marker and circle, scoped entirely to that card's own DOM elements
+  // — nothing here is keyed by a global project-name map or id, so
+  // cards can never clobber each other even if two projects share a
+  // similar name.
+  function clsInitGeofenceMaps() {
+    document.querySelectorAll('.geofence-picker').forEach(function (card) {
+      var mapDiv = card.querySelector('.geofence-map');
+      var latInput = card.querySelector('input[name="latitude"]');
+      var lngInput = card.querySelector('input[name="longitude"]');
+      var radiusInput = card.querySelector('input[name="radius_meters"]');
+      if (!mapDiv || !latInput || !lngInput || !radiusInput) return;
+
+      var HYDERABAD = { lat: 17.3850, lng: 78.4867 };
+      var hasPoint = latInput.value !== '' && lngInput.value !== '';
+      var startCenter = hasPoint
+        ? { lat: parseFloat(latInput.value), lng: parseFloat(lngInput.value) }
+        : HYDERABAD;
+
+      var map = new google.maps.Map(mapDiv, {
+        center: startCenter,
+        zoom: hasPoint ? 15 : 11,
+        streetViewControl: false,
+        mapTypeControl: false,
+      });
+
+      var marker = null;
+      var circle = null;
+
+      function writeLatLng(pos) {
+        latInput.value = pos.lat().toFixed(6);
+        lngInput.value = pos.lng().toFixed(6);
+      }
+
+      function placeAt(pos) {
+        if (!marker) {
+          marker = new google.maps.Marker({ position: pos, map: map, draggable: true });
+          circle = new google.maps.Circle({
+            map: map,
+            center: pos,
+            radius: parseFloat(radiusInput.value) || 1500,
+            editable: true,
+            draggable: false,
+            fillColor: '#4285F4',
+            fillOpacity: 0.15,
+            strokeColor: '#4285F4',
+            strokeWeight: 2,
+          });
+          circle.bindTo('center', marker, 'position');
+
+          marker.addListener('drag', function () { writeLatLng(marker.getPosition()); });
+          marker.addListener('dragend', function () { writeLatLng(marker.getPosition()); });
+
+          // Dragging the circle's own edit handles -> live-update the
+          // radius NUMBER INPUT (map -> field).
+          circle.addListener('radius_changed', function () {
+            radiusInput.value = Math.round(circle.getRadius());
+          });
+        } else {
+          marker.setPosition(pos);
+        }
+      }
+
+      if (hasPoint) {
+        placeAt(new google.maps.LatLng(startCenter.lat, startCenter.lng));
+      }
+
+      map.addListener('click', function (e) {
+        placeAt(e.latLng);
+        writeLatLng(e.latLng);
+      });
+
+      // Typing directly into the radius field -> live-update the circle
+      // (field -> map). The field stays user-editable, not fully
+      // replaced by the map.
+      radiusInput.addEventListener('input', function () {
+        if (!circle) return;
+        var r = parseFloat(radiusInput.value);
+        if (!isNaN(r) && r > 0) circle.setRadius(r);
+      });
+    });
+  }
+</script>
+<script async src="https://maps.googleapis.com/maps/api/js?key={{ maps_api_key }}&callback=clsInitGeofenceMaps"></script>
 {% endif %}
 {% endblock %}

@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.74
+Version : 0.75
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,16 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.75 (2026-09-18) — Task 8 item 2: interactive Google Maps geofence
+  picker. settings_attendance_projects() now also passes
+  maps_api_key=os.environ.get("CLS_MAPS_API_KEY") (same env var
+  cls_attendance_photo.py already reads for the Static Maps API — no
+  new env var) to settings_attendance_projects.html. Template-only
+  otherwise: the 3 existing form fields (latitude/longitude/radius_meters)
+  remain the actual submitted values, so this route's POST branch is
+  UNCHANGED — the map only ever writes into those 3 existing inputs.
+  Degrades to the current plain number-input UI when the key is unset.
+
 v0.74 (2026-09-18) — Task 8 item 1: "Work As" top-level menu entry point.
   impersonate_start()'s body extracted into a new shared helper
   _do_impersonate(admin, target) — same validation (not self, not
@@ -6328,6 +6338,12 @@ def settings_attendance_projects():
         "settings_attendance_projects.html",
         projects=cls_db.get_all_bucket_names(),
         locations=locations,
+        # v0.75 — Task 8 item 2: interactive geofence picker. Same
+        # CLS_MAPS_API_KEY env var cls_attendance_photo.py already reads
+        # (Static Maps API) — no new env var. Template degrades to the
+        # plain number-input UI (unchanged) when this is falsy, so a
+        # missing key can never break this page.
+        maps_api_key=os.environ.get("CLS_MAPS_API_KEY"),
     )
 
 
