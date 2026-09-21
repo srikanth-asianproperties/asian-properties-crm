@@ -2,11 +2,31 @@
 =============================================================
 cls_watchdog.py  —  CLS Health Monitor & Alert System
 =============================================================
-Version : 2.11
+Version : 2.12
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.12 (2026-09-21) — QUIET MODE: alert only when something is wrong, plus
+  one daily summary. Config-not-code: NEW SEND_HEALTHY_CYCLE_REPORT = False.
+    - Healthy cycle (no problems): NOTHING is sent (logged only). The old
+      every-cycle green report is kept — "# PAUSED — hourly green report;
+      set True to restore": SEND_HEALTHY_CYCLE_REPORT = True sends the full
+      report every cycle exactly as v2.11 did.
+    - Cycle WITH problems: one compact alert per cycle (header, time, the
+      problem lines only, footer) — no green ticks. No dedupe yet: a
+      persisting problem alerts every cycle. NEW compose_problem_alert().
+    - --force still sends the FULL test report (green ticks and all), so
+      Telegram delivery can be proven on demand.
+    - Daily summary (last cycle of the day, hour == 18) unchanged: sent once
+      a day, healthy or not. Its "New leads fetched" headline is now the
+      SUM of the per-salesperson new_leads (cls_db.get_daily_owner_summary(),
+      the same data as the breakdown) — Job A's log misses webhook-created
+      leads, so the two figures used to disagree. Falls back to the Job A
+      log total only if the DB summary fails.
+  No schedule, threshold, check or send-channel change (Telegram primary,
+  Brevo fallback). The scheduled task stays Disabled until enabled by hand.
+
 v2.11 (2026-09-21) — Slimmed so the task can be re-enabled safely. Job B
   (Sell.do sync) was retired 2026-08-18 and Job D (email drip) is paused, so
   their flags/logs are stale forever and would raise STALE / "log not
@@ -331,6 +351,11 @@ FLAG_MAX_AGE_MIN = 180
 # v2.10 — window for the per-cycle "events fired this round" figure
 # (Job C count from events_log). The watchdog's own task cadence is hourly.
 CYCLE_WINDOW_MIN = 60
+
+# v2.12 — QUIET MODE. False: a cycle with no problems sends NOTHING (a
+# compact alert is sent only when something is wrong; --force always sends
+# the full report). PAUSED — hourly green report; set True to restore.
+SEND_HEALTHY_CYCLE_REPORT = False
 
 # How many lines to scan from the end of each log file
 LOG_TAIL_LINES = 100
@@ -822,6 +847,24 @@ def compose_cycle_report(flag_results, log_results, pending_count, has_problems,
     return "\n".join(lines)
 
 
+def compose_problem_alert(problems):
+    """
+    (v2.12) Quiet-mode alert: header, time, ONLY the problem lines, footer —
+    no green ticks. `problems` is the list of already-formatted strings the
+    checks collected (db + flag + log + queue problems).
+    """
+    now_str = datetime.now().strftime("%d %b %Y, %I:%M %p")
+    lines = ["🚨 <b>CLS Alert</b>", f"🕐 <b>Time:</b> {now_str}", ""]
+    lines += list(problems)
+    lines += [
+        "",
+        "─────────────────────────",
+        "⚠️ <b>Action required.</b> Check D:\\CLS\\*_log.txt",
+        "Run: <code>python cls_watchdog.py</code> after fixing.",
+    ]
+    return "\n".join(lines)
+
+
 # ─────────────────────────────────────────────────────────────
 # COMPOSE DAILY SUMMARY  (v2.3)
 # ─────────────────────────────────────────────────────────────
@@ -1055,8 +1098,10 @@ def run(force_alert=False):
     else:
         log("RESULT: All checks passed — CLS is healthy.")
 
-    # ── Build and send per-cycle Telegram report ──
-    # Sends every cycle — green ticks when healthy, alerts when not.
+    # ── Build and send the per-cycle Telegram message (v2.12 quiet mode) ──
+    # PAUSED — hourly green report; set SEND_HEALTHY_CYCLE_REPORT = True to
+    # restore it (the old behaviour: the FULL report every cycle, green ticks
+    # when healthy, alerts when not).
     if force_alert:
         log("--force flag used — sending test report.")
 
@@ -1064,25 +1109,37 @@ def run(force_alert=False):
         flag_results, log_results, pending_count, has_problems, flag_counts
     )
 
-    # Log the report
+    # Log the full report every cycle (log only — nothing is sent for this)
     log("Telegram report:")
     for line in report_msg.split("\n"):
         log(f"  {line}")
 
+    if force_alert or SEND_HEALTHY_CYCLE_REPORT:
+        cycle_msg = report_msg                       # full report
+    elif has_problems:
+        cycle_msg = compose_problem_alert(all_problems)   # compact, problems only
+    else:
+        cycle_msg = None
+        log("Quiet mode: healthy cycle — no message sent "
+            "(SEND_HEALTHY_CYCLE_REPORT = False).")
+
     # Telegram primary, Brevo fallback (v2.9 — reverted v2.8 pause,
     # ISP/firewall issue resolved, see changelog).
-    if telegram_ok:
-        tg_sent = send_telegram(bot_token, chat_id, report_msg)
-        if not tg_sent:
-            log("Telegram unavailable — attempting Brevo email fallback.", "WARNING")
-            send_brevo_alert(env, report_msg)
-    else:
-        log("Telegram not configured — report logged only.", "WARNING")
+    if cycle_msg is not None:
+        if telegram_ok:
+            tg_sent = send_telegram(bot_token, chat_id, cycle_msg)
+            if not tg_sent:
+                log("Telegram unavailable — attempting Brevo email fallback.", "WARNING")
+                send_brevo_alert(env, cycle_msg)
+        else:
+            log("Telegram not configured — message logged only.", "WARNING")
 
     # ── End-of-day daily summary — sent ONLY on the 17:55 run (v2.3) ──
     # Scans the full log files and sums all 5 cycles for today.
     if datetime.now().hour == 18:
         log("--- Last cycle of the day — computing daily totals ---")
+        # v2.12 — Job A's log total is only the FALLBACK; the headline is the
+        # per-salesperson sum below (Job A's log misses webhook-created leads).
         a_total = extract_daily_total(
             JOB_LOG_FILES["Job A (Meta Fetcher)"],
             r"TOTAL: \d+ pulled, (\d+) upserted",
@@ -1115,8 +1172,10 @@ def run(force_alert=False):
         try:
             owner_summary = cls_db.get_daily_owner_summary()
             log(f"Owner summary: {owner_summary}")
+            # v2.12 — headline == sum of the per-salesperson new_leads
+            a_total = sum(r["new_leads"] for r in owner_summary)
         except Exception as e:
-            log(f"get_daily_owner_summary() failed: {e}", "WARNING")
+            log(f"get_daily_owner_summary() failed: {e} — headline falls back to Job A's log total.", "WARNING")
             owner_summary = None
 
         daily_msg = compose_daily_summary(
