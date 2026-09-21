@@ -2,11 +2,24 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.95
+Version : 2.96
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.96 (2026-09-21) — Booking Summary now uses the EFFECTIVE ORIGIN (see
+  v2.95) instead of raw leads.source, so its Source dropdown, "Lead By
+  Source" and "Site Visits By Source" agree with the Leads filter.
+    - _booking_summary_where(): source_col default is now
+      lead_origin_sql("l") (was "l.source"). Every Booking Summary query
+      goes through this one function, so every panel filters by the same
+      rule. The `source` param is now an origin LABEL ("Meta", "Walk-In",
+      "Sell.do", ...) — crm/app.py maps old raw ?source=meta values.
+    - get_leads_by_source_for_period() / get_site_visits_by_source_for_
+      period(): GROUP BY the same origin expression; labels are returned
+      already human-readable (no SOURCE_DISPLAY_LABELS translation).
+  No schema/data change. Nothing else touched.
+
 v2.95 (2026-09-21) — Unified "Lead Source" filter + "Captured via".
   ADDITIVE ONLY, no schema change, no data change: leads.source and
   leads.lead_source_detail stay exactly as stored — only how they are
@@ -9348,7 +9361,7 @@ def get_todays_agenda(owner=None):
 # as every other owner= param in this file.
 
 def _booking_summary_where(date_col, date_from, date_to, project=None, source=None, owner=None,
-                            project_col="l.project", source_col="l.source", owner_col="l.lead_owner"):
+                            project_col="l.project", source_col=None, owner_col="l.lead_owner"):
     """
     (v2.31) Shared WHERE-clause fragment builder for every Booking
     Summary query below — all of them filter by the same date range +
@@ -9366,6 +9379,8 @@ def _booking_summary_where(date_col, date_from, date_to, project=None, source=No
     other report's. A bare "1=1" placeholder keeps the fragment valid
     SQL even when every optional filter is skipped.
     """
+    if source_col is None:
+        source_col = lead_origin_sql("l")   # v2.96 — effective origin, same rule on every panel
     clauses = ["1=1"]
     params = []
     if date_from and date_to:
@@ -9484,17 +9499,16 @@ def get_leads_by_project_for_period(date_from, date_to, project=None, source=Non
 
 def get_leads_by_source_for_period(date_from, date_to, project=None, source=None, owner=None):
     """
-    (v2.31) "Lead By Source" (Decision 2 relabel). Grouped by the raw
-    leads.source value (or 'Not Available' if blank) — returns the raw
-    value as `label` for the template to translate via
-    SOURCE_DISPLAY_LABELS.get(label, label), same display-layer-
-    resolution split as get_all_users() (email -> full_name).
+    (v2.31) "Lead By Source" (Decision 2 relabel). (v2.96) Grouped by the
+    EFFECTIVE ORIGIN (lead_origin_sql — lead_source_detail if set, else
+    derived from leads.source, 'Not Available' if neither); `label` is
+    already human-readable.
     """
     conn = _connect()
     try:
         where, params = _booking_summary_where("l.cls_created_at", date_from, date_to, project, source, owner)
         rows = conn.execute(f"""
-            SELECT COALESCE(NULLIF(TRIM(l.source), ''), 'Not Available') AS label, COUNT(*) c
+            SELECT {lead_origin_sql("l")} AS label, COUNT(*) c
             FROM leads l WHERE {where} GROUP BY label ORDER BY c DESC
         """, params).fetchall()
         return [{"label": r["label"], "count": r["c"]} for r in rows]
@@ -9574,15 +9588,14 @@ def get_site_visits_by_project_for_period(date_from, date_to, project=None, sour
 
 def get_site_visits_by_source_for_period(date_from, date_to, project=None, source=None, owner=None):
     """
-    (v2.31) "Site Visits By Source" — via leads.source (raw value,
-    template translates via SOURCE_DISPLAY_LABELS, same as
-    get_leads_by_source_for_period()).
+    (v2.31) "Site Visits By Source" — (v2.96) via the EFFECTIVE ORIGIN
+    (lead_origin_sql), same rule as get_leads_by_source_for_period().
     """
     conn = _connect()
     try:
         where, params = _booking_summary_where("v.scheduled_at", date_from, date_to, project, source, owner)
         rows = conn.execute(f"""
-            SELECT COALESCE(NULLIF(TRIM(l.source), ''), 'Not Available') AS label, COUNT(*) c
+            SELECT {lead_origin_sql("l")} AS label, COUNT(*) c
             FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
             WHERE {where} GROUP BY label ORDER BY c DESC
         """, params).fetchall()

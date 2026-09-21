@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.77
+Version : 0.78
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,12 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.78 (2026-09-21) — dashboard_booking_summary(): Source dropdown, "Lead
+  By Source" and "Site Visits By Source" now use the effective origin
+  (cls_db.py v2.96). source_options = get_lead_origin_options(); an old
+  raw ?source=meta / selldo_only / manual_crm value is mapped to its
+  label via SOURCE_DISPLAY_LABELS so old bookmarks keep working.
+
 v0.77 (2026-09-21) — Unified "Lead Source" filter + "Captured via"
   (requires cls_db.py v2.95). No schema/data change.
     - _parse_lead_filters(): NEW "lead_origin" key. Old ?source= /
@@ -2860,6 +2866,10 @@ def dashboard_booking_summary():
 
     project = request.args.get("project") or None
     source = request.args.get("source") or None
+    if source:
+        # v0.78 — old bookmarks carry the raw leads.source value; the
+        # filter now takes an origin LABEL.
+        source = cls_db.SOURCE_DISPLAY_LABELS.get(source, source)
     date_from, date_to, active_preset = _resolve_booking_summary_date_range(request.args)
 
     filters = {
@@ -2873,8 +2883,8 @@ def dashboard_booking_summary():
         active_view="booking_summary",
         filters=filters,
         project_options=cls_db.get_all_bucket_names(),
-        source_options=cls_db.SOURCE_OPTIONS,
-        source_labels=cls_db.SOURCE_DISPLAY_LABELS,
+        source_options=cls_db.get_lead_origin_options(),
+        source_labels={},   # v0.78 — origin options/labels are already human-readable
         owner_options=owner_options,
         company_wide=company_wide,
         date_preset_order=cls_reports.REPORT_DATE_PRESET_ORDER,
