@@ -2,11 +2,19 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.103
+Version : 2.104
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.104 (2026-09-21) — Sub Source now keyed on recorded meta_platform
+  regardless of source — 34 leads move from Non-Meta to Facebook/Instagram
+  (24 selldo_only: 12 fb / 12 ig; 10 manual_crm: 2 fb / 8 ig). Grand total
+  unchanged (8,641). sub_source_sql() ONLY: CASE reordered so a non-blank
+  meta_platform is label-mapped regardless of leads.source, then
+  source='meta' with blank platform -> "Meta – platform not captured",
+  else Non-Meta. No other function touched; no schema change.
+
 v2.103 (2026-09-21) — Lead Stage Analysis v2: "Source" and "Sub Source"
   groupings. NEW config (next to ORIGIN_UNKNOWN_LABEL): SUB_SOURCE_META_SOURCE,
   META_PLATFORM_LABELS (fb/ig/msg/an -> label), SUB_SOURCE_META_UNKNOWN_LABEL,
@@ -3281,20 +3289,25 @@ def lead_origin_sql(alias=""):
 
 def sub_source_sql(alias=""):
     """
-    (v2.103) SQL expression for a lead's SUB SOURCE: for Meta leads the
-    platform label from META_PLATFORM_LABELS (blank platform ->
-    SUB_SOURCE_META_UNKNOWN_LABEL, an unrecognised future value shown raw),
-    for every other lead SUB_SOURCE_NON_META_LABEL. Built only from the
-    config constants above — never from request input — so it is safe to
-    inline. `alias` is the leads-table alias (e.g. "l"), or "" for none.
+    (v2.103; reordered v2.104) SQL expression for a lead's SUB SOURCE, keyed
+    on the RECORDED platform rather than the capture path:
+      1. non-blank meta_platform -> label from META_PLATFORM_LABELS (an
+         unrecognised future value shown raw), regardless of leads.source;
+      2. else source = SUB_SOURCE_META_SOURCE (platform blank) ->
+         SUB_SOURCE_META_UNKNOWN_LABEL;
+      3. else SUB_SOURCE_NON_META_LABEL.
+    Built only from the config constants above — never from request input —
+    so it is safe to inline. `alias` is the leads-table alias (e.g. "l"),
+    or "" for none.
     """
     p = f"{alias}." if alias else ""
     whens = " ".join(f"WHEN {_sql_str(k)} THEN {_sql_str(v)}"
                      for k, v in META_PLATFORM_LABELS.items())
-    return (f"CASE WHEN {p}source = {_sql_str(SUB_SOURCE_META_SOURCE)} THEN "
-            f"CASE LOWER(TRIM(COALESCE({p}meta_platform, ''))) {whens} "
-            f"WHEN '' THEN {_sql_str(SUB_SOURCE_META_UNKNOWN_LABEL)} "
+    return (f"CASE WHEN TRIM(COALESCE({p}meta_platform, '')) <> '' THEN "
+            f"CASE LOWER(TRIM({p}meta_platform)) {whens} "
             f"ELSE TRIM({p}meta_platform) END "
+            f"WHEN {p}source = {_sql_str(SUB_SOURCE_META_SOURCE)} THEN "
+            f"{_sql_str(SUB_SOURCE_META_UNKNOWN_LABEL)} "
             f"ELSE {_sql_str(SUB_SOURCE_NON_META_LABEL)} END")
 
 
