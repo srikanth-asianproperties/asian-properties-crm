@@ -2,11 +2,34 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.99
+Version : 2.100
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.100 (2026-09-21) — Job C self-healing support. A re-engaged lead is
+  stamped with a NEW leadgen_id by upsert_meta_lead()'s contact-match
+  UPDATE; Meta treats that as a new lead needing its own raw "Incoming"
+  event, but the old rule (c) — "no events_log row for (cls_id,
+  current_stage)" — was satisfied by the OLD leadgen_id's event, so
+  nothing ever sent it.
+    - RULE CHANGE (capi_pending_sql / count_capi_too_old, via the shared
+      _capi_needs_event_sql): (c) is now "no events_log row for (cls_id,
+      current_stage, CURRENT leadgen_id)", matched with SQL `IS` so NULLs
+      compare correctly (Sell.do-era rows have NULL). Other conditions
+      unchanged: target stage, not manual-guarded, stage_updated_at within
+      CAPI_CATCHUP_MAX_AGE_DAYS.
+    - NEW CAPI_PENDING_GRACE_MIN = 10 — Job C's self-heal only takes leads
+      whose stage_updated_at is at least this old, so it never races an
+      inline fire still in flight.
+    - NEW get_capi_self_heal_leads() — the capi_pending_sql() set, minus
+      leads younger than the grace, minus leads that already have a
+      capi_fire_queue row that is 'pending' (the retry queue owns it) or
+      'failed_permanent' (needs a human; also stops a slow endless
+      re-queue loop). --catchup does NOT use the grace or the queue
+      filter (get_unfired_leads() is unchanged in shape).
+  ADDITIVE except the rule change above. cls_capi_firer.py v3.5 uses it.
+
 v2.99 (2026-09-21) — CAPI safety net lists only leads that GENUINELY need
   an event now. get_unfired_leads() (used only by cls_capi_firer.py
   --catchup and count-only displays: watchdog pending count, Telegram
@@ -2918,6 +2941,12 @@ CAPI_SKIP_SOURCES = ("manual_crm",)
 # window, beyond which an event is stale and would be sent with today's
 # timestamp.
 CAPI_CATCHUP_MAX_AGE_DAYS = 7
+
+# v2.100 — Job C self-heal (cls_capi_firer.py queue mode) only fires leads
+# whose stage_updated_at is at least this many minutes old, so it never
+# races an inline fire (CRM stage change / webhook / Job A) still in flight.
+# NOT applied to --catchup (a manual full mode).
+CAPI_PENDING_GRACE_MIN = 10
 
 # ── ALL_STAGES + STAGE_TRANSITIONS (v1.8 — CRM v0.5 Writer) ──
 # ALL_STAGES is the COMPLETE 8-stage universe — do not confuse this
@@ -11372,9 +11401,12 @@ def _capi_needs_event_sql(alias=""):
            # a NULL source from turning the NOT(...) into NULL (row dropped).
            f"AND NOT (COALESCE({p}source, '') IN ({skip_ph}) "
            f"AND ({p}leadgen_id IS NULL OR TRIM(CAST({p}leadgen_id AS TEXT)) = '')) "
-           # (c) never fired (confirmed) at this stage
+           # (c) never fired (confirmed) at this stage FOR THIS leadgen_id (v2.100:
+           # a re-engaged lead's new leadgen_id is a new lead to Meta). `IS`
+           # so NULL matches NULL (Sell.do-era events_log rows have none).
            f"AND NOT EXISTS (SELECT 1 FROM events_log _evt "
-           f"WHERE _evt.cls_id = {p}cls_id AND _evt.crm_stage = {p}current_stage)")
+           f"WHERE _evt.cls_id = {p}cls_id AND _evt.crm_stage = {p}current_stage "
+           f"AND _evt.leadgen_id IS {p}leadgen_id)")
     return sql, list(TARGET_STAGES) + list(CAPI_SKIP_SOURCES)
 
 
@@ -11414,6 +11446,31 @@ def get_unfired_leads():
     conn = _connect()
     try:
         rows = conn.execute(f"SELECT * FROM leads WHERE {where}", params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_capi_self_heal_leads():
+    """
+    (v2.100) Leads Job C's self-heal should fire on this run: everything
+    capi_pending_sql() reports pending, EXCLUDING leads younger than
+    CAPI_PENDING_GRACE_MIN (an inline fire may still be in flight) and
+    leads that already have a capi_fire_queue row that is 'pending' (the
+    retry queue owns them) or 'failed_permanent' (needs a human — without
+    this a failed-permanent lead would be re-queued forever). Oldest
+    stage change first.
+    """
+    where, params = capi_pending_sql()
+    grace_cutoff = (datetime.now() - timedelta(minutes=CAPI_PENDING_GRACE_MIN)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM leads WHERE {where} AND stage_updated_at <= ? "
+            f"AND NOT EXISTS (SELECT 1 FROM capi_fire_queue _q WHERE _q.cls_id = leads.cls_id "
+            f"AND _q.status IN ('pending', 'failed_permanent')) "
+            f"ORDER BY stage_updated_at ASC",
+            params + [grace_cutoff]).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

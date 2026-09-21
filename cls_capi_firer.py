@@ -2,11 +2,29 @@
 =============================================================
 cls_capi_firer.py  —  CLS Job C  |  CLS -> Meta CAPI Firer
 =============================================================
-Version : 3.4
+Version : 3.5
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v3.5 (2026-09-21) — SELF-HEALING queue mode. After the retry queue, every
+  scheduled run now also fires the leads that genuinely need an event
+  (cls_db.get_capi_self_heal_leads(), cls_db v2.100): target stage, not
+  manual-guarded, no events_log row for (cls_id, stage, CURRENT
+  leadgen_id), stage changed within 7 days AND at least
+  CAPI_PENDING_GRACE_MIN (10) minutes ago, and not already in
+  capi_fire_queue. A re-engaged lead gets a NEW leadgen_id that Meta treats
+  as a new lead needing its own "Incoming" event; nothing sent it before.
+  Uses cls_capi_core.fire_single_lead_event() UNCHANGED (guard unchanged).
+  A failure is queued once via queue_failed_fire() — no retry within the
+  same run. Logs "SELF-HEAL: fired N pending lead(s)" when N > 0 and adds
+  ", N self-healed" to the job_results line only then. FAST EXIT kept: with
+  the retry queue AND the pending set both empty it exits after cheap
+  queries, sets the 'capi_fire' flag (v3.3), makes no HTTP call.
+  --catchup is unchanged: manual full mode, no grace period. --dry-run
+  lists what would be healed; sends nothing, writes no DB rows, sets no
+  flag (the pre-existing job_results.txt line is still written).
+
 v3.4 (2026-09-21) — --catchup only: one new log line, "N lead(s) older than
   7 days skipped (too old to send)" (cls_db.count_capi_too_old(), v2.99),
   logged before the fire loop (also when nothing is left to fire). No
@@ -214,7 +232,8 @@ def run_queue_mode(dry_run=False):
     cls_db.init_db()
 
     due = cls_db.get_due_retries()
-    if not due:
+    heal_preview = cls_db.get_capi_self_heal_leads()   # cheap query; the real set is re-read after the retry loop
+    if not due and not heal_preview:
         log("Queue is empty. Nothing to do.")
         if not dry_run:
             cls_db.set_flag("capi_fire")
@@ -232,7 +251,10 @@ def run_queue_mode(dry_run=False):
                                  "META_PRIMARY_DATASET or META_CAPI_TOKEN missing in .env")
         return False
 
-    log(f"Queue has {len(due)} pending row(s) to retry.")
+    if due:
+        log(f"Queue has {len(due)} pending row(s) to retry.")
+    else:
+        log("Retry queue is empty.")
 
     ok = fail = skipped = 0
     for row in due:
@@ -280,6 +302,30 @@ def run_queue_mode(dry_run=False):
     else:
         log(f"Retried {ok} OK, {fail} still failing (requeued or permanently failed){skip_note}.")
 
+    # ── v3.5 SELF-HEAL: fire the leads that genuinely need an event ──
+    # Re-read AFTER the retry loop: a lead the loop just fired now has an
+    # events_log row and drops out; a lead it just re-queued is excluded.
+    healed = heal_fail = 0
+    for lead in cls_db.get_capi_self_heal_leads():
+        if dry_run:
+            log(f"  DRY-RUN would self-heal: {lead.get('full_name', '?')} | {lead['current_stage']}")
+            healed += 1
+            continue
+        fired, err = cls_capi_core.fire_single_lead_event(lead, env)
+        if fired:
+            healed += 1
+            log(f"  SELF-HEAL OK {lead.get('full_name', '?')} | {lead['current_stage']}")
+        else:
+            heal_fail += 1
+            cls_db.queue_failed_fire(lead["cls_id"], lead["current_stage"], err)
+            log(f"  SELF-HEAL FAILED (queued once) {lead.get('full_name', '?')} | {err}", "ERROR")
+        time.sleep(cls_capi_core.API_PAUSE_SEC)
+    if healed:
+        log(f"SELF-HEAL: {'WOULD fire' if dry_run else 'fired'} {healed} pending lead(s)")
+    heal_note = f", {healed} self-healed" if healed and not dry_run else ""
+    if dry_run and healed:
+        heal_note = f", {healed} would self-heal"
+
     _refresh_outputs(dry_run=dry_run)
     if not dry_run:
         cls_db.set_flag("capi_fire")
@@ -290,7 +336,8 @@ def run_queue_mode(dry_run=False):
     log("=" * 55)
     cls_db.write_job_result(
         "Job C (CAPI Firer)", True,
-        f"Queue mode — {ok} OK, {fail} failed{skip_note}" if not dry_run else f"DRY-RUN — {ok} would retry{skip_note}"
+        f"Queue mode — {ok} OK, {fail} failed{skip_note}{heal_note}" if not dry_run
+        else f"DRY-RUN — {ok} would retry{skip_note}{heal_note}"
     )
     return True
 
