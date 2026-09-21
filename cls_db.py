@@ -2,11 +2,19 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.96
+Version : 2.97
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.97 (2026-09-21) — CAPI guard (see cls_capi_core.py v1.2): NEW
+  CAPI_SKIP_SOURCES = ("manual_crm",) and get_unfired_leads() now
+  excludes leads whose source is in it AND whose leadgen_id is blank/
+  NULL — so cls_capi_firer.py --catchup never lists manual/walk-in
+  leads Meta cannot match, and its counts stay honest. Mirrors
+  cls_capi_core.CAPI_SKIP_SOURCES (cls_db cannot import cls_capi_core —
+  circular); keep both in step. Nothing else touched.
+
 v2.96 (2026-09-21) — Booking Summary now uses the EFFECTIVE ORIGIN (see
   v2.95) instead of raw leads.source, so its Source dropdown, "Lead By
   Source" and "Site Visits By Source" agree with the Leads filter.
@@ -2865,6 +2873,12 @@ FLAG_FILE = os.path.join(BASE_DIR, "cls_flags.json")  # completion flags between
 # Target CRM stages — same three as the existing CAPI script.
 # Kept here so all CLS jobs share one definition.
 TARGET_STAGES = ["Incoming", "Prospect", "Opportunity", "Site Visited"]
+
+# v2.97 — sources never fired to Meta unless the lead also has a
+# leadgen_id (manual/walk-in entries: nothing for Meta to match).
+# MIRRORS cls_capi_core.CAPI_SKIP_SOURCES (circular import prevents
+# sharing one definition) — keep both in step.
+CAPI_SKIP_SOURCES = ("manual_crm",)
 
 # ── ALL_STAGES + STAGE_TRANSITIONS (v1.8 — CRM v0.5 Writer) ──
 # ALL_STAGES is the COMPLETE 8-stage universe — do not confuse this
@@ -11314,13 +11328,19 @@ def get_unfired_leads():
     mid-run cannot cause a double-fire or a missed fire.
     """
     placeholders = ",".join("?" for _ in TARGET_STAGES)
+    skip_ph = ",".join("?" for _ in CAPI_SKIP_SOURCES)
     conn = _connect()
     try:
+        # v2.97 — same rule as cls_capi_core.fire_single_lead_event():
+        # skip CAPI_SKIP_SOURCES leads with no leadgen_id. COALESCE keeps
+        # a NULL source from turning the NOT(...) into NULL (row dropped).
         rows = conn.execute(f"""
             SELECT * FROM leads
             WHERE current_stage IN ({placeholders})
               AND (last_fired_stage IS NULL OR last_fired_stage != current_stage)
-        """, TARGET_STAGES).fetchall()
+              AND NOT (COALESCE(source, '') IN ({skip_ph})
+                       AND (leadgen_id IS NULL OR TRIM(CAST(leadgen_id AS TEXT)) = ''))
+        """, list(TARGET_STAGES) + list(CAPI_SKIP_SOURCES)).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

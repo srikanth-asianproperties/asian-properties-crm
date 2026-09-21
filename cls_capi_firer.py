@@ -2,11 +2,17 @@
 =============================================================
 cls_capi_firer.py  —  CLS Job C  |  CLS -> Meta CAPI Firer
 =============================================================
-Version : 3.0
+Version : 3.1
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v3.1 (2026-09-21) — selftest only: one new offline case for the CAPI
+  guard (cls_capi_core.py v1.2) — a manual lead with no leadgen_id
+  returns (True, None) even with an EMPTY env (i.e. it exits before
+  any credential check / HTTP call), while a manual lead WITH a
+  leadgen_id does not take that early exit. No logic change.
+
 v3.0 (2026-08-14) — FULL REWRITE. Replaces the old full-table-scan cron
   model with two-mode queue processing, backed by the inline firing
   redesign (crm/app.py v0.49, meta_leads_fetcher.py v1.8, cls_capi_core.py
@@ -379,6 +385,18 @@ def selftest():
           and "Lost" not in cls_capi_core.STAGE_EVENT_MAP
           and "Re Assigned" not in cls_capi_core.STAGE_EVENT_MAP)
     print(f"  [{'OK' if ok else 'FAIL'}] non-target stages (Booked/Lost/Re Assigned) not in event map")
+
+    # v3.1 — CAPI guard. env={} means anything past the guard would hit the
+    # "credentials missing" error, so (True, None) proves the early exit.
+    manual_no_lg = {"cls_id": "c3", "source": "manual_crm", "leadgen_id": None,
+                    "current_stage": "Prospect", "full_name": "Walk In",
+                    "phone_norm": "9000000002"}
+    ok = cls_capi_core.fire_single_lead_event(manual_no_lg, {}) == (True, None)
+    print(f"  [{'OK' if ok else 'FAIL'}] manual lead, no leadgen_id -> skipped (True, None), no send")
+
+    manual_with_lg = dict(manual_no_lg, leadgen_id="1234567890")
+    ok_flag, _err = cls_capi_core.fire_single_lead_event(manual_with_lg, {})
+    print(f"  [{'OK' if not ok_flag else 'FAIL'}] manual lead WITH leadgen_id -> not skipped (normal path)")
 
     print("=" * 55)
     print(" SELF TEST COMPLETE — offline logic verified (delegates to cls_capi_core.py).")

@@ -2,11 +2,25 @@
 =============================================================
 cls_capi_core.py  —  CLS Shared CAPI Payload + Inline Fire Logic
 =============================================================
-Version : 1.1
+Version : 1.2
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.2 (2026-09-21) — CAPI guard: never send manual leads Meta cannot
+  match. Walk-ins / manual entries have no Meta lead ad to match, so
+  Meta ignores their events for optimisation and sending them shares
+  personal data for no gain. NEW CAPI_SKIP_SOURCES = ("manual_crm",)
+  config constant; fire_single_lead_event() now returns (True, None)
+  — no payload built, no HTTP call, no events_log row, no
+  mark_as_fired() — for a lead whose source is in CAPI_SKIP_SOURCES AND
+  who has no leadgen_id. A manual lead that DOES have a leadgen_id (it
+  later submitted a real Meta form) fires as normal. Events already
+  sent are untouched (events_log is append-only). cls_db.py v2.97's
+  get_unfired_leads() applies the SAME rule in SQL (cls_db cannot
+  import this module — circular) — keep both in step. Nothing else in
+  this file touched.
+
 v1.1 (2026-09-01) — CAPI event snapshots, ADDITIVE ONLY. The
   cls_db.record_event(...) call inside fire_single_lead_event() now
   also passes lead_snapshot_json=json.dumps(lead, default=str,
@@ -80,6 +94,12 @@ GRAPH_API_VERSION = "v23.0"   # v19.0 deprecated May 21 2026; upgraded June 9 20
 #            Meta's 60% threshold for Conversion Lead Optimisation
 # Prospect, Opportunity, Site Visited : quality conversion signals
 TARGET_STAGES = ["Incoming", "Prospect", "Opportunity", "Site Visited"]
+
+# ── Sources that are never fired unless the lead also has a leadgen_id ──
+# (v1.2) Manual/walk-in entries have no Meta lead ad for Meta to match.
+# MIRRORED in cls_db.py as CAPI_SKIP_SOURCES (used by get_unfired_leads()
+# — cls_db cannot import this module, circular). Keep both in step.
+CAPI_SKIP_SOURCES = ("manual_crm",)
 
 # ── Value parameters (INR) ──
 # Incoming is INR 0 deliberately — it is a raw arrival signal, not a
@@ -230,6 +250,12 @@ def fire_single_lead_event(lead, env, dry_run=False):
     """
     stage = lead.get("current_stage")
     if stage not in TARGET_STAGES:
+        return True, None
+
+    # v1.2 — manual lead with no leadgen_id: Meta cannot match it, so
+    # never send it. Same rule as cls_db.get_unfired_leads()'s SQL.
+    if (lead.get("source") in CAPI_SKIP_SOURCES
+            and not str(lead.get("leadgen_id") or "").strip()):
         return True, None
 
     try:
