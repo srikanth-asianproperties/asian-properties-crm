@@ -2,11 +2,20 @@
 =============================================================
 cls_capi_firer.py  —  CLS Job C  |  CLS -> Meta CAPI Firer
 =============================================================
-Version : 3.2
+Version : 3.3
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v3.3 (2026-09-21) — queue mode: the "Queue is empty. Nothing to do." exit
+  now also sets the 'capi_fire' completion flag (and logs "Completion flag
+  'capi_fire' set."), skipped under --dry-run like the other paths. An
+  empty-queue run IS a completed run — before this, the flag was only set
+  when the queue had work, and since the queue is almost always empty the
+  flag went stale (last set 2026-09-11), so cls_watchdog.py's flag check
+  and the Telegram Listener's /health reported Job C as STALE although the
+  task runs every 15 minutes. Nothing else changed.
+
 v3.2 (2026-09-21) — log honesty for the CAPI guard. In BOTH the queue
   loop and the --catchup loop, a lead cls_capi_core.is_capi_skipped()
   (manual, no leadgen_id — never sent to Meta) is now logged as SKIPPED
@@ -200,6 +209,9 @@ def run_queue_mode(dry_run=False):
     due = cls_db.get_due_retries()
     if not due:
         log("Queue is empty. Nothing to do.")
+        if not dry_run:
+            cls_db.set_flag("capi_fire")
+            log("Completion flag 'capi_fire' set.")
         log("=" * 55)
         log("CLS JOB C — CAPI Firer — DONE (queue empty)")
         log("=" * 55)
