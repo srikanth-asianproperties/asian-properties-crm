@@ -2,11 +2,21 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.97
+Version : 2.98
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.98 (2026-09-21) — NEW count_events_fired_between(start_ts, end_ts):
+  read-only count of events_log rows with fired_at in [start_ts, end_ts]
+  (inclusive, "YYYY-MM-DD HH:MM:SS" strings — the format fired_at is
+  always written in). Same table/column as get_daily_owner_summary()'s
+  per-owner capi_fired count, so a whole-day range equals the sum of
+  that breakdown. For cls_watchdog.py v2.10, which used to scrape a log
+  line ("Marked N leads as fired") that stopped existing when Job C was
+  rewritten in v3.0 (2026-08-14). ADDITIVE ONLY — nothing existing
+  removed or modified.
+
 v2.97 (2026-09-21) — CAPI guard (see cls_capi_core.py v1.2): NEW
   CAPI_SKIP_SOURCES = ("manual_crm",) and get_unfired_leads() now
   excludes leads whose source is in it AND whose leadgen_id is blank/
@@ -11829,6 +11839,25 @@ def get_daily_owner_summary(date_str=None):
         reverse=True,
     )
     return result
+
+
+def count_events_fired_between(start_ts, end_ts):
+    """
+    (v2.98) Number of events_log rows (one per Meta-CONFIRMED CAPI fire —
+    inline fires from the CRM/webhook/Job A plus queue retries) whose
+    fired_at is between start_ts and end_ts, inclusive. Both are
+    "YYYY-MM-DD HH:MM:SS" strings. Read-only. A skipped manual lead
+    (cls_capi_core.is_capi_skipped) never writes an events_log row, so it
+    is never counted.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM events_log WHERE fired_at >= ? AND fired_at <= ?",
+            (start_ts, end_ts)).fetchone()
+        return row["n"]
+    finally:
+        conn.close()
 
 
 def get_events(limit=None):

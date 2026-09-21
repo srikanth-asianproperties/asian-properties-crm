@@ -2,11 +2,31 @@
 =============================================================
 cls_watchdog.py  —  CLS Health Monitor & Alert System
 =============================================================
-Version : 2.9
+Version : 2.10
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.10 (2026-09-21) — Job C "events fired" now counted from events_log
+  (cls_db.py v2.98 count_events_fired_between()) instead of scraping
+  Job C's log for "Marked N leads as fired" — that line stopped existing
+  in the Job C v3.0 rewrite (2026-08-14), so the figure had been silently
+  None / always-blank since then. events_log is append-only, one row per
+  Meta-confirmed fire, and covers inline fires (CRM, webhook, Job A) plus
+  queue retries. A skipped manual lead (CAPI guard) writes no row.
+    a) per-cycle count (the "N events fired this round" figure) = rows
+       fired in the last CYCLE_WINDOW_MIN minutes (NEW constant, 60 — no
+       existing cycle-interval constant; FLAG_MAX_AGE_MIN is a staleness
+       allowance, not a cadence).
+    b) daily headline c_total = rows fired today (00:00:00-23:59:59), so
+       it equals the sum of get_daily_owner_summary()'s per-salesperson
+       capi_fired for the same date.
+    c) old extract_run_count / extract_daily_total regex calls kept as
+       "# PAUSED — dead since Job C v3.0 rewrite (2026-08-14)" comments.
+  Job A / B / D counters, thresholds, schedules and the Telegram/Brevo
+  send logic are untouched. If the DB read fails the figure degrades to
+  None (per-cycle line omits it) / "n/a" (daily) rather than a false 0.
+
 v2.9  (2026-08-10) — Revert v2.8 Telegram pause:
   REVERTED — Telegram connectivity confirmed restored via --selftest on
               2026-08-10; the ISP/firewall block from 2026-08-04 appears
@@ -284,6 +304,10 @@ JOB_FLAGS = {
 # cycle before alerting — avoids noise from a single blip).
 FLAG_MAX_AGE_MIN = 180
 
+# v2.10 — window for the per-cycle "events fired this round" figure
+# (Job C count from events_log). The watchdog's own task cadence is hourly.
+CYCLE_WINDOW_MIN = 60
+
 # How many lines to scan from the end of each log file
 LOG_TAIL_LINES = 100
 
@@ -498,6 +522,35 @@ def extract_run_count(log_path, pattern, zero_indicator=None, start_marker=None)
     except Exception:
         pass
     return None
+
+
+def _count_capi_fired_this_cycle():
+    """
+    (v2.10) Job C's per-cycle figure: events_log rows fired in the last
+    CYCLE_WINDOW_MIN minutes. None if the DB read fails (the report then
+    omits the count rather than showing a false 0).
+    """
+    try:
+        now = datetime.now()
+        start = (now - timedelta(minutes=CYCLE_WINDOW_MIN)).strftime("%Y-%m-%d %H:%M:%S")
+        return cls_db.count_events_fired_between(start, now.strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception as e:
+        log(f"Could not count CAPI fires from events_log: {e}", "WARNING")
+        return None
+
+
+def _count_capi_fired_today():
+    """
+    (v2.10) Daily headline: events_log rows fired today — the same rows
+    cls_db.get_daily_owner_summary() splits per salesperson, so the two
+    always agree. "n/a" if the DB read fails (never a false 0).
+    """
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        return cls_db.count_events_fired_between(f"{today} 00:00:00", f"{today} 23:59:59")
+    except Exception as e:
+        log(f"Could not count today's CAPI fires from events_log: {e}", "WARNING")
+        return "n/a"
 
 
 def extract_daily_cycle_info(log_path, pattern):
@@ -875,12 +928,16 @@ def run(force_alert=False):
             r"Stage changes detected this run: (\d+)",
             start_marker="CLS JOB B — Sell.do -> CLS Sync — START",
         ),
-        "Job C (CAPI Firer)": extract_run_count(
-            JOB_LOG_FILES["Job C (CAPI Firer)"],
-            r"Marked (\d+) leads as fired",
-            zero_indicator="No stage changes to fire this run",
-            start_marker="CLS JOB C — CAPI Firer — START",
-        ),
+        # PAUSED — dead since Job C v3.0 rewrite (2026-08-14): the log line
+        # "Marked N leads as fired" no longer exists. Replaced by
+        # _count_capi_fired_this_cycle() (events_log) — v2.10.
+        # "Job C (CAPI Firer)": extract_run_count(
+        #     JOB_LOG_FILES["Job C (CAPI Firer)"],
+        #     r"Marked (\d+) leads as fired",
+        #     zero_indicator="No stage changes to fire this run",
+        #     start_marker="CLS JOB C — CAPI Firer — START",
+        # ),
+        "Job C (CAPI Firer)": _count_capi_fired_this_cycle(),
         "Job D (Email Drip)": extract_run_count(
             JOB_LOG_FILES["Job D (Email Drip)"],
             r"TOTAL: (\d+) sent, \d+ failed",
@@ -999,10 +1056,14 @@ def run(force_alert=False):
             JOB_LOG_FILES["Job B (Sell.do Sync)"],
             r"Stage changes detected this run: (\d+)",
         )
-        c_total = extract_daily_total(
-            JOB_LOG_FILES["Job C (CAPI Firer)"],
-            r"Marked (\d+) leads as fired",
-        )
+        # PAUSED — dead since Job C v3.0 rewrite (2026-08-14): the log line
+        # "Marked N leads as fired" no longer exists. Replaced by the
+        # events_log count for today — v2.10.
+        # c_total = extract_daily_total(
+        #     JOB_LOG_FILES["Job C (CAPI Firer)"],
+        #     r"Marked (\d+) leads as fired",
+        # )
+        c_total = _count_capi_fired_today()
         log(f"Daily totals — A:{a_total} leads | B:{b_total} changes | C:{c_total} fired")
 
         # v2.4 — actual cycle count/window, computed instead of hardcoded
