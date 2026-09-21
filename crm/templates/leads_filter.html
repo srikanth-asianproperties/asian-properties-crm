@@ -1,4 +1,4 @@
-{# leads_filter.html (v0.10) — dedicated filter screen (items 8 of
+{# leads_filter.html (v0.11) — dedicated filter screen (items 8 of
    Srikanth's spec). His spec described a two-pane "list of categories
    on the left, options revealed per category" layout — that's a
    desktop pattern that doesn't fit a phone-width screen, so this
@@ -11,6 +11,14 @@
    One GET form, submitted once via "Apply Filters" at the bottom —
    not per-category — so every selection across every category applies
    together in a single request, same as the old top-bar form did.
+
+   v0.11 (2026-09-21) — "Source" + "Sub-source" accordions replaced by
+   "Lead Source" (radio, name="lead_origin", effective origin) and
+   "Captured via" (radio, name="source", raw leads.source). "Date
+   Range" relabelled "Created Date"; stage-reason "Any / not set" ->
+   "Any". Requires app.py v0.77 / cls_db.py v2.95. An old ?sub_source=
+   bookmark is still honoured by the list and carried through as a
+   hidden input so applying filters doesn't silently drop it.
 
    v0.10 — Campaign field is now a datalist-backed text input
    (campaign_options=cls_db.get_distinct_campaigns(), app.py v0.70) —
@@ -68,13 +76,14 @@
 
 <form method="get" action="{{ url_for('leads_list') }}" id="filterForm">
   <input type="hidden" name="q" value="{{ filters.q }}">
+  {% if filters.sub_source %}<input type="hidden" name="sub_source" value="{{ filters.sub_source }}">{% endif %}
 
   <div id="filterAccordion">
 
-    {# ── DATE RANGE ── (v0.8: quick-select dropdown, item 4) #}
+    {# ── CREATED DATE ── (v0.8: quick-select dropdown, item 4) #}
     <div class="filter-accordion-item{% if filters.date_preset %} open{% endif %}" data-fa="date">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('date')">
-        <span>Date Range{% if filters.date_preset %}<span class="fa-current"> · {{ date_preset_labels.get(filters.date_preset, 'Custom') }}</span>{% endif %}</span>
+        <span>Created Date{% if filters.date_preset %}<span class="fa-current"> · {{ date_preset_labels.get(filters.date_preset, 'Custom') }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
@@ -130,7 +139,7 @@
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="stage_reason" value="" {% if not filters.stage_reason %}checked{% endif %}> Any / not set</label>
+        <label class="opt-row"><input type="radio" name="stage_reason" value="" {% if not filters.stage_reason %}checked{% endif %}> Any</label>
         {% for r in stage_reasons %}
         <label class="opt-row"><input type="radio" name="stage_reason" value="{{ r }}" {% if filters.stage_reason == r %}checked{% endif %}> {{ r }}</label>
         {% endfor %}
@@ -166,30 +175,34 @@
       </div>
     </div>
 
-    {# ── SOURCE ── #}
-    <div class="filter-accordion-item{% if filters.source %} open{% endif %}" data-fa="source">
-      <button type="button" class="filter-accordion-header" onclick="toggleFA('source')">
-        <span>Source{% if filters.source %}<span class="fa-current"> · {{ filters.source }}</span>{% endif %}</span>
+    {# ── LEAD SOURCE (v0.11) — effective origin: lead_source_detail if set,
+         else derived from leads.source. Submits lead_origin. #}
+    <div class="filter-accordion-item{% if filters.lead_origin %} open{% endif %}" data-fa="leadsource">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('leadsource')">
+        <span>Lead Source{% if filters.lead_origin %}<span class="fa-current"> · {{ filters.lead_origin }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="source" value="" {% if not filters.source %}checked{% endif %}> All sources</label>
-        {% for s in source_options %}
-        <label class="opt-row"><input type="radio" name="source" value="{{ s }}" {% if filters.source == s %}checked{% endif %}> {{ s }}</label>
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:6px;">Meta includes form leads and people who called from the ad</div>
+        <label class="opt-row"><input type="radio" name="lead_origin" value="" {% if not filters.lead_origin %}checked{% endif %}> Any</label>
+        {% for o in origin_options %}
+        <label class="opt-row"><input type="radio" name="lead_origin" value="{{ o }}" {% if filters.lead_origin == o %}checked{% endif %}> {{ o }}</label>
         {% endfor %}
       </div>
     </div>
 
-    {# ── SUB-SOURCE ── #}
-    <div class="filter-accordion-item{% if filters.sub_source %} open{% endif %}" data-fa="subsource">
-      <button type="button" class="filter-accordion-header" onclick="toggleFA('subsource')">
-        <span>Sub-source{% if filters.sub_source %}<span class="fa-current"> · {{ filters.sub_source }}</span>{% endif %}</span>
+    {# ── CAPTURED VIA (v0.11) — raw leads.source. Submits source, so old
+         ?source= bookmarks keep working. #}
+    <div class="filter-accordion-item{% if filters.source %} open{% endif %}" data-fa="capturedvia">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('capturedvia')">
+        <span>Captured via{% if filters.source %}<span class="fa-current"> · {{ captured_via_options.get(filters.source, filters.source) }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
-        <label class="opt-row"><input type="radio" name="sub_source" value="" {% if not filters.sub_source %}checked{% endif %}> Any</label>
-        {% for s in sub_source_options %}
-        <label class="opt-row"><input type="radio" name="sub_source" value="{{ s }}" {% if filters.sub_source == s %}checked{% endif %}> {{ s }}</label>
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:6px;">Use with Lead Source = Meta to split form leads from call-ins</div>
+        <label class="opt-row"><input type="radio" name="source" value="" {% if not filters.source %}checked{% endif %}> Any</label>
+        {% for key, label in captured_via_options.items() %}
+        <label class="opt-row"><input type="radio" name="source" value="{{ key }}" {% if filters.source == key %}checked{% endif %}> {{ label }}</label>
         {% endfor %}
       </div>
     </div>

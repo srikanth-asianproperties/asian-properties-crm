@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.76
+Version : 0.77
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,17 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.77 (2026-09-21) — Unified "Lead Source" filter + "Captured via"
+  (requires cls_db.py v2.95). No schema/data change.
+    - _parse_lead_filters(): NEW "lead_origin" key. Old ?source= /
+      ?sub_source= keys are unchanged and still work.
+    - leads_list(): passes lead_origin through to get_leads_page().
+    - leads_filter_screen(): passes origin_options (Lead Source radio)
+      and captured_via_options (Captured via radio) instead of the old
+      source_options / sub_source_options.
+    - lead_origin_for + CAPTURED_VIA_LABELS exposed as Jinja globals
+      (lead_detail.html's "Lead source" / "Captured via" fields).
+
 v0.76 (2026-09-18) — CORRECTION to v0.75 item 2: the geofence picker's
   maps_api_key context var now reads a NEW, dedicated env var,
   CLS_MAPS_JS_API_KEY, instead of CLS_MAPS_API_KEY — settings_
@@ -2379,6 +2390,11 @@ def fmt_phone_filter(value):
     return f"+91 {digits[:5]} {digits[5:]}"
 
 
+# v0.77 — lead_detail.html's "Lead source" / "Captured via" fields.
+app.jinja_env.globals["lead_origin_for"] = cls_db.lead_origin_for
+app.jinja_env.globals["CAPTURED_VIA_LABELS"] = cls_db.CAPTURED_VIA_LABELS
+
+
 @app.template_filter("ampm")
 def ampm_filter(value):
     """
@@ -3840,6 +3856,7 @@ def _parse_lead_filters():
         "campaign":      request.args.get("campaign") or "",
         "source":        request.args.get("source") or "",
         "sub_source":    request.args.get("sub_source") or "",
+        "lead_origin":   request.args.get("lead_origin") or "",
         "budget":        request.args.get("budget") or "",
         "configuration": request.args.getlist("configuration"),
         "property_type": request.args.getlist("property_type"),
@@ -3995,6 +4012,7 @@ def leads_list():
             facing=f["facing"] or None,
             search_all_owners=(not company_wide),
             stages=f["stages"] or None,
+            lead_origin=f["lead_origin"] or None,
         )
 
     # v0.5 — lead scoring. Only the CURRENT PAGE of rows gets scored
@@ -4078,8 +4096,8 @@ def leads_filter_screen():
         # stay filterable here, so this filter list still covers both.
         # dict.fromkeys() dedupes while preserving first-seen order.
         stage_reasons=list(dict.fromkeys(cls_db.LOST_REASONS + cls_db.UNQUALIFIED_REASONS)),
-        source_options=cls_db.SOURCE_OPTIONS,
-        sub_source_options=cls_db.MANUAL_SOURCE_OPTIONS,
+        origin_options=cls_db.get_lead_origin_options(),
+        captured_via_options=cls_db.CAPTURED_VIA_LABELS,
         budget_options=cls_db.BUDGET_BRACKETS,
         configuration_options=cls_db.CONFIGURATIONS,
         property_type_options=cls_db.PROPERTY_TYPES,

@@ -1,7 +1,10 @@
-{# leads_search.html (v0.11) — dedicated search screen (item 7 of
+{# leads_search.html (v0.12) — dedicated search screen (item 7 of
    Srikanth's spec). Every OTHER currently-active filter is carried
    forward as a hidden input so searching doesn't silently clear a
    filter someone already set.
+
+   v0.12 (2026-09-21) — lead_origin (unified Lead Source filter, app.py
+   v0.77) carried forward: new hidden input + on the "Clear search" link.
 
    v0.11 (2026-08-09) — Caption updated for cls_db.py v2.51's rewritten
    search classification: "#"/"apx-" now does an EXACT lead-ID match
@@ -57,6 +60,7 @@
   <input type="hidden" name="campaign" value="{{ filters.campaign }}">
   <input type="hidden" name="source" value="{{ filters.source }}">
   <input type="hidden" name="sub_source" value="{{ filters.sub_source }}">
+  <input type="hidden" name="lead_origin" value="{{ filters.lead_origin }}">
   <input type="hidden" name="budget" value="{{ filters.budget }}">
   {% for v in filters.configuration %}<input type="hidden" name="configuration" value="{{ v }}">{% endfor %}
   {% for v in filters.property_type %}<input type="hidden" name="property_type" value="{{ v }}">{% endfor %}
@@ -65,7 +69,7 @@
   <div class="write-form-row">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if filters.q %}
-    <a href="{{ url_for('leads_list', stages=filters.stages, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, date_preset=filters.date_preset, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" class="btn">Clear search</a>
+    <a href="{{ url_for('leads_list', stages=filters.stages, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, date_preset=filters.date_preset, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, lead_origin=filters.lead_origin, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" class="btn">Clear search</a>
     {% endif %}
   </div>
 </form>

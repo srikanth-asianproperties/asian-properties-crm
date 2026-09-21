@@ -1,4 +1,9 @@
-{# lead_detail.html v15 (2026-08-31) — Manual Project Editor (Part A):
+{# lead_detail.html v16 (2026-09-21) — "Source" + conditional "Source detail"
+   fields replaced by "Lead source" (effective origin via lead_origin_for)
+   and "Captured via" (CAPTURED_VIA_LABELS); app.py v0.77 / cls_db.py
+   v2.95. Match tier + admin "Change source" control unchanged.
+
+   v15 (2026-08-31) — Manual Project Editor (Part A):
    NEW "Project" <select name="project_bucket"> field added as the FIRST
    field in the existing "Edit property details" form (before Funding
    source) — populated from project_buckets (already passed into this
@@ -536,8 +541,12 @@
           <div class="field-value">{{ lead.lead_owner or '—' }}</div>
         </div>
         <div>
-          <div class="field-label">Source</div>
-          <div class="field-value">{{ lead.source or '—' }}</div>
+          <div class="field-label">Lead source</div>
+          <div class="field-value">{{ lead_origin_for(lead) }}</div>
+        </div>
+        <div>
+          <div class="field-label">Captured via</div>
+          <div class="field-value">{{ CAPTURED_VIA_LABELS.get(lead.source, lead.source or '—') }}</div>
         </div>
         <div>
           <div class="field-label">Match tier</div>
@@ -555,12 +564,6 @@
         <div>
           <div class="field-label">Sell.do profile</div>
           <div class="field-value"><a href="{{ lead.selldo_url }}" target="_blank" rel="noopener">Open in Sell.do ↗</a></div>
-        </div>
-        {% endif %}
-        {% if lead.lead_source_detail %}
-        <div>
-          <div class="field-label">Source detail</div>
-          <div class="field-value">{{ lead.lead_source_detail }}</div>
         </div>
         {% endif %}
         <div>

@@ -2,11 +2,33 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.94
+Version : 2.95
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.95 (2026-09-21) — Unified "Lead Source" filter + "Captured via".
+  ADDITIVE ONLY, no schema change, no data change: leads.source and
+  leads.lead_source_detail stay exactly as stored — only how they are
+  READ changes. "Effective origin" = lead_source_detail if non-blank,
+  else by leads.source (meta -> "Meta", selldo_only -> "Sell.do",
+  manual_crm -> "Manually Entered", anything else/blank -> "Not
+  Available"), so "Meta" = form leads + manually-entered "Meta" callers.
+    - NEW config constants (next to SOURCE_DISPLAY_LABELS):
+      CAPTURED_VIA_LABELS (raw leads.source -> "how it got into the
+      CRM" label), ORIGIN_FALLBACK_LABELS, ORIGIN_UNKNOWN_LABEL.
+    - NEW lead_origin_sql(alias="") — the SQL expression for effective
+      origin, built ONLY from those constants (never user input).
+    - NEW get_lead_origin_options() — ordered option list for the
+      filter screen / Booking Summary dropdown.
+    - NEW lead_origin_for(lead_row) — Python twin of the SQL, same rules.
+    - _build_lead_filter_where(), get_leads_page(), get_leads_matching():
+      NEW optional lead_origin kwarg -> "{lead_origin_sql()} = ?". The
+      old source/sub_source kwargs are untouched and still work (old
+      bookmarked URLs keep working; "Captured via" reuses `source`).
+    - get_source_performance() / ad reports / Bulk Reassign / Export /
+      cls_capi_* are NOT touched by this change.
+
 v2.94 (2026-09-18) — Task 8 item 4: re-engaged leads now re-route via
   current campaign rules. *** BEHAVIOR CHANGE, not purely additive ***
   — this changes existing lead-routing semantics: upsert_meta_lead()'s
@@ -3032,6 +3054,78 @@ SOURCE_DISPLAY_LABELS = {
     "manual_crm": "Manually Entered",
 }
 
+# v2.95 — "Captured via": HOW a lead got into the CRM (raw leads.source),
+# as opposed to the effective ORIGIN below (where the lead came from).
+# Config-not-code; display/filter layer only, leads.source is unchanged.
+CAPTURED_VIA_LABELS = {
+    "meta": "Meta (auto-captured)",
+    "selldo_only": "Sell.do (legacy import)",
+    "manual_crm": "Manually entered",
+}
+
+# v2.95 — effective-origin fallback labels, used when a lead has no
+# lead_source_detail. Same 3 values as SOURCE_DISPLAY_LABELS on purpose
+# (copied, not aliased, so changing one dict never silently retitles
+# the other). Anything else / blank source -> ORIGIN_UNKNOWN_LABEL.
+ORIGIN_FALLBACK_LABELS = dict(SOURCE_DISPLAY_LABELS)
+ORIGIN_UNKNOWN_LABEL = "Not Available"
+
+
+def _sql_str(value):
+    """Single-quote-escape a CONFIG constant for inline SQL (never user input)."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def lead_origin_sql(alias=""):
+    """
+    (v2.95) SQL expression for a lead's EFFECTIVE ORIGIN: lead_source_detail
+    if non-blank, else a label derived from leads.source. Built only from
+    the config constants above — never from request input — so it is safe
+    to inline. `alias` is the leads-table alias (e.g. "l"), or "" for none.
+    """
+    p = f"{alias}." if alias else ""
+    whens = " ".join(f"WHEN {_sql_str(k)} THEN {_sql_str(v)}"
+                     for k, v in ORIGIN_FALLBACK_LABELS.items())
+    return (f"COALESCE(NULLIF(TRIM({p}lead_source_detail), ''), "
+            f"CASE {p}source {whens} ELSE {_sql_str(ORIGIN_UNKNOWN_LABEL)} END)")
+
+
+def lead_origin_for(lead_row):
+    """
+    (v2.95) Python twin of lead_origin_sql() — same rules, for rendering a
+    single already-loaded lead (dict or sqlite3.Row).
+    """
+    if lead_row is None or not hasattr(lead_row, "keys"):
+        return ORIGIN_UNKNOWN_LABEL
+    keys = lead_row.keys()
+    detail = ((lead_row["lead_source_detail"] if "lead_source_detail" in keys else None) or "").strip()
+    if detail:
+        return detail
+    src = lead_row["source"] if "source" in keys else None
+    return ORIGIN_FALLBACK_LABELS.get(src, ORIGIN_UNKNOWN_LABEL)
+
+
+def get_lead_origin_options():
+    """
+    (v2.95) Ordered options for the Lead Source filter / Booking Summary
+    dropdown: MANUAL_SOURCE_OPTIONS, then the Sell.do and Manually Entered
+    fallbacks, plus "Not Available" only if such leads actually exist.
+    """
+    options = list(MANUAL_SOURCE_OPTIONS)
+    for label in (ORIGIN_FALLBACK_LABELS["selldo_only"], ORIGIN_FALLBACK_LABELS["manual_crm"]):
+        if label not in options:
+            options.append(label)
+    conn = _connect()
+    try:
+        row = conn.execute(
+            f"SELECT 1 FROM leads WHERE {lead_origin_sql()} = ? LIMIT 1",
+            (ORIGIN_UNKNOWN_LABEL,)).fetchone()
+        if row:
+            options.append(ORIGIN_UNKNOWN_LABEL)
+    finally:
+        conn.close()
+    return options
+
 # v2.31 — Leads to Booking Summary's "Site Visits By Status" breakdown.
 # Sell.do's own report has 6 states (Missed/Conducted/Cancelled/
 # Scheduled/Pending/Dropped); our site_visits.status column only has 4
@@ -4947,7 +5041,7 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
                              sub_source=None, budget=None, configuration=None,
                              property_type=None, facing=None,
                              search_all_owners=False, stages=None, owners=None,
-                             project=None):
+                             project=None, lead_origin=None):
     """
     (v2.28) The WHERE-clause builder shared by get_leads_page() and
     get_leads_matching() — extracted out of get_leads_page() verbatim
@@ -5068,6 +5162,12 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
         where.append("lead_source_detail = ?")
         params.append(sub_source)
 
+    # v2.95 — unified Lead Source filter: exact match on the EFFECTIVE
+    # origin (lead_source_detail if non-blank, else derived from source).
+    if lead_origin:
+        where.append(f"{lead_origin_sql()} = ?")
+        params.append(lead_origin)
+
     if budget:
         where.append("budget = ?")
         params.append(budget)
@@ -5094,7 +5194,7 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
                    sort_by="recent", stage_reason=None, campaign=None,
                    campaigns=None, source=None, sub_source=None, budget=None,
                    configuration=None, property_type=None, facing=None,
-                   search_all_owners=False, stages=None):
+                   search_all_owners=False, stages=None, lead_origin=None):
     """
     Paginated, filterable lead list for the CRM's /leads screen.
 
@@ -5132,6 +5232,10 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
     sub_source  : exact match on leads.lead_source_detail (the manual-
                   entry source detail, MANUAL_SOURCE_OPTIONS) — a
                   DIFFERENT column from `source`, see v2.5 changelog.
+    lead_origin : v2.95 — exact match on the EFFECTIVE origin
+                  (lead_origin_sql()): lead_source_detail if non-blank,
+                  else derived from leads.source. Independent of, and
+                  additive alongside, source/sub_source above.
     budget      : exact match on leads.budget.
     configuration, property_type, facing : each a LIST of selected
                   checkbox values. A lead matches if ANY value in the
@@ -5170,7 +5274,7 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
             budget=budget, configuration=configuration,
             property_type=property_type, facing=facing,
             search_all_owners=search_all_owners, stages=stages,
-            project=project,
+            project=project, lead_origin=lead_origin,
         )
         order_sql = SORT_OPTIONS.get(sort_by, SORT_OPTIONS["recent"])
 
@@ -5221,7 +5325,8 @@ def get_leads_matching(stage=None, project=None, search=None, owner=None,
                        date_from=None, date_to=None, stage_reason=None,
                        campaign=None, campaigns=None, source=None,
                        sub_source=None, budget=None, configuration=None,
-                       property_type=None, facing=None, stages=None, owners=None):
+                       property_type=None, facing=None, stages=None, owners=None,
+                       lead_origin=None):
     """
     (v2.28) Unpaginated sibling of get_leads_page() — returns EVERY
     matching lead row (full dicts, including project_bucket), not one
@@ -5255,6 +5360,7 @@ def get_leads_matching(stage=None, project=None, search=None, owner=None,
             budget=budget, configuration=configuration,
             property_type=property_type, facing=facing,
             stages=stages, owners=owners, project=project,
+            lead_origin=lead_origin,
         )
         all_rows = conn.execute(f"""
             SELECT cls_id, full_name, phone_raw, phone_norm, email_raw,
