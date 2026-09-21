@@ -2,11 +2,31 @@
 =============================================================
 cls_watchdog.py  —  CLS Health Monitor & Alert System
 =============================================================
-Version : 2.10
+Version : 2.11
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.11 (2026-09-21) — Slimmed so the task can be re-enabled safely. Job B
+  (Sell.do sync) was retired 2026-08-18 and Job D (email drip) is paused, so
+  their flags/logs are stale forever and would raise STALE / "log not
+  updated" alerts every cycle. Every Job B / Job D reference is now a
+  "# PAUSED — Job B retired 2026-08-18" / "# PAUSED — Job D paused"
+  comment (nothing deleted; un-comment to restore):
+    - JOB_LOG_FILES, JOB_FLAGS, _COUNT_SUFFIXES, the per-cycle flag_counts
+      entries, the "Counts this cycle" log line, and the daily-summary B
+      total ("Stage changes" company line + b_total). compose_daily_summary()
+      keeps its signature; b_total=None just omits that line. The
+      per-salesperson breakdown is unchanged (it counts CRM stage changes
+      from the DB, not Job B).
+    - The alert footer now points at D:\CLS\*_log.txt (was the frozen
+      C:\CLS path) — text only.
+  Jobs A and C, all thresholds (FLAG_MAX_AGE_MIN 180, 4 h log age),
+  check_database_accessible() and the send logic are UNCHANGED. Pair this
+  with run_cls_watchdog.bat -> CLS_DB_PATH=D:\CLS\CLS1.db (was CLS2.db,
+  the frozen Sell.do mirror): the DB checks, pending-fire count and the
+  v2.10 events_log CAPI counts must read CLS1.db.
+
 v2.10 (2026-09-21) — Job C "events fired" now counted from events_log
   (cls_db.py v2.98 count_events_fired_between()) instead of scraping
   Job C's log for "Marked N leads as fired" — that line stopped existing
@@ -286,17 +306,21 @@ SNAPSHOT_FILE  = os.path.join(BASE_DIR, "cls_watchdog_snapshot.json")
 # Log files to inspect for [ERROR] lines and activity counts
 JOB_LOG_FILES = {
     "Job A (Meta Fetcher)": os.path.join(BASE_DIR, "meta_leads_log.txt"),
-    "Job B (Sell.do Sync)": os.path.join(BASE_DIR, "selldo_cls_log.txt"),
+    # PAUSED — Job B retired 2026-08-18
+    # "Job B (Sell.do Sync)": os.path.join(BASE_DIR, "selldo_cls_log.txt"),
     "Job C (CAPI Firer)"  : os.path.join(BASE_DIR, "cls_capi_log.txt"),
-    "Job D (Email Drip)"  : os.path.join(BASE_DIR, "cls_drip_log.txt"),
+    # PAUSED — Job D paused
+    # "Job D (Email Drip)"  : os.path.join(BASE_DIR, "cls_drip_log.txt"),
 }
 
 # Completion flags to check (from cls_flags.json)
 JOB_FLAGS = {
     "Job A (Meta Fetcher)": "meta_fetch",
-    "Job B (Sell.do Sync)": "selldo_sync",
-    "Job C (CAPI Firer)"  : "capi_fire",   # flag set at line 568 of cls_capi_firer.py
-    "Job D (Email Drip)"  : "email_drip",  # flag set at line 894 of cls_email_drip.py
+    # PAUSED — Job B retired 2026-08-18
+    # "Job B (Sell.do Sync)": "selldo_sync",
+    "Job C (CAPI Firer)"  : "capi_fire",   # set on EVERY queue-mode run (cls_capi_firer.py v3.3+, ~15 min)
+    # PAUSED — Job D paused
+    # "Job D (Email Drip)"  : "email_drip",  # flag set at line 894 of cls_email_drip.py
 }
 
 # How old (in minutes) a flag is allowed to be before we alert.
@@ -755,9 +779,11 @@ def compose_cycle_report(flag_results, log_results, pending_count, has_problems,
     # Human-friendly suffix for each job's count
     _COUNT_SUFFIXES = {
         "Job A (Meta Fetcher)": "new leads fetched",
-        "Job B (Sell.do Sync)": "stage changes",
+        # PAUSED — Job B retired 2026-08-18
+        # "Job B (Sell.do Sync)": "stage changes",
         "Job C (CAPI Firer)"  : "events fired",
-        "Job D (Email Drip)"  : "emails sent",
+        # PAUSED — Job D paused
+        # "Job D (Email Drip)"  : "emails sent",
     }
 
     # Flag results per job — with optional per-cycle count appended
@@ -789,7 +815,7 @@ def compose_cycle_report(flag_results, log_results, pending_count, has_problems,
         lines += [
             "",
             "─────────────────────────",
-            "⚠️ <b>Action required.</b> Check C:\\CLS\\*_log.txt",
+            "⚠️ <b>Action required.</b> Check D:\\CLS\\*_log.txt",
             "Run: <code>python cls_watchdog.py</code> after fixing.",
         ]
 
@@ -827,9 +853,12 @@ def compose_daily_summary(a_total, b_total, c_total,
         f"📋 <b>CLS Daily Summary — {today_str}</b>",
         "",
         f"📥 New leads fetched    : <b>{a_total}</b>",
-        f"🔄 Stage changes        : <b>{b_total}</b>",
-        f"🚀 CAPI events fired    : <b>{c_total}</b>",
     ]
+    # PAUSED — Job B retired 2026-08-18 (b_total came from Job B's log).
+    # Kept as an optional argument: pass a number to show the line again.
+    if b_total is not None:
+        lines.append(f"🔄 Stage changes        : <b>{b_total}</b>")
+    lines.append(f"🚀 CAPI events fired    : <b>{c_total}</b>")
 
     if owner_summary:
         lines += ["", "<b>── By Salesperson ──</b>"]
@@ -923,11 +952,12 @@ def run(force_alert=False):
             r"TOTAL: \d+ pulled, (\d+) upserted",
             start_marker="CLS JOB A — Meta Leads Fetcher — START",
         ),
-        "Job B (Sell.do Sync)": extract_run_count(
-            JOB_LOG_FILES["Job B (Sell.do Sync)"],
-            r"Stage changes detected this run: (\d+)",
-            start_marker="CLS JOB B — Sell.do -> CLS Sync — START",
-        ),
+        # PAUSED — Job B retired 2026-08-18
+        # "Job B (Sell.do Sync)": extract_run_count(
+        #     JOB_LOG_FILES["Job B (Sell.do Sync)"],
+        #     r"Stage changes detected this run: (\d+)",
+        #     start_marker="CLS JOB B — Sell.do -> CLS Sync — START",
+        # ),
         # PAUSED — dead since Job C v3.0 rewrite (2026-08-14): the log line
         # "Marked N leads as fired" no longer exists. Replaced by
         # _count_capi_fired_this_cycle() (events_log) — v2.10.
@@ -938,17 +968,22 @@ def run(force_alert=False):
         #     start_marker="CLS JOB C — CAPI Firer — START",
         # ),
         "Job C (CAPI Firer)": _count_capi_fired_this_cycle(),
-        "Job D (Email Drip)": extract_run_count(
-            JOB_LOG_FILES["Job D (Email Drip)"],
-            r"TOTAL: (\d+) sent, \d+ failed",
-            start_marker="CLS JOB D — Email Drip — START",
-        ),
+        # PAUSED — Job D paused
+        # "Job D (Email Drip)": extract_run_count(
+        #     JOB_LOG_FILES["Job D (Email Drip)"],
+        #     r"TOTAL: (\d+) sent, \d+ failed",
+        #     start_marker="CLS JOB D — Email Drip — START",
+        # ),
     }
+    # PAUSED — Job B retired 2026-08-18 / Job D paused: "B:" and "D:" removed.
+    # log(f"Counts this cycle — "
+    #     f"A:{flag_counts['Job A (Meta Fetcher)']} "
+    #     f"B:{flag_counts['Job B (Sell.do Sync)']} "
+    #     f"C:{flag_counts['Job C (CAPI Firer)']} "
+    #     f"D:{flag_counts['Job D (Email Drip)']}")
     log(f"Counts this cycle — "
         f"A:{flag_counts['Job A (Meta Fetcher)']} "
-        f"B:{flag_counts['Job B (Sell.do Sync)']} "
-        f"C:{flag_counts['Job C (CAPI Firer)']} "
-        f"D:{flag_counts['Job D (Email Drip)']}")
+        f"C:{flag_counts['Job C (CAPI Firer)']}")
 
     # ── Check 3: Log files — collect per-job results ──
     log("--- Check 3: Log files for errors ---")
@@ -1052,10 +1087,12 @@ def run(force_alert=False):
             JOB_LOG_FILES["Job A (Meta Fetcher)"],
             r"TOTAL: \d+ pulled, (\d+) upserted",
         )
-        b_total = extract_daily_total(
-            JOB_LOG_FILES["Job B (Sell.do Sync)"],
-            r"Stage changes detected this run: (\d+)",
-        )
+        # PAUSED — Job B retired 2026-08-18
+        # b_total = extract_daily_total(
+        #     JOB_LOG_FILES["Job B (Sell.do Sync)"],
+        #     r"Stage changes detected this run: (\d+)",
+        # )
+        b_total = None   # PAUSED — Job B retired 2026-08-18 (omits the line in the summary)
         # PAUSED — dead since Job C v3.0 rewrite (2026-08-14): the log line
         # "Marked N leads as fired" no longer exists. Replaced by the
         # events_log count for today — v2.10.
@@ -1064,7 +1101,8 @@ def run(force_alert=False):
         #     r"Marked (\d+) leads as fired",
         # )
         c_total = _count_capi_fired_today()
-        log(f"Daily totals — A:{a_total} leads | B:{b_total} changes | C:{c_total} fired")
+        # PAUSED — Job B retired 2026-08-18: log(f"Daily totals — A:{a_total} leads | B:{b_total} changes | C:{c_total} fired")
+        log(f"Daily totals — A:{a_total} leads | C:{c_total} fired")
 
         # v2.4 — actual cycle count/window, computed instead of hardcoded
         cycle_count, first_run, last_run = extract_daily_cycle_info(
