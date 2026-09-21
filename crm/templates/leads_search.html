@@ -1,7 +1,10 @@
-{# leads_search.html (v0.12) — dedicated search screen (item 7 of
+{# leads_search.html (v0.13) — dedicated search screen (item 7 of
    Srikanth's spec). Every OTHER currently-active filter is carried
    forward as a hidden input so searching doesn't silently clear a
    filter someone already set.
+
+   v0.13 (2026-09-21) — funding / followup / site_visit / capi_status
+   (app.py v0.80) carried forward: hidden inputs + the "Clear search" link.
 
    v0.12 (2026-09-21) — lead_origin (unified Lead Source filter, app.py
    v0.77) carried forward: new hidden input + on the "Clear search" link.
@@ -61,6 +64,10 @@
   <input type="hidden" name="source" value="{{ filters.source }}">
   <input type="hidden" name="sub_source" value="{{ filters.sub_source }}">
   <input type="hidden" name="lead_origin" value="{{ filters.lead_origin }}">
+  <input type="hidden" name="funding" value="{{ filters.funding }}">
+  <input type="hidden" name="followup" value="{{ filters.followup }}">
+  <input type="hidden" name="site_visit" value="{{ filters.site_visit }}">
+  <input type="hidden" name="capi_status" value="{{ filters.capi_status }}">
   <input type="hidden" name="budget" value="{{ filters.budget }}">
   {% for v in filters.configuration %}<input type="hidden" name="configuration" value="{{ v }}">{% endfor %}
   {% for v in filters.property_type %}<input type="hidden" name="property_type" value="{{ v }}">{% endfor %}
@@ -69,7 +76,7 @@
   <div class="write-form-row">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if filters.q %}
-    <a href="{{ url_for('leads_list', stages=filters.stages, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, date_preset=filters.date_preset, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, lead_origin=filters.lead_origin, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" class="btn">Clear search</a>
+    <a href="{{ url_for('leads_list', stages=filters.stages, project=filters.project, owner=filters.owner, date_from=filters.date_from, date_to=filters.date_to, date_preset=filters.date_preset, sort_by=filters.sort_by, stage_reason=filters.stage_reason, campaign=filters.campaign, source=filters.source, sub_source=filters.sub_source, lead_origin=filters.lead_origin, funding=filters.funding, followup=filters.followup, site_visit=filters.site_visit, capi_status=filters.capi_status, budget=filters.budget, configuration=filters.configuration, property_type=filters.property_type, facing=filters.facing) }}" class="btn">Clear search</a>
     {% endif %}
   </div>
 </form>

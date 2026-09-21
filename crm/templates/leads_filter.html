@@ -1,4 +1,4 @@
-{# leads_filter.html (v0.11) — dedicated filter screen (items 8 of
+{# leads_filter.html (v0.12) — dedicated filter screen (items 8 of
    Srikanth's spec). His spec described a two-pane "list of categories
    on the left, options revealed per category" layout — that's a
    desktop pattern that doesn't fit a phone-width screen, so this
@@ -11,6 +11,12 @@
    One GET form, submitted once via "Apply Filters" at the bottom —
    not per-category — so every selection across every category applies
    together in a single request, same as the old top-bar form did.
+
+   v0.12 (2026-09-21) — NEW accordions: Funding, Follow-up, Site visit,
+   and (admin/manager only — capi_status_options is empty for everyone
+   else, and app.py v0.80 enforces it server-side) CAPI status. Owner
+   gains an "Unassigned" choice (sentinel value from app.py). Requires
+   app.py v0.80 / cls_db.py v2.101.
 
    v0.11 (2026-09-21) — "Source" + "Sub-source" accordions replaced by
    "Lead Source" (radio, name="lead_origin", effective origin) and
@@ -221,6 +227,21 @@
       </div>
     </div>
 
+    {# ── FUNDING (v0.12) ── #}
+    <div class="filter-accordion-item{% if filters.funding %} open{% endif %}" data-fa="funding">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('funding')">
+        <span>Funding{% if filters.funding %}<span class="fa-current"> · {{ 'Not set' if filters.funding == funding_not_set else filters.funding }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="funding" value="" {% if not filters.funding %}checked{% endif %}> Any</label>
+        {% for fs in funding_options %}
+        <label class="opt-row"><input type="radio" name="funding" value="{{ fs }}" {% if filters.funding == fs %}checked{% endif %}> {{ fs }}</label>
+        {% endfor %}
+        <label class="opt-row"><input type="radio" name="funding" value="{{ funding_not_set }}" {% if filters.funding == funding_not_set %}checked{% endif %}> Not set</label>
+      </div>
+    </div>
+
     {# ── CONFIGURATION (multi-select) ── #}
     <div class="filter-accordion-item{% if filters.configuration %} open{% endif %}" data-fa="config">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('config')">
@@ -260,18 +281,65 @@
       </div>
     </div>
 
+    {# ── FOLLOW-UP (v0.12) — same definitions as the dashboard's Due Today / No future activity ── #}
+    <div class="filter-accordion-item{% if filters.followup %} open{% endif %}" data-fa="followup">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('followup')">
+        <span>Follow-up{% if filters.followup %}<span class="fa-current"> · {{ followup_options.get(filters.followup, filters.followup) }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="followup" value="" {% if not filters.followup %}checked{% endif %}> Any</label>
+        {% for key, label in followup_options.items() %}
+        <label class="opt-row"><input type="radio" name="followup" value="{{ key }}" {% if filters.followup == key %}checked{% endif %}> {{ label }}</label>
+        {% endfor %}
+        <div style="font-size:12px; color:var(--ink-soft); margin-top:6px;">"None scheduled" = open leads with no follow-up and no site visit booked (the dashboard's "No future activity").</div>
+      </div>
+    </div>
+
+    {# ── SITE VISIT (v0.12) — a lead matches if ANY of its visits has that status ── #}
+    <div class="filter-accordion-item{% if filters.site_visit %} open{% endif %}" data-fa="sitevisit">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('sitevisit')">
+        <span>Site visit{% if filters.site_visit %}<span class="fa-current"> · {{ site_visit_options.get(filters.site_visit, filters.site_visit) }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="site_visit" value="" {% if not filters.site_visit %}checked{% endif %}> Any</label>
+        {% for key, label in site_visit_options.items() %}
+        <label class="opt-row"><input type="radio" name="site_visit" value="{{ key }}" {% if filters.site_visit == key %}checked{% endif %}> {{ label }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
     {% if can_view_all_owners and owner_options %}
     {# ── OWNER (oversight roles: admin + manager) ── #}
     <div class="filter-accordion-item{% if filters.owner %} open{% endif %}" data-fa="owner">
       <button type="button" class="filter-accordion-header" onclick="toggleFA('owner')">
-        <span>Owner{% if filters.owner %}<span class="fa-current"> · {{ filters.owner }}</span>{% endif %}</span>
+        <span>Owner{% if filters.owner %}<span class="fa-current"> · {{ 'Unassigned' if filters.owner == owner_unassigned else filters.owner }}</span>{% endif %}</span>
         <span class="filter-accordion-chevron">▾</span>
       </button>
       <div class="filter-accordion-body">
         <label class="opt-row"><input type="radio" name="owner" value="" {% if not filters.owner %}checked{% endif %}> Everyone</label>
+        <label class="opt-row"><input type="radio" name="owner" value="{{ owner_unassigned }}" {% if filters.owner == owner_unassigned %}checked{% endif %}> Unassigned</label>
         {% for o in owner_options %}
         <label class="opt-row"><input type="radio" name="owner" value="{{ o }}" {% if filters.owner == o %}checked{% endif %}> {{ o }}</label>
         {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {# ── CAPI STATUS (v0.12) — admin/manager only ── #}
+    {% if capi_status_options %}
+    <div class="filter-accordion-item{% if filters.capi_status %} open{% endif %}" data-fa="capi">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('capi')">
+        <span>CAPI status{% if filters.capi_status %}<span class="fa-current"> · {{ capi_status_options.get(filters.capi_status, filters.capi_status) }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="capi_status" value="" {% if not filters.capi_status %}checked{% endif %}> Any</label>
+        {% for key, label in capi_status_options.items() %}
+        <label class="opt-row"><input type="radio" name="capi_status" value="{{ key }}" {% if filters.capi_status == key %}checked{% endif %}> {{ label }}</label>
+        {% endfor %}
+        <div style="font-size:12px; color:var(--ink-soft); margin-top:6px;">Whether the lead's current stage has been sent to Meta. "By design" = manual leads with no Meta form, and stages that are never sent.</div>
       </div>
     </div>
     {% endif %}

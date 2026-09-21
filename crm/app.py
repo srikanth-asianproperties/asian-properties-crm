@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.79
+Version : 0.80
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,21 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.80 (2026-09-21) — Leads-list filters: Funding, Follow-up, Site visit,
+  CAPI status, "Unassigned" owner (requires cls_db.py v2.101).
+    - _parse_lead_filters(): NEW keys funding / followup / site_visit /
+      capi_status, each validated against cls_db's option sets (an unknown
+      value becomes ""). SECURITY: capi_status and the owner="Unassigned"
+      sentinel are admin/manager ONLY — enforced HERE, server-side, with
+      cls_db.effective_company_wide(user) (so a manager who toggled to
+      individual view is treated like a salesperson). For anyone else
+      capi_status is blanked and the sentinel owner is dropped, whatever
+      the URL says; leads_list() additionally force-scopes a salesperson
+      to their own owner_match_name exactly as before.
+    - leads_list() passes the new filters to get_leads_page().
+    - leads_filter_screen() passes funding/follow-up/site-visit options, and
+      capi_status_options + the Unassigned sentinel for oversight roles only.
+
 v0.79 (2026-09-21) — change_lead_stage(): a successful CAPI result for a
   lead cls_capi_core.is_capi_skipped() (manual lead, no leadgen_id — never
   sent to Meta, cls_capi_core.py v1.2/v1.3) now logs "CAPI skipped
@@ -3859,7 +3874,7 @@ def _parse_lead_filters():
     else:
         active_preset = ""
 
-    return {
+    return _enforce_lead_filter_roles({
         "q":             request.args.get("q") or "",
         "stage":         request.args.get("stage") or "",
         "stages":        request.args.getlist("stages"),
@@ -3878,7 +3893,33 @@ def _parse_lead_filters():
         "configuration": request.args.getlist("configuration"),
         "property_type": request.args.getlist("property_type"),
         "facing":        request.args.getlist("facing"),
-    }
+        # v0.80 — whitelisted; an unknown value is "" (no filter)
+        "funding":       _whitelisted(request.args.get("funding"),
+                                      list(cls_db.FUNDING_SOURCES) + [cls_db.FUNDING_FILTER_NOT_SET]),
+        "followup":      _whitelisted(request.args.get("followup"), cls_db.FOLLOWUP_FILTER_OPTIONS),
+        "site_visit":    _whitelisted(request.args.get("site_visit"), cls_db.SITE_VISIT_FILTER_OPTIONS),
+        "capi_status":   _whitelisted(request.args.get("capi_status"), cls_db.CAPI_STATUS_OPTIONS),
+    })
+
+
+def _whitelisted(value, allowed):
+    """(v0.80) `value` if it is one of `allowed`, else ""."""
+    return value if value and value in allowed else ""
+
+
+def _enforce_lead_filter_roles(f):
+    """
+    (v0.80) SECURITY, server-side: CAPI status and the "Unassigned" owner
+    are for admin/manager only. Anyone else (salesperson, or a manager on
+    individual view) gets capi_status blanked and a sentinel owner dropped,
+    no matter what the URL says. Mutates and returns f.
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    if not (user and cls_db.effective_company_wide(user)):
+        f["capi_status"] = ""
+        if f.get("owner") == cls_db.OWNER_UNASSIGNED:
+            f["owner"] = ""
+    return f
 
 
 def _parse_bulk_filters():
@@ -4030,6 +4071,8 @@ def leads_list():
             search_all_owners=(not company_wide),
             stages=f["stages"] or None,
             lead_origin=f["lead_origin"] or None,
+            funding=f["funding"] or None, followup=f["followup"] or None,
+            site_visit=f["site_visit"] or None, capi_status=f["capi_status"] or None,
         )
 
     # v0.5 — lead scoring. Only the CURRENT PAGE of rows gets scored
@@ -4115,6 +4158,13 @@ def leads_filter_screen():
         stage_reasons=list(dict.fromkeys(cls_db.LOST_REASONS + cls_db.UNQUALIFIED_REASONS)),
         origin_options=cls_db.get_lead_origin_options(),
         captured_via_options=cls_db.CAPTURED_VIA_LABELS,
+        funding_options=cls_db.FUNDING_SOURCES,
+        funding_not_set=cls_db.FUNDING_FILTER_NOT_SET,
+        followup_options=cls_db.FOLLOWUP_FILTER_OPTIONS,
+        site_visit_options=cls_db.SITE_VISIT_FILTER_OPTIONS,
+        # v0.80 — oversight roles only (also enforced in _parse_lead_filters)
+        capi_status_options=cls_db.CAPI_STATUS_OPTIONS if cls_db.effective_company_wide(user) else {},
+        owner_unassigned=cls_db.OWNER_UNASSIGNED,
         budget_options=cls_db.BUDGET_BRACKETS,
         configuration_options=cls_db.CONFIGURATIONS,
         property_type_options=cls_db.PROPERTY_TYPES,

@@ -2,11 +2,41 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.100
+Version : 2.101
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.101 (2026-09-21) — Leads-list filters: Funding, Follow-up, Site visit,
+  CAPI status, and an "Unassigned" owner. ADDITIVE — every new kwarg
+  defaults to None (no filter); no schema change.
+    - NEW config: FUNDING_FILTER_NOT_SET, OWNER_UNASSIGNED ("__unassigned__"
+      — a sentinel that can never be a real name), FOLLOWUP_FILTER_OPTIONS,
+      SITE_VISIT_FILTER_OPTIONS, CAPI_STATUS_OPTIONS.
+    - _build_lead_filter_where(): NEW kwargs funding, followup, site_visit,
+      capi_status (whitelisted — an unknown value is ignored, never reaches
+      SQL); owner == OWNER_UNASSIGNED matches NULL/blank lead_owner.
+      get_leads_page() passes them through. get_leads_matching() and the
+      Bulk Reassign / Export screens are NOT changed.
+    - Follow-up reuses the dashboard's definitions: "Overdue" = a
+      status='scheduled' follow-up dated before today, "Due today" = dated
+      today (together = get_due_today()'s follow-up rows), "Upcoming" =
+      dated after today, "None scheduled" = get_no_future_activity_*()'s
+      exact test (open stage, no scheduled follow-up AND no scheduled site
+      visit). A lead matches Overdue/Due/Upcoming if ANY follow-up does.
+    - Site visit mirrors get_site_visits_by_status_for_period(): scheduled
+      +future = Scheduled, scheduled+past = Missed, conducted, no_show =
+      Didn't Visit, cancelled; "No visit ever" = no site_visits row. A lead
+      matches if ANY of its visits has that status.
+    - CAPI status: capi_status_sql() partitions EVERY lead into exactly one
+      of sent / pending / too_old / by_design, built from the SAME pieces
+      as the Prompt D rule (capi_pending_sql is called, not copied).
+      _capi_needs_event_sql() was split into _capi_eligible_sql() +
+      _capi_event_exists_sql() with an IDENTICAL resulting SQL string.
+      "Sent" = target stage, not guarded, events_log row for (stage,
+      CURRENT leadgen_id) — a re-engaged lead whose only event was under
+      its OLD leadgen_id is pending/too old, not sent (v2.100 rule).
+
 v2.100 (2026-09-21) — Job C self-healing support. A re-engaged lead is
   stamped with a NEW leadgen_id by upsert_meta_lead()'s contact-match
   UPDATE; Meta treats that as a new lead needing its own raw "Incoming"
@@ -2948,6 +2978,31 @@ CAPI_CATCHUP_MAX_AGE_DAYS = 7
 # NOT applied to --catchup (a manual full mode).
 CAPI_PENDING_GRACE_MIN = 10
 
+# v2.101 — Leads-list filter option sets (config-not-code). Keys are the URL
+# values; anything not listed is ignored by _build_lead_filter_where().
+FUNDING_FILTER_NOT_SET = "__not_set__"
+OWNER_UNASSIGNED = "__unassigned__"   # owner-filter sentinel: NULL/blank lead_owner
+FOLLOWUP_FILTER_OPTIONS = {
+    "overdue":  "Overdue",
+    "today":    "Due today",
+    "upcoming": "Upcoming",
+    "none":     "None scheduled",
+}
+SITE_VISIT_FILTER_OPTIONS = {
+    "scheduled": "Scheduled",
+    "missed":    "Missed",
+    "conducted": "Conducted",
+    "no_show":   "Didn't Visit",
+    "cancelled": "Cancelled",
+    "none":      "No visit ever",
+}
+CAPI_STATUS_OPTIONS = {
+    "sent":      "Sent",
+    "pending":   "Not sent — pending",
+    "too_old":   "Not sent — too old",
+    "by_design": "Not sent — by design",
+}
+
 # ── ALL_STAGES + STAGE_TRANSITIONS (v1.8 — CRM v0.5 Writer) ──
 # ALL_STAGES is the COMPLETE 8-stage universe — do not confuse this
 # with TARGET_STAGES above, which is a DIFFERENT, smaller list that
@@ -5136,7 +5191,8 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
                              sub_source=None, budget=None, configuration=None,
                              property_type=None, facing=None,
                              search_all_owners=False, stages=None, owners=None,
-                             project=None, lead_origin=None):
+                             project=None, lead_origin=None, funding=None,
+                             followup=None, site_visit=None, capi_status=None):
     """
     (v2.28) The WHERE-clause builder shared by get_leads_page() and
     get_leads_matching() — extracted out of get_leads_page() verbatim
@@ -5189,8 +5245,11 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
     apply_owner_scope = owner and not (search_all_owners and has_active_search)
 
     if apply_owner_scope:
-        where.append("LOWER(lead_owner) = LOWER(?)")
-        params.append(owner)
+        if owner == OWNER_UNASSIGNED:   # v2.101 — sentinel, never a real name
+            where.append("(lead_owner IS NULL OR TRIM(lead_owner) = '')")
+        else:
+            where.append("LOWER(lead_owner) = LOWER(?)")
+            params.append(owner)
 
     if owners:
         ors = " OR ".join("LOWER(lead_owner) = LOWER(?)" for _ in owners)
@@ -5267,6 +5326,43 @@ def _build_lead_filter_where(stage=None, search=None, owner=None,
         where.append("budget = ?")
         params.append(budget)
 
+    # ── v2.101 filters (all whitelisted; an unknown value is ignored) ──
+    if funding == FUNDING_FILTER_NOT_SET:
+        where.append("(funding_source IS NULL OR TRIM(funding_source) = '')")
+    elif funding in FUNDING_SOURCES:
+        where.append("funding_source = ?")
+        params.append(funding)
+
+    if followup in ("overdue", "today", "upcoming"):
+        op = {"overdue": "<", "today": "=", "upcoming": ">"}[followup]
+        where.append("EXISTS (SELECT 1 FROM follow_ups _f WHERE _f.cls_id = leads.cls_id "
+                     f"AND _f.status = 'scheduled' AND DATE(_f.scheduled_at) {op} DATE(?))")
+        params.append(datetime.now().strftime("%Y-%m-%d"))
+    elif followup == "none":
+        # exactly get_no_future_activity_count()'s test
+        ph = ",".join("?" for _ in RESET_STAGES_ON_REENGAGEMENT)
+        where.append(f"(current_stage NOT IN ({ph}) "
+                     "AND NOT EXISTS (SELECT 1 FROM site_visits _v WHERE _v.cls_id = leads.cls_id AND _v.status = 'scheduled') "
+                     "AND NOT EXISTS (SELECT 1 FROM follow_ups _f WHERE _f.cls_id = leads.cls_id AND _f.status = 'scheduled'))")
+        params.extend(RESET_STAGES_ON_REENGAGEMENT)
+
+    if site_visit in ("scheduled", "missed"):
+        cmp_op = ">=" if site_visit == "scheduled" else "<"
+        where.append("EXISTS (SELECT 1 FROM site_visits _v WHERE _v.cls_id = leads.cls_id "
+                     f"AND _v.status = 'scheduled' AND _v.scheduled_at {cmp_op} ?)")
+        params.append(_now())
+    elif site_visit in ("conducted", "no_show", "cancelled"):
+        where.append("EXISTS (SELECT 1 FROM site_visits _v WHERE _v.cls_id = leads.cls_id AND _v.status = ?)")
+        params.append(site_visit)
+    elif site_visit == "none":
+        where.append("NOT EXISTS (SELECT 1 FROM site_visits _v WHERE _v.cls_id = leads.cls_id)")
+
+    if capi_status in CAPI_STATUS_OPTIONS:
+        frag = capi_status_sql(capi_status)
+        if frag:
+            where.append(f"({frag[0]})")
+            params.extend(frag[1])
+
     if project:
         where.append("project_bucket = ?")
         params.append(project)
@@ -5289,7 +5385,8 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
                    sort_by="recent", stage_reason=None, campaign=None,
                    campaigns=None, source=None, sub_source=None, budget=None,
                    configuration=None, property_type=None, facing=None,
-                   search_all_owners=False, stages=None, lead_origin=None):
+                   search_all_owners=False, stages=None, lead_origin=None,
+                   funding=None, followup=None, site_visit=None, capi_status=None):
     """
     Paginated, filterable lead list for the CRM's /leads screen.
 
@@ -5327,6 +5424,10 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
     sub_source  : exact match on leads.lead_source_detail (the manual-
                   entry source detail, MANUAL_SOURCE_OPTIONS) — a
                   DIFFERENT column from `source`, see v2.5 changelog.
+    funding / followup / site_visit / capi_status : v2.101 — see
+                  _build_lead_filter_where() and FOLLOWUP_FILTER_OPTIONS /
+                  SITE_VISIT_FILTER_OPTIONS / CAPI_STATUS_OPTIONS. Unknown
+                  values are ignored.
     lead_origin : v2.95 — exact match on the EFFECTIVE origin
                   (lead_origin_sql()): lead_source_detail if non-blank,
                   else derived from leads.source. Independent of, and
@@ -5369,7 +5470,8 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
             budget=budget, configuration=configuration,
             property_type=property_type, facing=facing,
             search_all_owners=search_all_owners, stages=stages,
-            project=project, lead_origin=lead_origin,
+            project=project, lead_origin=lead_origin, funding=funding,
+            followup=followup, site_visit=site_visit, capi_status=capi_status,
         )
         order_sql = SORT_OPTIONS.get(sort_by, SORT_OPTIONS["recent"])
 
@@ -11385,11 +11487,10 @@ def get_stale_stage_count(days=90):
 # FIRE STATE  —  Job C:  find what needs firing, record what fired
 # ─────────────────────────────────────────────────────────────
 
-def _capi_needs_event_sql(alias=""):
+def _capi_eligible_sql(alias=""):
     """
-    (v2.99) Rules (a)-(c) of the CAPI safety net, WITHOUT the age window:
-    target stage, not skipped by the manual-lead guard, and no events_log
-    row for (cls_id, current_stage). Returns (sql_fragment, params).
+    (v2.101) Rules (a)+(b) of the CAPI safety net: target stage AND not
+    skipped by the manual-lead guard. Returns (sql_fragment, params).
     """
     # With no alias the outer table is qualified by its real name: inside the
     # correlated subquery a bare `cls_id` would bind to events_log's own column.
@@ -11400,14 +11501,33 @@ def _capi_needs_event_sql(alias=""):
            # (b) same rule as cls_capi_core.is_capi_skipped(); COALESCE keeps
            # a NULL source from turning the NOT(...) into NULL (row dropped).
            f"AND NOT (COALESCE({p}source, '') IN ({skip_ph}) "
-           f"AND ({p}leadgen_id IS NULL OR TRIM(CAST({p}leadgen_id AS TEXT)) = '')) "
-           # (c) never fired (confirmed) at this stage FOR THIS leadgen_id (v2.100:
-           # a re-engaged lead's new leadgen_id is a new lead to Meta). `IS`
-           # so NULL matches NULL (Sell.do-era events_log rows have none).
-           f"AND NOT EXISTS (SELECT 1 FROM events_log _evt "
-           f"WHERE _evt.cls_id = {p}cls_id AND _evt.crm_stage = {p}current_stage "
-           f"AND _evt.leadgen_id IS {p}leadgen_id)")
+           f"AND ({p}leadgen_id IS NULL OR TRIM(CAST({p}leadgen_id AS TEXT)) = ''))")
     return sql, list(TARGET_STAGES) + list(CAPI_SKIP_SOURCES)
+
+
+def _capi_event_exists_sql(alias=""):
+    """
+    (v2.101) Rule (c): an events_log row exists for (cls_id, current_stage,
+    CURRENT leadgen_id) — v2.100: a re-engaged lead's new leadgen_id is a
+    new lead to Meta. `IS` so NULL matches NULL (Sell.do-era events_log rows
+    have none). Returns the EXISTS(...) fragment (no params).
+    """
+    p = f"{alias}." if alias else "leads."
+    return (f"EXISTS (SELECT 1 FROM events_log _evt "
+            f"WHERE _evt.cls_id = {p}cls_id AND _evt.crm_stage = {p}current_stage "
+            f"AND _evt.leadgen_id IS {p}leadgen_id)")
+
+
+def _capi_needs_event_sql(alias=""):
+    """
+    (v2.99) Rules (a)-(c) of the CAPI safety net, WITHOUT the age window:
+    target stage, not skipped by the manual-lead guard, and no events_log
+    row for (cls_id, current_stage, current leadgen_id). Returns
+    (sql_fragment, params). (v2.101: assembled from the two helpers above —
+    the resulting SQL string is unchanged.)
+    """
+    eligible, params = _capi_eligible_sql(alias)
+    return f"{eligible} AND NOT {_capi_event_exists_sql(alias)}", params
 
 
 def _capi_cutoff():
@@ -11494,6 +11614,36 @@ def count_capi_too_old():
         return row["n"]
     finally:
         conn.close()
+
+
+def capi_status_sql(status, alias=""):
+    """
+    (v2.101) SQL fragment + params for the Leads-list "CAPI status" filter.
+    Every lead falls in exactly ONE of:
+      sent      — target stage, not guarded, has an events_log row for its
+                  current stage + current leadgen_id
+      pending   — capi_pending_sql() (the Prompt D rule — called, not copied)
+      too_old   — target stage, not guarded, no such event, stage change
+                  older than CAPI_CATCHUP_MAX_AGE_DAYS (or undated)
+      by_design — guarded manual lead (no leadgen_id) OR stage not in
+                  TARGET_STAGES (incl. no stage)
+    Returns (sql, params), or None for an unknown status.
+    """
+    p = f"{alias}." if alias else "leads."
+    if status == "pending":
+        return capi_pending_sql(alias)
+    eligible, e_params = _capi_eligible_sql(alias)
+    if status == "sent":
+        return f"{eligible} AND {_capi_event_exists_sql(alias)}", e_params
+    if status == "too_old":
+        needs, n_params = _capi_needs_event_sql(alias)
+        return (f"{needs} AND ({p}stage_updated_at IS NULL OR {p}stage_updated_at < ?)",
+                n_params + [_capi_cutoff()])
+    if status == "by_design":
+        # COALESCE: a NULL current_stage makes `eligible` NULL, and NOT NULL
+        # would silently drop the lead from every bucket.
+        return f"NOT COALESCE(({eligible}), 0)", e_params
+    return None
 
 
 def mark_as_fired(cls_id, fired_stage):
