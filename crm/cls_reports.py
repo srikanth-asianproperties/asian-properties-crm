@@ -2,7 +2,7 @@
 =============================================================
 cls_reports.py — Asian Properties CRM (APX) | v0.6.1 Reports Enhancements
 =============================================================
-Version : 1.5
+Version : 1.6
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -85,6 +85,20 @@ don't print reliably, and the underlying table is the honest fallback.
 
 CHANGELOG
 ---------
+v1.6 (2026-09-21) — Lead Stage Analysis v2 (Sell.do parity). Additive.
+    - _stage_breakdown_view(): NEW optional kwargs hide_empty_stages,
+      with_share, chart_type — all default to the old behaviour, so
+      Campaign Stage Distribution (C2) is unaffected. with_share adds a
+      "% of Total" column, "total_leads"/"badge", chart "group_totals"/
+      "grand_total".
+    - _build_lead_stage_analysis(): 5 breakdown views (Owners, Project,
+      Campaign, Source, Sub Source) built with hide_empty_stages/with_share/
+      "grouped_hbar", then "Site Visits" (logic unchanged, retitled, plus a
+      subtitle); returns "tabs": True.
+    - build_report() passes the new "tabs" key through (False elsewhere).
+      export_to_excel() needs no change — one sheet per view (6 now).
+    - REPORTS "lead-stage-analysis": new description + caveat text.
+
 v1.5 (2026-09-02) — Sittings Done, date-range reporting fix. Additive
   only, nothing else touched. Reuses the already-built Salesperson
   Scorecard (date-range picker, Last 7 Days quick-select) rather than
@@ -548,23 +562,46 @@ STAGE_COLORS = {
 }
 
 
-def _stage_breakdown_view(data, group_label):
+def _stage_breakdown_view(data, group_label, hide_empty_stages=False,
+                          with_share=False, chart_type="stacked_bar"):
     """
     (v1.1) Shapes cls_db.get_stage_breakdown()'s {group: {stage: count,
     total}} return into a {columns, rows, chart} view dict — one stacked-
     bar dataset per stage, groups sorted by total desc. Shared by Lead
     Stage Analysis views A/B/C and Campaign Insights C2 (Campaign Stage
     Distribution is exactly view C, reused rather than re-queried).
+
+    (v1.6) Optional kwargs, all defaulting to the original behaviour so
+    Campaign Stage Distribution (C2) is unchanged:
+      hide_empty_stages : drop stages that are 0 across EVERY group from
+          both the chart datasets and the table columns.
+      with_share : add a per-group "% of Total" column, plus "total_leads",
+          "badge" and the chart's "group_totals"/"grand_total".
+      chart_type : the chart's "type" (default "stacked_bar").
     """
     groups = sorted(data.items(), key=lambda kv: -kv[1]["total"])
     labels = [g for g, _ in groups]
+    stages = list(cls_db.ALL_STAGES)
+    if hide_empty_stages:
+        stages = [s for s in stages if any(data[g][s] for g in labels)]
     datasets = [
         {"label": stage, "color": STAGE_COLORS[stage], "data": [data[g][stage] for g in labels]}
-        for stage in cls_db.ALL_STAGES
+        for stage in stages
     ]
-    columns = [("group", group_label)] + [(s, s) for s in cls_db.ALL_STAGES] + [("total", "Total")]
+    columns = [("group", group_label)] + [(s, s) for s in stages] + [("total", "Total")]
     rows = [{"group": g, **data[g]} for g in labels]
-    return {"columns": columns, "rows": rows, "chart": {"type": "stacked_bar", "labels": labels, "datasets": datasets}}
+    chart = {"type": chart_type, "labels": labels, "datasets": datasets}
+    view = {"columns": columns, "rows": rows, "chart": chart}
+    if with_share:
+        grand_total = sum(data[g]["total"] for g in labels)
+        for row in rows:
+            row["share"] = round(row["total"] / grand_total * 100, 2) if grand_total else 0
+        columns.append(("share", "% of Total"))
+        chart["group_totals"] = [data[g]["total"] for g in labels]
+        chart["grand_total"] = grand_total
+        view["total_leads"] = grand_total
+        view["badge"] = f"Total Leads – {grand_total}"
+    return view
 
 
 def _per_salesperson_activity(current_user, date_from, date_to):
@@ -918,12 +955,22 @@ def _build_monday_weekly_report(current_user, date_from=None, date_to=None, **kw
 
 def _build_lead_stage_analysis(current_user, date_from=None, date_to=None, **kwargs):
     owner = _scope_owner(current_user)
-    by_owner = _stage_breakdown_view(
-        cls_db.get_stage_breakdown("owner", date_from=date_from, date_to=date_to, owner=owner), "Owner")
-    by_project = _stage_breakdown_view(
-        cls_db.get_stage_breakdown("project", date_from=date_from, date_to=date_to, owner=owner), "Project")
-    by_campaign = _stage_breakdown_view(
-        cls_db.get_stage_breakdown("campaign", date_from=date_from, date_to=date_to, owner=owner), "Campaign")
+
+    # v1.6 — five breakdown tabs, Sell.do-style: empty stages hidden, a
+    # "% of Total" share, grouped horizontal bars, and a Total Leads badge.
+    # (tab title, get_stage_breakdown group_by, first-column label)
+    breakdown_tabs = [
+        ("Owners", "owner", "Owner"),
+        ("Project", "project", "Project"),
+        ("Campaign", "campaign", "Campaign"),
+        ("Source", "source", "Source"),
+        ("Sub Source", "sub_source", "Sub Source"),
+    ]
+    views = []
+    for title, group_by, group_label in breakdown_tabs:
+        data = cls_db.get_stage_breakdown(group_by, date_from=date_from, date_to=date_to, owner=owner)
+        views.append({"title": title, **_stage_breakdown_view(
+            data, group_label, hide_empty_stages=True, with_share=True, chart_type="grouped_hbar")})
 
     visits = cls_db.get_site_visits_by_campaign(date_from=date_from, date_to=date_to, owner=owner)
     visits_view = {
@@ -932,13 +979,10 @@ def _build_lead_stage_analysis(current_user, date_from=None, date_to=None, **kwa
                   "datasets": [{"label": "Site Visits", "color": "#2F80ED", "data": [r["count"] for r in visits]}]},
     }
 
-    views = [
-        {"title": "By Owner", **by_owner},
-        {"title": "By Project", **by_project},
-        {"title": "By Campaign", **by_campaign},
-        {"title": "Site Visits by Campaign", **visits_view},
-    ]
-    return {"columns": [], "rows": [], "views": views}
+    views.append({"title": "Site Visits",
+                  "subtitle": "Site visits booked in range, by the lead's campaign",
+                  **visits_view})
+    return {"columns": [], "rows": [], "views": views, "tabs": True}
 
 
 # ── Campaign Insights (Requirement 6) ──
@@ -1164,11 +1208,15 @@ REPORTS = [
     },
     {
         "id": "lead-stage-analysis", "title": "Lead Stage Analysis",
-        "description": "Lead counts by stage — broken down by owner, project, and campaign — plus site visits by campaign, for the selected period.",
+        "description": (
+            "Lead counts by current stage for leads created in the selected period — by owner, project, "
+            "campaign, source and sub source, plus site visits."
+        ),
         "cadence": "Monthly", "admin_only": False, "owner_filterable": True,
         "caveat": (
-            "By-campaign and site-visits-by-campaign views are dominated by \"Unknown/Manual\" until campaign "
-            "data is backfilled — see this report's Campaign data note."
+            "Campaign = Meta lead form name (captured since July 2026). Sub Source = Facebook/Instagram "
+            "platform (captured since 30 Jul 2026); older Meta leads show 'platform not captured'. "
+            "Leads are dated by when they entered CLS."
         ),
         "build": _build_lead_stage_analysis, "date_default": "this_month",
         "template": "report_view_charts.html",
@@ -1298,6 +1346,8 @@ def build_report(report_id, current_user, date_from=None, date_to=None, **kwargs
         "date_preset_labels": REPORT_DATE_PRESET_LABELS,
         "columns": columns, "rows": rows,
         "chart": table.get("chart"), "views": table.get("views"),
+        # v1.6 — True only for tabbed multi-view reports (Lead Stage Analysis).
+        "tabs": table.get("tabs", False),
     }
     # v1.2 — Task 2: mobile transpose, additive alongside columns/rows
     # (export_to_excel() keeps reading columns/rows only, untouched).

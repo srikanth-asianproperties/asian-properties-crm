@@ -2,11 +2,20 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.102
+Version : 2.103
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.103 (2026-09-21) — Lead Stage Analysis v2: "Source" and "Sub Source"
+  groupings. NEW config (next to ORIGIN_UNKNOWN_LABEL): SUB_SOURCE_META_SOURCE,
+  META_PLATFORM_LABELS (fb/ig/msg/an -> label), SUB_SOURCE_META_UNKNOWN_LABEL,
+  SUB_SOURCE_NON_META_LABEL. NEW sub_source_sql(alias="") right after
+  lead_origin_sql(). _STAGE_BREAKDOWN_GROUP_COLUMNS gains "source"
+  (lead_origin_sql()) and "sub_source" (sub_source_sql()); get_stage_breakdown()
+  accepts both group_by values (blank -> ORIGIN_UNKNOWN_LABEL). Additive only;
+  no schema change; no existing signature or return shape changed.
+
 v2.102 (2026-09-21) — Leads-list "Score band" filter (Hot / Warm / Cold).
   Scores are computed LIVE (compute_lead_scores(), never stored), so this
   is filtered in Python, and ONLY when a band is chosen: get_leads_page()
@@ -3234,6 +3243,22 @@ CAPTURED_VIA_LABELS = {
 ORIGIN_FALLBACK_LABELS = dict(SOURCE_DISPLAY_LABELS)
 ORIGIN_UNKNOWN_LABEL = "Not Available"
 
+# v2.103 — "Sub Source" (Lead Stage Analysis): the Meta platform a lead came
+# in through (leads.meta_platform), label-mapped. Config-not-code; display
+# layer only, leads.meta_platform itself is unchanged. Only leads whose raw
+# leads.source is SUB_SOURCE_META_SOURCE get a platform label — every other
+# lead falls in SUB_SOURCE_NON_META_LABEL (a Sell.do/manual lead can carry a
+# stray meta_platform value; it is deliberately ignored here).
+SUB_SOURCE_META_SOURCE = "meta"      # the leads.source value for Meta leads
+META_PLATFORM_LABELS = {
+    "fb": "Facebook",
+    "ig": "Instagram",
+    "msg": "Messenger",
+    "an": "Audience Network",
+}
+SUB_SOURCE_META_UNKNOWN_LABEL = "Meta – platform not captured"
+SUB_SOURCE_NON_META_LABEL = "Non-Meta"
+
 
 def _sql_str(value):
     """Single-quote-escape a CONFIG constant for inline SQL (never user input)."""
@@ -3252,6 +3277,25 @@ def lead_origin_sql(alias=""):
                      for k, v in ORIGIN_FALLBACK_LABELS.items())
     return (f"COALESCE(NULLIF(TRIM({p}lead_source_detail), ''), "
             f"CASE {p}source {whens} ELSE {_sql_str(ORIGIN_UNKNOWN_LABEL)} END)")
+
+
+def sub_source_sql(alias=""):
+    """
+    (v2.103) SQL expression for a lead's SUB SOURCE: for Meta leads the
+    platform label from META_PLATFORM_LABELS (blank platform ->
+    SUB_SOURCE_META_UNKNOWN_LABEL, an unrecognised future value shown raw),
+    for every other lead SUB_SOURCE_NON_META_LABEL. Built only from the
+    config constants above — never from request input — so it is safe to
+    inline. `alias` is the leads-table alias (e.g. "l"), or "" for none.
+    """
+    p = f"{alias}." if alias else ""
+    whens = " ".join(f"WHEN {_sql_str(k)} THEN {_sql_str(v)}"
+                     for k, v in META_PLATFORM_LABELS.items())
+    return (f"CASE WHEN {p}source = {_sql_str(SUB_SOURCE_META_SOURCE)} THEN "
+            f"CASE LOWER(TRIM(COALESCE({p}meta_platform, ''))) {whens} "
+            f"WHEN '' THEN {_sql_str(SUB_SOURCE_META_UNKNOWN_LABEL)} "
+            f"ELSE TRIM({p}meta_platform) END "
+            f"ELSE {_sql_str(SUB_SOURCE_NON_META_LABEL)} END")
 
 
 def lead_origin_for(lead_row):
@@ -13201,6 +13245,10 @@ _STAGE_BREAKDOWN_GROUP_COLUMNS = {
     "owner": "lead_owner",
     "project": "project_bucket",
     "campaign": "campaign",
+    # v2.103 — Lead Stage Analysis "Source" / "Sub Source" tabs. Both
+    # helpers are defined far above this dict (import-time evaluation OK).
+    "source": lead_origin_sql(),
+    "sub_source": sub_source_sql(),
 }
 
 
@@ -13217,7 +13265,9 @@ def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None):
     interpolated from unchecked input, so there's no injection surface
     even though it ends up in the SQL text.
 
-    group_by : "owner" | "project" | "campaign"
+    group_by : "owner" | "project" | "campaign" | "source" | "sub_source"
+        ("source" = effective origin via lead_origin_sql(); "sub_source" =
+        Meta platform via sub_source_sql() — both v2.103.)
     date_from/date_to : optional 'YYYY-MM-DD' strings. When both
         given, scopes to leads whose cls_created_at falls in range.
         None = every lead regardless of creation date.
@@ -13268,6 +13318,8 @@ def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None):
             key = raw if raw else "(unknown)"
         elif group_by == "campaign":
             key = _campaign_bucket(raw)
+        elif group_by in ("source", "sub_source"):
+            key = raw.strip() if raw and raw.strip() else ORIGIN_UNKNOWN_LABEL
         else:
             key = raw.strip() if raw and raw.strip() else "Unassigned"
         entry = result.setdefault(key, {stage: 0 for stage in ALL_STAGES})

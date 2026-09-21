@@ -1,4 +1,21 @@
-{# report_view_charts.html (v0.6.1) — NEW template for chart-bearing
+{# report_view_charts.html (v0.6.2) — Lead Stage Analysis v2 (2026-09-21).
+   ADDITIVE — every non-tabbed report renders exactly as before:
+     - report.tabs truthy -> a tab strip (no-print) above the view cards,
+       one button per view.title; only the active card shows; the last tab
+       is remembered in sessionStorage "report_tab:<report.id>" (try/catch)
+       so the date picker's page reload keeps it. A view's optional
+       "badge" shows as a pill (top right of its card), "subtitle" under
+       its title.
+     - Tabbed charts are created lazily, the first time their tab is
+       shown (Chart.js mis-sizes canvases inside hidden elements).
+     - NEW chart type "grouped_hbar": horizontal grouped bars, one bar per
+       non-empty stage per group; two-line Y labels ("<group>" then
+       "<total>/<grand_total> (<pct>%)"); "<count>/<group total> (<pct>%)"
+       at the end of every non-zero bar via a small inline Chart.js plugin
+       (no datalabels CDN); canvas height grows with the number of bars.
+     - Print/PDF hides the tab strip and shows EVERY view card's table.
+
+   (v0.6.1) — NEW template for chart-bearing
    reports: Lead Stage Analysis (4 views: by owner/project/campaign +
    site visits by campaign) and the Campaign Insights reports that carry
    a single chart (Campaign Lead Volume, Campaign Stage Distribution,
@@ -28,6 +45,7 @@
   main.wrap { max-width: 100%; padding: 0; }
   .report-table { font-size: 11px; }
   .chart-canvas-wrap { display: none !important; }
+  .tab-hidden { display: block !important; }
 </style>
 <style>
   .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
@@ -39,6 +57,18 @@
   .report-table tbody tr:hover { background: var(--paper); }
   .report-table-wrap { overflow-x: auto; }
   .chart-canvas-wrap { position: relative; height: 320px; margin-top: 10px; }
+  .report-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 18px; border-bottom: 1px solid var(--line); }
+  .report-tab {
+    background: none; border: 0; border-bottom: 3px solid transparent; margin-bottom: -1px;
+    padding: 9px 14px; font: inherit; font-size: 14px; color: var(--ink-soft); cursor: pointer;
+  }
+  .report-tab:hover { background: var(--paper); }
+  .report-tab.active { color: inherit; font-weight: 600; border-bottom-color: #2F80ED; }
+  .tab-hidden { display: none; }
+  .view-badge {
+    display: inline-block; background: var(--paper); border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px 12px; font-size: 12px; font-weight: 600; white-space: nowrap;
+  }
 </style>
 
 {% set back_button_class = 'no-print' %}
@@ -67,10 +97,27 @@
 {% endif %}
 
 {% set views = report.views if report.views else [{"title": report.title, "columns": report.columns, "rows": report.rows, "chart": report.chart}] %}
+{% set is_tabbed = report.tabs and report.views %}
+
+{% if is_tabbed %}
+<div class="report-tabs no-print" id="report-tabs" role="tablist">
+  {% for view in views %}
+  <button type="button" class="report-tab" role="tab" data-tab-index="{{ loop.index0 }}">{{ view.title }}</button>
+  {% endfor %}
+</div>
+{% endif %}
 
 {% for view in views %}
-<div class="card" style="margin-top:18px;">
-  {% if report.views %}<h3 style="margin-top:0; margin-bottom:0; font-size:15px;">{{ view.title }}</h3>{% endif %}
+<div class="card view-card{{ ' tab-hidden' if is_tabbed and not loop.first else '' }}" data-view-index="{{ loop.index0 }}" style="margin-top:18px;">
+  {% if report.views %}
+  <div style="display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap;">
+    <div>
+      <h3 style="margin-top:0; margin-bottom:0; font-size:15px;">{{ view.title }}</h3>
+      {% if view.subtitle %}<p style="font-size:12px; color:var(--ink-soft); margin:2px 0 0;">{{ view.subtitle }}</p>{% endif %}
+    </div>
+    {% if view.badge %}<span class="view-badge">{{ view.badge }}</span>{% endif %}
+  </div>
+  {% endif %}
   {% if view.rows %}
     {% if view.chart %}
     <div class="chart-canvas-wrap no-print">
@@ -107,16 +154,98 @@
 <script>
 (function() {
   var CHART_VIEWS = {{ views | tojson }};
-  CHART_VIEWS.forEach(function(view, i) {
-    if (!view.chart || !view.rows || !view.rows.length) return;
+  var IS_TABBED = {{ 'true' if is_tabbed else 'false' }};
+  var TAB_KEY = 'report_tab:' + {{ report.id | tojson }};
+  var rendered = {};
+
+  function pct2(count, total) {
+    return total ? (count / total * 100).toFixed(2) : '0.00';
+  }
+
+  // Draws "<count>/<group_total> (<pct>%)" just past the end of every non-zero bar.
+  var barEndLabels = {
+    id: 'barEndLabels',
+    afterDatasetsDraw: function(chart) {
+      var totals = chart.config.options.groupTotals || [];
+      var ctx = chart.ctx;
+      ctx.save();
+      ctx.font = '11px sans-serif';
+      ctx.fillStyle = getComputedStyle(document.body).color || '#333';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      chart.data.datasets.forEach(function(ds, di) {
+        var meta = chart.getDatasetMeta(di);
+        if (meta.hidden) return;
+        meta.data.forEach(function(bar, idx) {
+          var v = ds.data[idx];
+          if (!v) return;
+          ctx.fillText(v + '/' + totals[idx] + ' (' + pct2(v, totals[idx]) + '%)', bar.x + 5, bar.y);
+        });
+      });
+      ctx.restore();
+    }
+  };
+
+  function renderView(i) {
+    if (rendered[i]) return;
+    var view = CHART_VIEWS[i];
+    if (!view || !view.chart || !view.rows || !view.rows.length) return;
     var canvas = document.getElementById('chart-' + (i + 1));
     if (!canvas) return;
+    rendered[i] = true;
     var cfg = view.chart;
+    var isGrouped = cfg.type === 'grouped_hbar';
     var isHorizontal = cfg.type === 'horizontal_bar';
     var isStacked = cfg.type === 'stacked_bar';
     var datasets = cfg.datasets.map(function(ds) {
       return { label: ds.label, data: ds.data, backgroundColor: ds.color };
     });
+
+    if (isGrouped) {
+      var totals = cfg.group_totals || [];
+      var grand = cfg.grand_total || 0;
+      var nonEmpty = datasets.filter(function(ds) {
+        return ds.data.some(function(v) { return v > 0; });
+      }).length;
+      canvas.parentNode.style.height = Math.max(260, cfg.labels.length * nonEmpty * 26 + 80) + 'px';
+      datasets.forEach(function(ds) { ds.barPercentage = 0.9; ds.categoryPercentage = 0.85; });
+      new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: {
+          // array label = two-line tick: group name, then "<total>/<grand> (<pct>%)"
+          labels: cfg.labels.map(function(name, idx) {
+            return [name, totals[idx] + '/' + grand + ' (' + pct2(totals[idx], grand) + '%)'];
+          }),
+          datasets: datasets,
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          groupTotals: totals,
+          layout: { padding: { right: 120 } },
+          scales: {
+            x: { stacked: false, beginAtZero: true, ticks: { precision: 0 } },
+            y: { stacked: false },
+          },
+          plugins: {
+            legend: { display: true, position: 'top' },
+            tooltip: {
+              callbacks: {
+                title: function(items) { return items.length ? cfg.labels[items[0].dataIndex] : ''; },
+                label: function(item) {
+                  var t = totals[item.dataIndex];
+                  return item.dataset.label + ': ' + item.parsed.x + '/' + t + ' (' + pct2(item.parsed.x, t) + '%)';
+                },
+              },
+            },
+          },
+        },
+        plugins: [barEndLabels],
+      });
+      return;
+    }
+
     new Chart(canvas.getContext('2d'), {
       type: 'bar',
       data: { labels: cfg.labels, datasets: datasets },
@@ -131,7 +260,34 @@
         plugins: { legend: { display: datasets.length > 1 } },
       },
     });
-  });
+  }
+
+  if (!IS_TABBED) {
+    CHART_VIEWS.forEach(function(view, i) { renderView(i); });
+    return;
+  }
+
+  var tabs = document.querySelectorAll('.report-tab');
+  var cards = document.querySelectorAll('.view-card');
+
+  function activate(idx) {
+    tabs.forEach(function(t, i) {
+      t.classList.toggle('active', i === idx);
+      t.setAttribute('aria-selected', i === idx ? 'true' : 'false');
+    });
+    cards.forEach(function(c, i) { c.classList.toggle('tab-hidden', i !== idx); });
+    renderView(idx);
+    try { sessionStorage.setItem(TAB_KEY, String(idx)); } catch (e) {}
+  }
+
+  tabs.forEach(function(t, i) { t.addEventListener('click', function() { activate(i); }); });
+
+  var start = 0;
+  try {
+    var saved = parseInt(sessionStorage.getItem(TAB_KEY), 10);
+    if (!isNaN(saved) && saved >= 0 && saved < tabs.length) start = saved;
+  } catch (e) {}
+  activate(start);
 })();
 </script>
 {% endblock %}
