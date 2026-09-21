@@ -2,11 +2,34 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.98
+Version : 2.99
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.99 (2026-09-21) — CAPI safety net lists only leads that GENUINELY need
+  an event now. get_unfired_leads() (used only by cls_capi_firer.py
+  --catchup and count-only displays: watchdog pending count, Telegram
+  /pending, stats().pending_fire) was rewritten: a lead is "pending" only
+  if ALL of (a) current_stage in TARGET_STAGES, (b) not skipped by the
+  manual-lead guard (v2.97, unchanged), (c) events_log has NO row for
+  (cls_id, current_stage), (d) stage_updated_at is within
+  CAPI_CATCHUP_MAX_AGE_DAYS (7 — Meta's backfill window). Why: a
+  re-engaged lead returns to Incoming long after its Incoming event fired,
+  so the old "last_fired_stage != current_stage" test kept it pending
+  forever, and --catchup would have sent stale leads with today's
+  timestamp. last_fired_stage is still written by mark_as_fired() exactly
+  as before (it is just no longer part of this test). Inline firing (CRM,
+  webhook, Job A) and the retry queue do NOT use this function and are
+  unchanged.
+    - NEW CAPI_CATCHUP_MAX_AGE_DAYS = 7 (config).
+    - NEW capi_pending_sql(alias="") -> (sql_fragment, params): the ONE
+      copy of the rule, for reuse by any later filter / the watchdog.
+    - NEW count_capi_too_old() — target-stage leads (guard applied) with
+      no event for their current stage that are OLDER than the window (or
+      have no stage_updated_at): "too old to send".
+  A NULL stage_updated_at counts as too old (unknown age -> never sent).
+
 v2.98 (2026-09-21) — NEW count_events_fired_between(start_ts, end_ts):
   read-only count of events_log rows with fired_at in [start_ts, end_ts]
   (inclusive, "YYYY-MM-DD HH:MM:SS" strings — the format fired_at is
@@ -2889,6 +2912,12 @@ TARGET_STAGES = ["Incoming", "Prospect", "Opportunity", "Site Visited"]
 # MIRRORS cls_capi_core.CAPI_SKIP_SOURCES (circular import prevents
 # sharing one definition) — keep both in step.
 CAPI_SKIP_SOURCES = ("manual_crm",)
+
+# v2.99 — get_unfired_leads() (the --catchup safety net) ignores leads whose
+# current stage changed more than this many days ago: Meta's backfill
+# window, beyond which an event is stale and would be sent with today's
+# timestamp.
+CAPI_CATCHUP_MAX_AGE_DAYS = 7
 
 # ── ALL_STAGES + STAGE_TRANSITIONS (v1.8 — CRM v0.5 Writer) ──
 # ALL_STAGES is the COMPLETE 8-stage universe — do not confuse this
@@ -11327,31 +11356,85 @@ def get_stale_stage_count(days=90):
 # FIRE STATE  —  Job C:  find what needs firing, record what fired
 # ─────────────────────────────────────────────────────────────
 
+def _capi_needs_event_sql(alias=""):
+    """
+    (v2.99) Rules (a)-(c) of the CAPI safety net, WITHOUT the age window:
+    target stage, not skipped by the manual-lead guard, and no events_log
+    row for (cls_id, current_stage). Returns (sql_fragment, params).
+    """
+    # With no alias the outer table is qualified by its real name: inside the
+    # correlated subquery a bare `cls_id` would bind to events_log's own column.
+    p = f"{alias}." if alias else "leads."
+    stage_ph = ",".join("?" for _ in TARGET_STAGES)
+    skip_ph = ",".join("?" for _ in CAPI_SKIP_SOURCES)
+    sql = (f"{p}current_stage IN ({stage_ph}) "
+           # (b) same rule as cls_capi_core.is_capi_skipped(); COALESCE keeps
+           # a NULL source from turning the NOT(...) into NULL (row dropped).
+           f"AND NOT (COALESCE({p}source, '') IN ({skip_ph}) "
+           f"AND ({p}leadgen_id IS NULL OR TRIM(CAST({p}leadgen_id AS TEXT)) = '')) "
+           # (c) never fired (confirmed) at this stage
+           f"AND NOT EXISTS (SELECT 1 FROM events_log _evt "
+           f"WHERE _evt.cls_id = {p}cls_id AND _evt.crm_stage = {p}current_stage)")
+    return sql, list(TARGET_STAGES) + list(CAPI_SKIP_SOURCES)
+
+
+def _capi_cutoff():
+    """(v2.99) Oldest stage_updated_at still inside the catch-up window."""
+    return (datetime.now() - timedelta(days=CAPI_CATCHUP_MAX_AGE_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def capi_pending_sql(alias=""):
+    """
+    (v2.99) THE rule for "this lead genuinely needs a CAPI event now", as
+    (sql_fragment, params) to drop into a WHERE clause: (a) target stage,
+    (b) not skipped by the manual-lead guard, (c) no events_log row for
+    (cls_id, current_stage), (d) stage_updated_at within
+    CAPI_CATCHUP_MAX_AGE_DAYS. `alias` is the leads-table alias; with
+    alias="" the query must be a plain unaliased `FROM leads`.
+    Reuse this — do not copy the rule.
+    """
+    sql, params = _capi_needs_event_sql(alias)
+    p = f"{alias}." if alias else "leads."
+    return f"{sql} AND {p}stage_updated_at >= ?", params + [_capi_cutoff()]
+
+
 def get_unfired_leads():
     """
-    Called by cls_capi_firer.py (Job C).
-    Returns rows where the CRM stage is a target stage AND it has
-    NOT yet been fired at that stage (current_stage != last_fired_stage).
+    Called by cls_capi_firer.py --catchup (and, count-only, by the watchdog,
+    Telegram /pending and stats()). Returns the leads that genuinely need
+    a CAPI event now — see capi_pending_sql() for the exact rule (v2.99:
+    no confirmed event at the current stage AND stage changed within the
+    last CAPI_CATCHUP_MAX_AGE_DAYS days AND not a guarded manual lead).
 
-    This is the Risk-4 fix in SQL form: state is PER ROW and based on
-    confirmed fires, not a per-run "since last time" guess. A crash
-    mid-run cannot cause a double-fire or a missed fire.
+    State is still PER ROW and based on confirmed fires (events_log is
+    append-only, written only after Meta confirms), so a crash mid-run
+    cannot cause a double-fire or a missed fire (the original Risk-4 fix).
     """
-    placeholders = ",".join("?" for _ in TARGET_STAGES)
-    skip_ph = ",".join("?" for _ in CAPI_SKIP_SOURCES)
+    where, params = capi_pending_sql()
     conn = _connect()
     try:
-        # v2.97 — same rule as cls_capi_core.fire_single_lead_event():
-        # skip CAPI_SKIP_SOURCES leads with no leadgen_id. COALESCE keeps
-        # a NULL source from turning the NOT(...) into NULL (row dropped).
-        rows = conn.execute(f"""
-            SELECT * FROM leads
-            WHERE current_stage IN ({placeholders})
-              AND (last_fired_stage IS NULL OR last_fired_stage != current_stage)
-              AND NOT (COALESCE(source, '') IN ({skip_ph})
-                       AND (leadgen_id IS NULL OR TRIM(CAST(leadgen_id AS TEXT)) = ''))
-        """, list(TARGET_STAGES) + list(CAPI_SKIP_SOURCES)).fetchall()
+        rows = conn.execute(f"SELECT * FROM leads WHERE {where}", params).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def count_capi_too_old():
+    """
+    (v2.99) How many target-stage leads have no event for their current
+    stage but are OLDER than CAPI_CATCHUP_MAX_AGE_DAYS (or have no
+    stage_updated_at) — i.e. leads --catchup deliberately does NOT send
+    because the event would be stale. Same rules (a)-(c) as
+    capi_pending_sql(); only the age test is inverted.
+    """
+    sql, params = _capi_needs_event_sql()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM leads WHERE {sql} "
+            f"AND (stage_updated_at IS NULL OR stage_updated_at < ?)",
+            params + [_capi_cutoff()]).fetchone()
+        return row["n"]
     finally:
         conn.close()
 

@@ -2,11 +2,18 @@
 =============================================================
 cls_capi_firer.py  —  CLS Job C  |  CLS -> Meta CAPI Firer
 =============================================================
-Version : 3.3
+Version : 3.4
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v3.4 (2026-09-21) — --catchup only: one new log line, "N lead(s) older than
+  7 days skipped (too old to send)" (cls_db.count_capi_too_old(), v2.99),
+  logged before the fire loop (also when nothing is left to fire). No
+  change to firing behaviour — the list of leads to fire is whatever
+  cls_db.get_unfired_leads() returns, which v2.99 narrowed to leads that
+  genuinely need an event now.
+
 v3.3 (2026-09-21) — queue mode: the "Queue is empty. Nothing to do." exit
   now also sets the 'capi_fire' completion flag (and logs "Completion flag
   'capi_fire' set."), skipped under --dry-run like the other paths. An
@@ -310,6 +317,12 @@ def run_catchup_mode(dry_run=False):
 
     unfired = cls_db.get_unfired_leads()
     unfired = [l for l in unfired if l["current_stage"] in cls_capi_core.TARGET_STAGES]
+
+    try:
+        log(f"{cls_db.count_capi_too_old()} lead(s) older than "
+            f"{cls_db.CAPI_CATCHUP_MAX_AGE_DAYS} days skipped (too old to send)")
+    except Exception as e:
+        log(f"Could not count too-old leads: {e}", "WARNING")
 
     if not unfired:
         log("No stage changes to fire this run. Nothing to do.")
