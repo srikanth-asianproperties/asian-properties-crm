@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.78
+Version : 0.79
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,13 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.79 (2026-09-21) — change_lead_stage(): a successful CAPI result for a
+  lead cls_capi_core.is_capi_skipped() (manual lead, no leadgen_id — never
+  sent to Meta, cls_capi_core.py v1.2/v1.3) now logs "CAPI skipped
+  (manual lead, no leadgen_id): ..." at INFO instead of "CAPI fire OK".
+  Log wording only — firing behaviour unchanged; the "CAPI fire OK" line
+  for a lead that was really sent is untouched.
+
 v0.78 (2026-09-21) — dashboard_booking_summary(): Source dropdown, "Lead
   By Source" and "Site Visits By Source" now use the effective origin
   (cls_db.py v2.96). source_options = get_lead_origin_options(); an old
@@ -4322,7 +4329,9 @@ def change_lead_stage(cls_id):
         try:
             fresh_lead = cls_db.get_lead_by_id(cls_id)
             fired, err = cls_capi_core.fire_single_lead_event(fresh_lead, _env)
-            if fired:
+            if fired and cls_capi_core.is_capi_skipped(fresh_lead):
+                _log(f"CAPI skipped (manual lead, no leadgen_id): cls_id={cls_id} | {new_stage}")
+            elif fired:
                 _log(f"CAPI fire OK: cls_id={cls_id} | {new_stage}")
             else:
                 cls_db.queue_failed_fire(cls_id, new_stage, err)

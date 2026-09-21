@@ -2,11 +2,23 @@
 =============================================================
 cls_capi_firer.py  —  CLS Job C  |  CLS -> Meta CAPI Firer
 =============================================================
-Version : 3.1
+Version : 3.2
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v3.2 (2026-09-21) — log honesty for the CAPI guard. In BOTH the queue
+  loop and the --catchup loop, a lead cls_capi_core.is_capi_skipped()
+  (manual, no leadgen_id — never sent to Meta) is now logged as SKIPPED
+  and counted in its own `skipped` counter instead of being counted/
+  logged as OK. The run-summary log line and the job_results.txt line
+  gain ", N skipped (manual, no leadgen_id)" ONLY when N > 0; with none
+  skipped both lines are character-for-character what they were. Firing
+  behaviour is unchanged (skipped queue rows are still cleared).
+  No other counter counted skipped leads as fired: every "pending fire"
+  figure (stats(), watchdog, Telegram, snapshot) goes through
+  cls_db.get_unfired_leads(), which already excludes them (cls_db v2.97).
+
 v3.1 (2026-09-21) — selftest only: one new offline case for the CAPI
   guard (cls_capi_core.py v1.2) — a manual lead with no leadgen_id
   returns (True, None) even with an EMPTY env (i.e. it exits before
@@ -203,7 +215,7 @@ def run_queue_mode(dry_run=False):
 
     log(f"Queue has {len(due)} pending row(s) to retry.")
 
-    ok = fail = 0
+    ok = fail = skipped = 0
     for row in due:
         lead = cls_db.get_lead_by_id(row["cls_id"])
         if not lead:
@@ -214,6 +226,11 @@ def run_queue_mode(dry_run=False):
             continue
 
         if dry_run:
+            if cls_capi_core.is_capi_skipped(lead):
+                log(f"  [queue_id={row['queue_id']}] DRY-RUN would skip (manual lead, no leadgen_id): "
+                    f"{lead.get('full_name', '?')} | target={row['target_stage']}")
+                skipped += 1
+                continue
             log(f"  [queue_id={row['queue_id']}] DRY-RUN would retry: {lead.get('full_name', '?')} "
                 f"| target={row['target_stage']} | attempt {row['attempts'] + 1}")
             ok += 1
@@ -222,8 +239,13 @@ def run_queue_mode(dry_run=False):
         fired, err = cls_capi_core.fire_single_lead_event(lead, env)
         if fired:
             cls_db.clear_from_queue(row["queue_id"])
-            log(f"  [queue_id={row['queue_id']}] OK {lead.get('full_name', '?')} | {row['target_stage']}")
-            ok += 1
+            if cls_capi_core.is_capi_skipped(lead):
+                log(f"  [queue_id={row['queue_id']}] SKIPPED (manual lead, no leadgen_id) "
+                    f"{lead.get('full_name', '?')} | {row['target_stage']}")
+                skipped += 1
+            else:
+                log(f"  [queue_id={row['queue_id']}] OK {lead.get('full_name', '?')} | {row['target_stage']}")
+                ok += 1
         else:
             cls_db.bump_queue_attempt(row["queue_id"], err)
             log(f"  [queue_id={row['queue_id']}] FAILED {lead.get('full_name', '?')} "
@@ -232,11 +254,12 @@ def run_queue_mode(dry_run=False):
 
         time.sleep(cls_capi_core.API_PAUSE_SEC)
 
+    skip_note = f", {skipped} skipped (manual, no leadgen_id)" if skipped else ""
     log("-" * 55)
     if dry_run:
-        log(f"DRY-RUN complete — {ok} row(s) WOULD have been retried.")
+        log(f"DRY-RUN complete — {ok} row(s) WOULD have been retried{skip_note}.")
     else:
-        log(f"Retried {ok} OK, {fail} still failing (requeued or permanently failed).")
+        log(f"Retried {ok} OK, {fail} still failing (requeued or permanently failed){skip_note}.")
 
     _refresh_outputs(dry_run=dry_run)
     if not dry_run:
@@ -248,7 +271,7 @@ def run_queue_mode(dry_run=False):
     log("=" * 55)
     cls_db.write_job_result(
         "Job C (CAPI Firer)", True,
-        f"Queue mode — {ok} OK, {fail} failed" if not dry_run else f"DRY-RUN — {ok} would retry"
+        f"Queue mode — {ok} OK, {fail} failed{skip_note}" if not dry_run else f"DRY-RUN — {ok} would retry{skip_note}"
     )
     return True
 
@@ -289,17 +312,25 @@ def run_catchup_mode(dry_run=False):
 
     log(f"Leads to fire: {len(unfired)}")
 
-    ok = fail = 0
+    ok = fail = skipped = 0
     for lead in unfired:
         if dry_run:
+            if cls_capi_core.is_capi_skipped(lead):
+                log(f"  DRY-RUN would skip (manual lead, no leadgen_id): {lead.get('full_name', '?')} | stage={lead['current_stage']}")
+                skipped += 1
+                continue
             log(f"  DRY-RUN would fire: {lead.get('full_name', '?')} | stage={lead['current_stage']}")
             ok += 1
             continue
 
         fired, err = cls_capi_core.fire_single_lead_event(lead, env)
         if fired:
-            ok += 1
-            log(f"  OK {lead.get('full_name', '?')} | {lead['current_stage']}")
+            if cls_capi_core.is_capi_skipped(lead):
+                skipped += 1
+                log(f"  SKIPPED (manual lead, no leadgen_id) {lead.get('full_name', '?')} | {lead['current_stage']}")
+            else:
+                ok += 1
+                log(f"  OK {lead.get('full_name', '?')} | {lead['current_stage']}")
         else:
             fail += 1
             cls_db.queue_failed_fire(lead["cls_id"], lead["current_stage"], err)
@@ -307,11 +338,12 @@ def run_catchup_mode(dry_run=False):
 
         time.sleep(cls_capi_core.API_PAUSE_SEC)
 
+    skip_note = f", {skipped} skipped (manual, no leadgen_id)" if skipped else ""
     log("-" * 55)
     if dry_run:
-        log(f"DRY-RUN complete — {ok} events WOULD have fired.")
+        log(f"DRY-RUN complete — {ok} events WOULD have fired{skip_note}.")
     else:
-        log(f"Fired {ok} OK, {fail} failed (queued for retry).")
+        log(f"Fired {ok} OK, {fail} failed (queued for retry){skip_note}.")
 
     s = cls_db.stats()
     log(f"CLS now holds: {s['total_leads']} leads "
@@ -328,7 +360,7 @@ def run_catchup_mode(dry_run=False):
     log("=" * 55)
     cls_db.write_job_result(
         "Job C (CAPI Firer)", True,
-        f"Catchup — {ok} OK, {fail} failed" if not dry_run else f"DRY-RUN catchup — {ok} would fire"
+        f"Catchup — {ok} OK, {fail} failed{skip_note}" if not dry_run else f"DRY-RUN catchup — {ok} would fire{skip_note}"
     )
     return True
 
@@ -397,6 +429,13 @@ def selftest():
     manual_with_lg = dict(manual_no_lg, leadgen_id="1234567890")
     ok_flag, _err = cls_capi_core.fire_single_lead_event(manual_with_lg, {})
     print(f"  [{'OK' if not ok_flag else 'FAIL'}] manual lead WITH leadgen_id -> not skipped (normal path)")
+
+    # v3.2 — is_capi_skipped() is the one home of the guard rule.
+    ok = (cls_capi_core.is_capi_skipped(manual_no_lg)
+          and not cls_capi_core.is_capi_skipped(manual_with_lg)
+          and not cls_capi_core.is_capi_skipped(meta_lead)
+          and not cls_capi_core.is_capi_skipped(selldo_lead))
+    print(f"  [{'OK' if ok else 'FAIL'}] is_capi_skipped(): manual/no-leadgen only")
 
     print("=" * 55)
     print(" SELF TEST COMPLETE — offline logic verified (delegates to cls_capi_core.py).")

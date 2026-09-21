@@ -2,11 +2,18 @@
 =============================================================
 cls_capi_core.py  —  CLS Shared CAPI Payload + Inline Fire Logic
 =============================================================
-Version : 1.2
+Version : 1.3
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.3 (2026-09-21) — NEW is_capi_skipped(lead): the CAPI-guard rule
+  (source in CAPI_SKIP_SOURCES AND no leadgen_id) now lives in ONE
+  place. fire_single_lead_event() calls it instead of its inline check
+  — identical behaviour, nothing fires differently. Callers use the
+  same helper to LOG a skipped lead as "skipped" rather than "OK"
+  (crm/app.py v0.79, cls_capi_firer.py v3.2).
+
 v1.2 (2026-09-21) — CAPI guard: never send manual leads Meta cannot
   match. Walk-ins / manual entries have no Meta lead ad to match, so
   Meta ignores their events for optimisation and sending them shares
@@ -241,6 +248,18 @@ def build_event_payload(lead, event_time):
 # FIRE ONE LEAD'S EVENT SYNCHRONOUSLY  (NEW — v1.0)
 # ─────────────────────────────────────────────────────────────
 
+def is_capi_skipped(lead):
+    """
+    (v1.3) True if this lead is never sent to Meta: its source is in
+    CAPI_SKIP_SOURCES (manual entries) AND it has no leadgen_id, so Meta
+    has no lead ad to match it to. The single home of the guard rule —
+    fire_single_lead_event() uses it, and callers use it to log a skipped
+    lead honestly. Mirrored in SQL by cls_db.get_unfired_leads().
+    """
+    return (lead.get("source") in CAPI_SKIP_SOURCES
+            and not str(lead.get("leadgen_id") or "").strip())
+
+
 def fire_single_lead_event(lead, env, dry_run=False):
     """
     Fires ONE lead's current-stage event to Meta (primary dataset, then
@@ -254,8 +273,7 @@ def fire_single_lead_event(lead, env, dry_run=False):
 
     # v1.2 — manual lead with no leadgen_id: Meta cannot match it, so
     # never send it. Same rule as cls_db.get_unfired_leads()'s SQL.
-    if (lead.get("source") in CAPI_SKIP_SOURCES
-            and not str(lead.get("leadgen_id") or "").strip()):
+    if is_capi_skipped(lead):
         return True, None
 
     try:
