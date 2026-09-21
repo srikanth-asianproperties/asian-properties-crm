@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.80
+Version : 0.81
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,12 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.81 (2026-09-21) — Leads-list "Score band" filter (Hot/Warm/Cold;
+  requires cls_db.py v2.102). _parse_lead_filters() gets a whitelisted
+  "score_band" key; leads_list() passes it to get_leads_page();
+  leads_filter_screen() passes score_band_options. Open to every role (it
+  only narrows the list the user can already see).
+
 v0.80 (2026-09-21) — Leads-list filters: Funding, Follow-up, Site visit,
   CAPI status, "Unassigned" owner (requires cls_db.py v2.101).
     - _parse_lead_filters(): NEW keys funding / followup / site_visit /
@@ -3899,6 +3905,7 @@ def _parse_lead_filters():
         "followup":      _whitelisted(request.args.get("followup"), cls_db.FOLLOWUP_FILTER_OPTIONS),
         "site_visit":    _whitelisted(request.args.get("site_visit"), cls_db.SITE_VISIT_FILTER_OPTIONS),
         "capi_status":   _whitelisted(request.args.get("capi_status"), cls_db.CAPI_STATUS_OPTIONS),
+        "score_band":    _whitelisted(request.args.get("score_band"), cls_db.SCORE_BAND_OPTIONS),
     })
 
 
@@ -4073,6 +4080,7 @@ def leads_list():
             lead_origin=f["lead_origin"] or None,
             funding=f["funding"] or None, followup=f["followup"] or None,
             site_visit=f["site_visit"] or None, capi_status=f["capi_status"] or None,
+            score_band=f["score_band"] or None,
         )
 
     # v0.5 — lead scoring. Only the CURRENT PAGE of rows gets scored
@@ -4160,6 +4168,7 @@ def leads_filter_screen():
         captured_via_options=cls_db.CAPTURED_VIA_LABELS,
         funding_options=cls_db.FUNDING_SOURCES,
         funding_not_set=cls_db.FUNDING_FILTER_NOT_SET,
+        score_band_options=cls_db.SCORE_BAND_OPTIONS,
         followup_options=cls_db.FOLLOWUP_FILTER_OPTIONS,
         site_visit_options=cls_db.SITE_VISIT_FILTER_OPTIONS,
         # v0.80 — oversight roles only (also enforced in _parse_lead_filters)

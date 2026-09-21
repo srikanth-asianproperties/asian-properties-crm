@@ -1,4 +1,4 @@
-{# leads_filter.html (v0.12) — dedicated filter screen (items 8 of
+{# leads_filter.html (v0.13) — dedicated filter screen (items 8 of
    Srikanth's spec). His spec described a two-pane "list of categories
    on the left, options revealed per category" layout — that's a
    desktop pattern that doesn't fit a phone-width screen, so this
@@ -11,6 +11,10 @@
    One GET form, submitted once via "Apply Filters" at the bottom —
    not per-category — so every selection across every category applies
    together in a single request, same as the old top-bar form did.
+
+   v0.13 (2026-09-21) — NEW "Score band" accordion (Hot / Warm / Cold),
+   placed after Facing; app.py v0.81 /
+   cls_db.py v2.102.
 
    v0.12 (2026-09-21) — NEW accordions: Funding, Follow-up, Site visit,
    and (admin/manager only — capi_status_options is empty for everyone
@@ -277,6 +281,20 @@
       <div class="filter-accordion-body">
         {% for d in facing_options %}
         <label class="opt-row"><input type="checkbox" name="facing" value="{{ d }}" {% if d in filters.facing %}checked{% endif %}> {{ d }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── SCORE BAND (v0.13) — live-computed score, same as the badge on each row ── #}
+    <div class="filter-accordion-item{% if filters.score_band %} open{% endif %}" data-fa="score">
+      <button type="button" class="filter-accordion-header" onclick="toggleFA('score')">
+        <span>Score band{% if filters.score_band %}<span class="fa-current"> · {{ filters.score_band }}</span>{% endif %}</span>
+        <span class="filter-accordion-chevron">▾</span>
+      </button>
+      <div class="filter-accordion-body">
+        <label class="opt-row"><input type="radio" name="score_band" value="" {% if not filters.score_band %}checked{% endif %}> Any</label>
+        {% for b in score_band_options %}
+        <label class="opt-row"><input type="radio" name="score_band" value="{{ b }}" {% if filters.score_band == b %}checked{% endif %}> {{ b }}</label>
         {% endfor %}
       </div>
     </div>

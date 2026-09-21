@@ -2,11 +2,23 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.101
+Version : 2.102
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.102 (2026-09-21) — Leads-list "Score band" filter (Hot / Warm / Cold).
+  Scores are computed LIVE (compute_lead_scores(), never stored), so this
+  is filtered in Python, and ONLY when a band is chosen: get_leads_page()
+  runs the same WHERE + ORDER BY it always runs (it already reads every
+  matching row — no LIMIT), scores those ids in chunks of
+  SCORE_FILTER_CHUNK (500) with compute_lead_scores() — the SAME function
+  the per-row badge uses — keeps the requested band, then paginates the
+  filtered list. Same result shape. NEW get_leads_page(score_band=None)
+  kwarg (None/unknown = no filter, zero extra cost) + NEW config
+  SCORE_BAND_OPTIONS / SCORE_FILTER_CHUNK. get_leads_matching() and the
+  bulk screens are NOT changed. ADDITIVE ONLY.
+
 v2.101 (2026-09-21) — Leads-list filters: Funding, Follow-up, Site visit,
   CAPI status, and an "Unassigned" owner. ADDITIVE — every new kwarg
   defaults to None (no filter); no schema change.
@@ -2980,6 +2992,8 @@ CAPI_PENDING_GRACE_MIN = 10
 
 # v2.101 — Leads-list filter option sets (config-not-code). Keys are the URL
 # values; anything not listed is ignored by _build_lead_filter_where().
+SCORE_BAND_OPTIONS = ("Hot", "Warm", "Cold")   # v2.102 — bands compute_lead_scores() returns
+SCORE_FILTER_CHUNK = 500                       # v2.102 — ids scored per compute_lead_scores() call
 FUNDING_FILTER_NOT_SET = "__not_set__"
 OWNER_UNASSIGNED = "__unassigned__"   # owner-filter sentinel: NULL/blank lead_owner
 FOLLOWUP_FILTER_OPTIONS = {
@@ -5386,7 +5400,8 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
                    campaigns=None, source=None, sub_source=None, budget=None,
                    configuration=None, property_type=None, facing=None,
                    search_all_owners=False, stages=None, lead_origin=None,
-                   funding=None, followup=None, site_visit=None, capi_status=None):
+                   funding=None, followup=None, site_visit=None, capi_status=None,
+                   score_band=None):
     """
     Paginated, filterable lead list for the CRM's /leads screen.
 
@@ -5428,6 +5443,11 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
                   _build_lead_filter_where() and FOLLOWUP_FILTER_OPTIONS /
                   SITE_VISIT_FILTER_OPTIONS / CAPI_STATUS_OPTIONS. Unknown
                   values are ignored.
+    score_band  : v2.102 — "Hot" / "Warm" / "Cold" (SCORE_BAND_OPTIONS). Scores
+                  are live-computed, so only when this is set the matching
+                  rows are scored (compute_lead_scores(), in chunks of
+                  SCORE_FILTER_CHUNK) and filtered in Python BEFORE
+                  pagination. Anything else = no filter, no scoring.
     lead_origin : v2.95 — exact match on the EFFECTIVE origin
                   (lead_origin_sql()): lead_source_detail if non-blank,
                   else derived from leads.source. Independent of, and
@@ -5485,6 +5505,16 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
         """, params).fetchall()
 
         rows = [dict(r) for r in all_rows]
+
+        # v2.102 — score-band filter, Python-side, only when a band is chosen.
+        if score_band in SCORE_BAND_OPTIONS:
+            kept = []
+            for i in range(0, len(rows), SCORE_FILTER_CHUNK):
+                chunk = rows[i:i + SCORE_FILTER_CHUNK]
+                scores = compute_lead_scores([r["cls_id"] for r in chunk])
+                kept.extend(r for r in chunk
+                            if scores.get(r["cls_id"], {"band": "Cold"})["band"] == score_band)
+            rows = kept
 
         total = len(rows)
         total_pages = max(1, (total + per_page - 1) // per_page)

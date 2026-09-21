@@ -1,8 +1,11 @@
-{# leads_list.html (v0.12) — top filter bar removed per Srikanth's spec.
+{# leads_list.html (v0.13) — top filter bar removed per Srikanth's spec.
    Header is now just "Leads (N)" + Add lead. Filter/Search/Fields
    moved to the bottom icon bar (_leads_list_actionbar.html) — Filter
    and Search open dedicated full-screen panels; Fields stays an
    in-place popover, just relocated.
+
+   v0.13 (2026-09-21) — "Filters active" also checks filters.score_band
+   (app.py v0.81).
 
    v0.12 (2026-09-21) — "Filters active" also checks funding / followup /
    site_visit / capi_status (app.py v0.80).
@@ -70,7 +73,7 @@
 {% endif %}
 
 {% if filters.q or filters.stages or filters.project or filters.owner or filters.date_from or filters.date_to
-      or filters.stage_reason or filters.campaign or filters.source or filters.sub_source or filters.lead_origin or filters.funding or filters.followup or filters.site_visit or filters.capi_status or filters.budget
+      or filters.stage_reason or filters.campaign or filters.source or filters.sub_source or filters.lead_origin or filters.funding or filters.followup or filters.site_visit or filters.capi_status or filters.score_band or filters.budget
       or filters.configuration or filters.property_type or filters.facing %}
 <div style="display:flex; align-items:center; gap:8px; margin:14px 0; font-size:13px; color:var(--ink-soft); flex-wrap:wrap;">
   <span>Filters active{% if filters.q %} · searching "{{ filters.q }}"{% endif %}</span>
