@@ -1,4 +1,42 @@
-<!-- base.html v0.24 — Task 8 item 1: NEW admin-only "Work As" nav drawer
+<!-- base.html v0.25 — Desk mode D1: desktop sidebar shell + Auto/Desk/
+     Mobile layout toggle (requires app.py v0.84's `layout_mode` /
+     `desk_min_width_px` context vars and its new /layout/<mode>
+     route). Phones/WebView are pixel-identical in the default "auto"
+     mode below DESK_MIN_WIDTH_PX — everything new here is scoped under
+     a single `html.desk` class so nothing else changes.
+     PRE-COMMIT FIX (same session): renamed every "view"-flavored name
+     in this new feature to "layout" (class prefix view-* -> layout-*,
+     .view-mode-toggle -> .layout-mode-toggle, footer label "View:" ->
+     "Layout:") — "View" already means the PRE-EXISTING, UNRELATED
+     manager Team-wide/My-leads toggle just below in this same drawer
+     (see its own v0.41 comment); this feature is screen layout, not
+     that data scope, so it needed its own vocabulary throughout.
+       - <html class="layout-{{ layout_mode or 'auto' }}"> plus a tiny
+         inline <script> in <head>, BEFORE the stylesheet, so the desk
+         layout (or lack of it) is decided before first paint — no
+         flash of the wrong layout. "layout-desk"/"layout-mobile" force
+         that layout; "layout-auto" adds/removes html.desk itself via
+         matchMedia('(min-width: {{ desk_min_width_px }}px)'), live,
+         so resizing the window (or rotating a tablet) re-evaluates it.
+       - ALL new CSS scoped under `html.desk` at the bottom of <style>:
+         a permanently-visible .nav-drawer (no slide, no backdrop, no
+         hamburger), main.wrap gets a left margin + wider max-width,
+         .action-bar shifts right so it doesn't sit under the sidebar.
+         The existing mobile CSS above (including the
+         @media (max-width:700px) block) is completely untouched.
+       - Drawer-open/close JS (menu-btn / navScrim) now no-ops when
+         html.desk is present, so a stray click can't try to "close"
+         the permanent sidebar.
+       - New sidebar-footer toggle row (logged-in users only): "Layout:
+         Auto / Desk / Mobile", each linking to the new set_layout_mode
+         route (mode + next=request.full_path), with the active mode
+         bolded. Sits alongside, and is fully independent of, the
+         existing manager "View: Team-wide / My leads only" form
+         further up this same drawer. Existing footer text
+         (app_version) kept, just wrapped alongside this new row.
+     Untouched, as instructed: notifications bell, AndroidBridge sync
+     icon logic, the pull-to-refresh IIFE, and sw.js registration.
+     base.html v0.24 — Task 8 item 1: NEW admin-only "Work As" nav drawer
      link (settings_work_as, app.py v0.74), placed right above the
      existing Settings link, gated on the same
      {% raw %}{% if current_user.role == 'admin' %}{% endraw %}
@@ -123,10 +161,36 @@
        with a pending-count badge, fed by inject_current_user()'s new
        pending_reminder_count. -->
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="layout-{{ layout_mode or 'auto' }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+<!-- Desk mode D1 (v0.25) — decides html.desk BEFORE any stylesheet
+     loads, so the desktop shell (or lack of it) is correct on first
+     paint with no flash of the wrong layout. "layout-desk"/"layout-mobile"
+     (forced via the sidebar toggle -> /layout/<mode> -> app.py v0.84)
+     just add/never-add .desk outright; "layout-auto" (the default) mirrors
+     a live matchMedia check so resizing the window re-evaluates it.
+     Wrapped in try/catch — a failure here must never block the page. -->
+<script>
+(function(){
+  try{
+    var root = document.documentElement;
+    if (root.classList.contains('layout-desk')){
+      root.classList.add('desk');
+    } else if (root.classList.contains('layout-auto')){
+      var mq = window.matchMedia('(min-width: {{ desk_min_width_px }}px)');
+      var apply = function(e){ root.classList.toggle('desk', e.matches); };
+      apply(mq);
+      if (mq.addEventListener) mq.addEventListener('change', apply);
+      else if (mq.addListener) mq.addListener(apply); // older Safari/WebView
+    }
+    // layout-mobile: never adds .desk.
+  } catch(e){}
+})();
+</script>
+
 <title>{% block title %}Dashboard{% endblock %} · Asian Properties CRM</title>
 
 <!-- PWA app-shell plumbing -->
@@ -155,6 +219,13 @@
     --green: #27AE60;
     --red: #D64545;
     --gray: #8A93A3;
+    /* header.appbar's rendered height (v0.25) — 14px padding top+bottom
+       plus its tallest inline content, measured against the live page.
+       Single source of truth so html.desk's sidebar (below) can seat
+       itself exactly below the appbar without hardcoding this twice.
+       The appbar itself is untouched and still sizes itself naturally;
+       this variable only describes it, it doesn't set anything on it. */
+    --appbar-h: 56px;
   }
   *{ box-sizing: border-box; }
   html, body{ height: 100%; }
@@ -641,6 +712,46 @@ header.appbar .bell-btn, header.appbar .sync-btn{
   display: block; margin-top: 3px; font-size: 11px; font-weight: 400; color: var(--ink-soft);
 }
 .notif-empty{ padding: 20px 14px; text-align: center; color: var(--ink-soft); font-size: 13px; }
+
+/* Sidebar layout-mode toggle in the drawer footer (v0.25) — visible at
+   every viewport, not just html.desk, since it's the only way to
+   reach Desk mode from a phone at all (and back again). Deliberately
+   tiny/muted so it doesn't compete with the "Asian Properties CRM ·
+   APX vX.X" line it now sits above. */
+.layout-mode-toggle{ margin-bottom: 6px; }
+.layout-mode-toggle a{ color: var(--ink-soft); }
+.layout-mode-toggle a.active{ color: var(--ink); font-weight: 700; }
+
+/* Desk mode D1 (v0.25) — desktop sidebar shell. Every rule below is
+   scoped under html.desk (set by the inline <script> in <head> above)
+   so none of it applies to a phone/WebView in the default "auto" mode
+   below DESK_MIN_WIDTH_PX — see that script's own comment for how
+   html.desk gets added. Nothing in the @media (max-width:700px) block
+   above, or anywhere else in this file, is touched. */
+html.desk{
+  --desk-sidebar-w: 232px;
+}
+html.desk header.appbar .menu-btn{ display: none; }
+html.desk .nav-scrim{ display: none; }
+html.desk .nav-scrim.show{ display: none; }
+html.desk .nav-drawer{
+  transform: none;
+  transition: none;
+  top: var(--appbar-h);
+  height: calc(100% - var(--appbar-h));
+  width: var(--desk-sidebar-w);
+  box-shadow: none;
+  border-right: 1px solid var(--line);
+}
+html.desk main.wrap{
+  margin-left: var(--desk-sidebar-w);
+  max-width: 1280px;
+  padding-bottom: 20px;
+}
+html.desk main.wrap.wrap-wide{ max-width: 1400px; }
+html.desk .action-bar{
+  left: var(--desk-sidebar-w);
+}
 </style>
 {% block head %}{% endblock %}
 </head>
@@ -744,7 +855,22 @@ header.appbar .bell-btn, header.appbar .sync-btn{
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   <div class="drawer-divider"></div>
   <a href="{{ url_for('logout') }}" class="btn-pill-green" style="margin:10px 20px; display:block;">Log out</a>
-  <div class="drawer-footer">Asian Properties CRM{% if app_version %} · APX v{{ app_version }}{% endif %}</div>
+  <div class="drawer-footer">
+    <!-- v0.25 — Desk mode D1: Auto/Desk/Mobile layout toggle. next=
+         request.full_path so switching modes lands back on whatever
+         page this was clicked from, same "preserve the current page"
+         convention as the existing manager "View: Team-wide / My
+         leads only" toggle form above — a DIFFERENT, unrelated data
+         scope toggle this one is deliberately named apart from
+         (layout_mode/set_layout_mode, not view_mode/set_view_mode). -->
+    <div class="layout-mode-toggle">
+      Layout:
+      <a href="{{ url_for('set_layout_mode', mode='auto', next=request.full_path) }}" class="{{ 'active' if (layout_mode or 'auto') == 'auto' }}">Auto</a> ·
+      <a href="{{ url_for('set_layout_mode', mode='desk', next=request.full_path) }}" class="{{ 'active' if layout_mode == 'desk' }}">Desk</a> ·
+      <a href="{{ url_for('set_layout_mode', mode='mobile', next=request.full_path) }}" class="{{ 'active' if layout_mode == 'mobile' }}">Mobile</a>
+    </div>
+    Asian Properties CRM{% if app_version %} · APX v{{ app_version }}{% endif %}
+  </div>
 </nav>
 {% endif %}
 

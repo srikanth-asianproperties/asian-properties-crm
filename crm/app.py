@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.83
+Version : 0.84
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,33 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.84 (2026-09-22) — Desk mode D1: desktop shell layout + Auto/Desk/
+  Mobile layout toggle (requires base.html v0.25). Phones/WebView are
+  pixel-identical in the default "auto" mode — this only adds an
+  opt-in desktop sidebar shell above DESK_MIN_WIDTH_PX, or a forced
+  desk/mobile layout via the new toggle. No cls_db.py change, no
+  schema change.
+  PRE-COMMIT FIX (same session): renamed view_mode/VIEW_MODE(S)/
+  /view-mode -> layout_mode/LAYOUT_MODE(S)/LAYOUT_COOKIE//layout,
+  since "view_mode" already means the UNRELATED manager Team-wide/
+  My-leads scope toggle (users.view_mode column, cls_db.get_view_mode/
+  set_view_mode(), toggle_view_mode() below) — this feature is screen
+  LAYOUT, a different concept, and the old names collided with it.
+    - NEW config constants LAYOUT_COOKIE / LAYOUT_MODES /
+      DESK_MIN_WIDTH_PX (config-not-code, same convention as
+      SETTINGS_BREADCRUMBS/ENDPOINT_LABELS above).
+    - inject_current_user(): additive `layout_mode` (from the cookie,
+      "auto" if unset/invalid) and `desk_min_width_px`, so base.html
+      can render <html class="layout-{{ layout_mode }}"> and size its
+      own matchMedia check without every route passing this explicitly.
+    - NEW route GET /layout/<mode> (set_layout_mode(), @login_required)
+      — 404 for an unrecognized mode; sets/clears LAYOUT_COOKIE
+      (365-day, SameSite=Lax, HttpOnly, Secure when request.is_secure);
+      redirects to ?next= when it's a same-origin path (starts with
+      "/", not "//" — open-redirect guard), else dashboard(). A
+      leftover old apx_view cookie from before the rename is simply
+      never read by anything now — harmless, not cleaned up.
+
 v0.83 (2026-09-22) — APP_VERSION now derived from header — fixes
   long-standing drift (was 0.64). Display-only; no other usage.
 
@@ -2568,6 +2595,16 @@ def inject_current_user():
     # manager, who have no owner_match_name-based lead scope) can get
     # notifications, so it's computed unconditionally whenever `user`
     # resolves, not gated behind a role check like the two above.
+    # v0.84 — also injects `layout_mode` (LAYOUT_COOKIE's current
+    # value, defaulting to "auto" when unset or invalid) and
+    # `desk_min_width_px` (DESK_MIN_WIDTH_PX), for base.html's Desk
+    # mode D1 shell. Computed unconditionally, not inside the
+    # session.get("user_id") block below — login.html and any other
+    # logged-out page still need a `layout_mode` class on <html>. NOT
+    # to be confused with `current_user.view_mode` (the pre-existing,
+    # unrelated manager Team-wide/My-leads scope toggle) — this key is
+    # deliberately named `layout_mode`, not `view_mode`, to avoid
+    # colliding with that existing concept.
     user = None
     unread_assignment_count = 0
     pending_reminder_count = 0
@@ -2582,6 +2619,9 @@ def inject_current_user():
             unread_notification_count = cls_db.get_unread_notification_count(user["user_id"])
         if session.get("impersonator_id"):
             impersonator = cls_db.get_user_by_id(session["impersonator_id"])
+    layout_mode = request.cookies.get(LAYOUT_COOKIE)
+    if layout_mode not in LAYOUT_MODES:
+        layout_mode = "auto"
     return {
         "current_user": user,
         "unread_assignment_count": unread_assignment_count,
@@ -2593,6 +2633,8 @@ def inject_current_user():
         # SETTINGS_BREADCRUMBS above. None for any route not in that
         # dict, which _back_button.html treats as "no breadcrumb".
         "breadcrumb": SETTINGS_BREADCRUMBS.get(request.endpoint),
+        "layout_mode": layout_mode,
+        "desk_min_width_px": DESK_MIN_WIDTH_PX,
     }
 
 
@@ -2664,6 +2706,20 @@ SETTINGS_BREADCRUMBS = {
         ("Settings", "settings_home"), ("Telephony", "settings_telephony"),
         ("Synced Recordings", None)],
 }
+
+# v0.84 — Desk mode D1: config-not-code for the Auto/Desk/Mobile layout
+# toggle. "auto" (the default, and what a cleared/missing cookie means)
+# lets base.html's own matchMedia check decide; "desk"/"mobile" force
+# that layout regardless of viewport width. DESK_MIN_WIDTH_PX is the
+# single source of truth for both the "auto" breakpoint here and
+# base.html's matchMedia query — see inject_current_user() below and
+# set_layout_mode() further down. Deliberately NOT named VIEW_MODE*/
+# view_mode anywhere — that name is already taken by the unrelated
+# manager Team-wide/My-leads scope toggle (cls_db.get_view_mode/
+# set_view_mode(), toggle_view_mode() below, users.view_mode column).
+LAYOUT_COOKIE = "apx_layout"
+LAYOUT_MODES = ("auto", "desk", "mobile")
+DESK_MIN_WIDTH_PX = 1024
 
 
 @app.before_request
@@ -2764,6 +2820,53 @@ def logout_confirm():
         cls_db.end_user_session(session["session_row_id"], reason="manual")
     session.clear()
     return redirect(url_for("login"))
+
+
+# ─────────────────────────────────────────────────────────────
+# ROUTES — LAYOUT MODE  (Desk mode D1, v0.84)
+# ─────────────────────────────────────────────────────────────
+
+@app.route("/layout/<mode>")
+@login_required
+def set_layout_mode(mode):
+    """
+    v0.84 — persists the Desk/Mobile shell preference (LAYOUT_COOKIE)
+    read back by inject_current_user()'s `layout_mode`. Deliberately
+    named layout_mode/set_layout_mode/LAYOUT_COOKIE/LAYOUT_MODES/
+    /layout throughout — NOT view_mode/set_view_mode/anything /view-*
+    — to avoid colliding with cls_db.get_view_mode()/set_view_mode()/
+    toggle_view_mode() above, which is a DIFFERENT, unrelated
+    manager-only "team-wide vs my leads only" data scope toggle. This
+    one is purely a client-side screen-layout preference, available to
+    every role.
+
+    "auto" clears the cookie rather than storing the literal string, so
+    base.html's own matchMedia check is what decides the layout —
+    consistent with "auto" being the default when no cookie is set at
+    all. 404s for anything outside LAYOUT_MODES instead of silently
+    falling back, so a stale/bad link surfaces instead of hiding a
+    typo. A leftover apx_view cookie from before this route was renamed
+    off /view-mode is simply never read here — harmless, ignored.
+    """
+    if mode not in LAYOUT_MODES:
+        abort(404)
+
+    next_url = request.args.get("next", "")
+    dest = next_url if next_url.startswith("/") and not next_url.startswith("//") else url_for("dashboard")
+
+    resp = redirect(dest)
+    if mode == "auto":
+        resp.delete_cookie(LAYOUT_COOKIE)
+    else:
+        resp.set_cookie(
+            LAYOUT_COOKIE,
+            mode,
+            max_age=365 * 24 * 60 * 60,
+            samesite="Lax",
+            httponly=True,
+            secure=request.is_secure,
+        )
+    return resp
 
 
 # ─────────────────────────────────────────────────────────────
