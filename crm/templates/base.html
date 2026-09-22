@@ -1,4 +1,12 @@
-<!-- base.html v0.25 — Desk mode D1: desktop sidebar shell + Auto/Desk/
+<!-- base.html v0.26 — Desk mode D2: NEW "Desk Dashboard" drawer link,
+     directly under "Dashboard", shown only when current_user.role is
+     in `desk_dashboard_roles` (app.py v0.85's inject_current_user(),
+     same DESK_DASHBOARD_ROLES tuple the new desk_dashboard() route
+     itself gates on — the link can never show for a role the route
+     would 403). Active state on request.endpoint == 'desk_dashboard',
+     same pattern every other drawer link already uses. Nothing else
+     in this file changes.
+     base.html v0.25 — Desk mode D1: desktop sidebar shell + Auto/Desk/
      Mobile layout toggle (requires app.py v0.84's `layout_mode` /
      `desk_min_width_px` context vars and its new /layout/<mode>
      route). Phones/WebView are pixel-identical in the default "auto"
@@ -822,6 +830,9 @@ html.desk .action-bar{
   </form>
   {% endif %}
   <a href="{{ url_for('dashboard') }}" class="drawer-link {{ 'active' if request.endpoint == 'dashboard' }}">Dashboard</a>
+  {% if current_user.role in desk_dashboard_roles %}
+  <a href="{{ url_for('desk_dashboard') }}" class="drawer-link {{ 'active' if request.endpoint == 'desk_dashboard' }}">Desk Dashboard</a>
+  {% endif %}
   <a href="{{ url_for('leads_list') }}" class="drawer-link {{ 'active' if request.endpoint in ['leads_list', 'lead_detail'] }}">Leads</a>
   <a href="{{ url_for('reminders_tomorrow') }}" class="drawer-link {{ 'active' if request.endpoint == 'reminders_tomorrow' }}">
     Reminders

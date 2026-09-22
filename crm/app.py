@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.84
+Version : 0.85
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,73 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.85 (2026-09-22) — Desk mode D2: admin-only "Desk Dashboard"
+  (requires base.html v0.26, NEW crm/templates/desk_dashboard.html
+  v1). READ-ONLY report page, Sell.do "System Default"-style — no
+  cls_db.py change, no schema change, no write path anywhere in it.
+    - NEW config constants DESK_DASHBOARD_ROLES (currently just
+      "admin" — adding "manager" later is a config-only change),
+      ATTENDANCE_AVAILABILITY_BUCKETS (maps each cls_db.
+      get_today_attendance_overview() status to "in"/"not_in"/"leave"
+      for the right-rail availability widget; unmapped/None ->
+      "not_in"), DESK_BAR_COLORS (cycled by the template's pure-CSS
+      bar_table macro — no Chart.js, no new CDN).
+    - NEW route GET /desk/dashboard (desk_dashboard()), @login_required
+      then a role check against DESK_DASHBOARD_ROLES using the exact
+      same session["user_id"]-based logic as admin_required() (so an
+      admin mid "Work As" impersonation gets 403'd exactly like a real
+      non-admin would — no bypass, verified against admin_required's
+      own behavior before writing this). Company-wide scope always
+      (this route is admin-only, and admins are already company-wide
+      via effective_company_wide() — no separate scope_owner gate
+      needed like dashboard()/dashboard_booking_summary() have).
+    - Filters (project/source/owner + date range) reuse
+      _resolve_booking_summary_date_range() and the exact same
+      parsing dashboard_booking_summary() uses, including the v0.78
+      source-label mapping — same filter bar behavior, same option
+      lists (cls_db.get_all_bucket_names()/get_lead_origin_options()/
+      get_distinct_owners()).
+    - KPI tiles (all_leads/reengaged/new_enquiries/no_future_activity/
+      missed_calls/follow_ups_due) are LIVE, deliberately ignoring the
+      page's date/project/source/owner filters — same "live snapshot"
+      posture as dashboard()'s own tiles. The follow-ups tile is
+      labeled "Follow-ups Due", not "Missed Follow-ups": cls_db.
+      get_due_by_kind("follow_up") includes items due TODAY as well as
+      overdue ones (verified by reading get_due_today()'s SQL — it's
+      `<=` today, not strict `<`), so "Missed" would overstate it.
+    - today_stage_by_project / visits_status_by_project are project x
+      stage / project x status cross-tabs built by iterating each
+      project label straight out of get_leads_by_project_for_period()/
+      get_site_visits_by_project_for_period() and feeding it back into
+      get_stage_counts_for_period()/get_site_visits_by_status_for_
+      period() as that call's own project= argument — verified this
+      round-trips correctly (both sides key on the same raw l.project
+      column with exact-match SQL, confirmed by reading
+      _booking_summary_where()). This is NOT the same set of strings
+      as the page's own Project filter dropdown (cls_db.
+      get_all_bucket_names(), a separate normalized "bucket name" set
+      that leads.project is aliased against) — that mismatch is
+      pre-existing on dashboard_booking_summary()'s identical dropdown
+      too, not introduced here; flagging it, not fixing it, since
+      fixing it would mean changing get_all_bucket_names()/how project
+      filtering works everywhere, well beyond this page's scope.
+    - Everything else (leads_by_owner, stage_counts, leads_by_project,
+      leads_by_source, visits_by_owner, bookings_by_project,
+      bookings_by_owner) is period-bound by the page's filters, same
+      function calls/shapes dashboard_booking_summary() already uses.
+    - availability = cls_db.get_today_attendance_overview() bucketed
+      via ATTENDANCE_AVAILABILITY_BUCKETS, for the right-rail widget.
+      agenda = cls_db.get_todays_agenda(owner=None) (company-wide).
+    - wrap_wide=True (same context var main.wrap.wrap-wide already
+      supports, base.html v0.23 — no new CSS needed for the width).
+  PRE-COMMIT FIX (same session): ATTENDANCE_AVAILABILITY_BUCKETS now
+  maps "weekoff" -> "leave" (was "not_in") — matches cls_db.py's own
+  SELF_SERVICE_ATTENDANCE_STATUSES = ("weekoff", "leave") pairing, so
+  a scheduled day off groups with approved leave, not with an
+  unexplained absence. "Not marked yet" (status is None) is unaffected
+  — still falls through to "not_in". Right-rail label changed to
+  "Off / Leave" to match (desk_dashboard.html v1's own note below).
+
 v0.84 (2026-09-22) — Desk mode D1: desktop shell layout + Auto/Desk/
   Mobile layout toggle (requires base.html v0.25). Phones/WebView are
   pixel-identical in the default "auto" mode — this only adds an
@@ -2635,6 +2702,13 @@ def inject_current_user():
         "breadcrumb": SETTINGS_BREADCRUMBS.get(request.endpoint),
         "layout_mode": layout_mode,
         "desk_min_width_px": DESK_MIN_WIDTH_PX,
+        # v0.85 — Desk mode D2: role tuple for the "Desk Dashboard"
+        # drawer link (base.html v0.26) — shown only when
+        # current_user.role is in this tuple, same DESK_DASHBOARD_ROLES
+        # the desk_dashboard() route itself gates on, so the link's
+        # visibility can never drift from what the route actually
+        # allows.
+        "desk_dashboard_roles": DESK_DASHBOARD_ROLES,
     }
 
 
@@ -2720,6 +2794,42 @@ SETTINGS_BREADCRUMBS = {
 LAYOUT_COOKIE = "apx_layout"
 LAYOUT_MODES = ("auto", "desk", "mobile")
 DESK_MIN_WIDTH_PX = 1024
+
+# v0.85 — Desk mode D2: config-not-code for the new admin Desk Dashboard
+# (desk_dashboard() route, below the DASHBOARD routes). Adding "manager"
+# to DESK_DASHBOARD_ROLES later is a config-only change — the route's
+# own role check just tests membership in this tuple, same "extend the
+# config, not the code" convention as CRM_ROLES/STAGE_TRANSITIONS.
+DESK_DASHBOARD_ROLES = ("admin",)
+
+# Maps every cls_db.get_today_attendance_overview() status value (see
+# that function's own docstring/ATTENDANCE_STATUSES) to one of the 3
+# right-rail availability buckets. "half_day"/"late" both count as "in"
+# — the person did show up today. "weekoff" now counts as "leave"
+# (PRE-COMMIT FIX, same session as the original D2 build) alongside
+# "leave" itself — cls_db.py's own SELF_SERVICE_ATTENDANCE_STATUSES =
+# ("weekoff", "leave") already groups these two together as the pair a
+# salesperson can self-mark without a correction request, so the
+# right-rail widget follows that same existing pairing instead of
+# treating a scheduled day off as equivalent to an unexplained absence.
+# ATTENDANCE_STATUSES has no separate holiday status today — if one is
+# ever added, it belongs in this "leave" bucket too. A status this
+# dict doesn't recognize, OR the not-marked-yet case (status is None),
+# falls through to "not_in" via .get(status, "not_in") at the call
+# site — never silently dropped from the total.
+ATTENDANCE_AVAILABILITY_BUCKETS = {
+    "present": "in",
+    "late": "in",
+    "half_day": "in",
+    "absent": "not_in",
+    "weekoff": "leave",
+    "leave": "leave",
+}
+
+# Cycled by desk_dashboard.html's bar_table() Jinja macro for its
+# pure-CSS horizontal bars — no Chart.js, no new CDN, no external
+# request of any kind from that page.
+DESK_BAR_COLORS = ["#6C4DF6", "#FF7A59", "#6FD6C8", "#F5B942", "#2F80ED", "#9B9B9B"]
 
 
 @app.before_request
@@ -3054,6 +3164,166 @@ def dashboard_booking_summary():
         bookings_by_owner=cls_db.get_bookings_by_owner_for_period(date_from, date_to, project, source, owner),
         bookings_by_project=cls_db.get_bookings_by_project_for_period(date_from, date_to, project, source, owner),
         booked_leads=cls_db.get_booked_leads_for_period(date_from, date_to, project, source, owner),
+    )
+
+
+@app.route("/desk/dashboard")
+@login_required
+def desk_dashboard():
+    """
+    v0.85 — Desk mode D2: admin-only "Desk Dashboard", Sell.do "System
+    Default" style. READ-ONLY — nothing in this route or its template
+    writes to leads/activity_log/site_visits/follow_ups/anything.
+
+    Role gate is a literal copy of admin_required()'s own body (session
+    ["user_id"] -> cls_db.get_user_by_id(), 403 on mismatch), just
+    testing membership in DESK_DASHBOARD_ROLES instead of `!= "admin"`
+    — kept as a plain function-body check rather than stacking
+    @admin_required so the tuple can grow (e.g. add "manager") without
+    that decorator's own hardcoded "admins only" wording going stale.
+    Verified against _do_impersonate() before writing this: "Work As"
+    swaps session["user_id"] to the target, so an admin impersonating a
+    non-admin gets 403'd here exactly like admin_required() would —
+    no bypass.
+
+    Filters mirror dashboard_booking_summary() exactly (same
+    _resolve_booking_summary_date_range() call, same v0.78 source-label
+    mapping, same option lists) — see that route's own docstring/
+    changelog for why each piece works the way it does. Always
+    company-wide: this route is admin-only, and admins are already
+    company-wide via effective_company_wide(), so there's no
+    scope_owner/force-lock branch to mirror from dashboard()/
+    dashboard_booking_summary() here.
+
+    KPI tiles are LIVE (no date/project/source/owner filter applied),
+    matching dashboard()'s own "always current" tiles. Everything else
+    below is bound to the page's own filters, same cls_db functions
+    dashboard_booking_summary() already calls.
+    """
+    user = cls_db.get_user_by_id(session["user_id"])
+    if not user or user["role"] not in DESK_DASHBOARD_ROLES:
+        abort(403, description="This area is for admins only.")
+
+    project = request.args.get("project") or None
+    source = request.args.get("source") or None
+    if source:
+        source = cls_db.SOURCE_DISPLAY_LABELS.get(source, source)
+    owner = request.args.get("owner") or None
+    date_from, date_to, active_preset = _resolve_booking_summary_date_range(request.args)
+
+    def _fmt_display_date(d):
+        return datetime.strptime(d, "%Y-%m-%d").strftime("%d %b %Y") if d else ""
+
+    filters = {
+        "project": project or "", "source": source or "", "owner": owner or "",
+        "date_preset": active_preset, "date_from": date_from, "date_to": date_to,
+        "date_from_display": _fmt_display_date(date_from), "date_to_display": _fmt_display_date(date_to),
+    }
+    today_display = datetime.now().strftime("%d %b %Y")
+
+    # ── KPI tiles: LIVE, ignore the filter bar entirely (same posture
+    # as dashboard()'s own tiles) ──
+    stage_snapshot = cls_db.get_stage_snapshot_counts()
+    kpis = {
+        "all_leads": sum(stage_snapshot.values()),
+        "reengaged": cls_db.get_reengaged_count(days=7),
+        "new_enquiries": cls_db.get_new_enquiries_count(),
+        "no_future_activity": cls_db.get_no_future_activity_count(),
+        "missed_calls": cls_db.get_missed_calls_count(),
+        # "Follow-ups Due", not "Missed" — get_due_by_kind() includes
+        # items due TODAY, not just strictly-overdue ones (see this
+        # route's own docstring / v0.85 changelog).
+        "follow_ups_due": len(cls_db.get_due_by_kind("follow_up")),
+    }
+
+    totals = cls_db.get_booking_summary_totals(date_from, date_to, project, source, owner)
+    # Quick Summary wants "Conducted Site Visits" specifically (Sell.do's
+    # own wording), not totals["site_visits"] (every scheduled visit in
+    # range regardless of outcome, the same number dashboard_booking_
+    # summary.html's plain "Site Visits" card already shows) — so pull
+    # the "Conducted" slice of the overall status breakdown separately.
+    visits_by_status_overall = cls_db.get_site_visits_by_status_for_period(date_from, date_to, project, source, owner)
+    conducted_site_visits = visits_by_status_overall.get("Conducted", 0)
+
+    # ── Cross-tabs: project x stage (fixed to TODAY) and project x
+    # site-visit-status (the page's own filter range). Each project
+    # label comes straight from the matching *_by_project_for_period()
+    # call and is fed back into the per-status/per-stage function as
+    # ITS OWN project= argument — verified this round-trips correctly
+    # (see this route's own docstring) since both sides key on the
+    # same raw leads.project column with exact-match SQL. Zero-count
+    # rows are dropped so a project with no leads in a given stage
+    # doesn't render an empty bar. ──
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_stage_by_project = []
+    for proj in cls_db.get_leads_by_project_for_period(today_str, today_str, None, source, owner):
+        stage_counts = cls_db.get_stage_counts_for_period(today_str, today_str, proj["label"], source, owner)
+        stages = [{"label": s, "count": c} for s, c in stage_counts.items() if c > 0]
+        today_stage_by_project.append({"project": proj["label"], "total": proj["count"], "stages": stages})
+
+    visits_status_by_project = []
+    for proj in cls_db.get_site_visits_by_project_for_period(date_from, date_to, None, source, owner):
+        status_counts = cls_db.get_site_visits_by_status_for_period(date_from, date_to, proj["label"], source, owner)
+        statuses = [{"label": s, "count": c} for s, c in status_counts.items() if c > 0]
+        visits_status_by_project.append({"project": proj["label"], "total": proj["count"], "stages": statuses})
+
+    # ── Flat breakdowns: same functions/shapes dashboard_booking_
+    # summary() already uses, bound to the page's own filter range ──
+    stage_counts = [{"label": s, "count": c} for s, c in
+                     cls_db.get_stage_counts_for_period(date_from, date_to, project, source, owner).items()]
+    leads_by_owner = cls_db.get_leads_by_owner_for_period(date_from, date_to, project, source, owner)
+    leads_by_project = cls_db.get_leads_by_project_for_period(date_from, date_to, project, source, owner)
+    leads_by_source = cls_db.get_leads_by_source_for_period(date_from, date_to, project, source, owner)
+    visits_by_owner = cls_db.get_site_visits_by_owner_for_period(date_from, date_to, project, source, owner)
+    bookings_by_project = cls_db.get_bookings_by_project_for_period(date_from, date_to, project, source, owner)
+    bookings_by_owner = cls_db.get_bookings_by_owner_for_period(date_from, date_to, project, source, owner)
+
+    # ── Right rail: today's attendance bucketed into In/Not In/On
+    # Leave, and today's agenda (site visits + follow-ups due today),
+    # both company-wide (owner=None) — admin-only page, no per-
+    # salesperson scoping to apply. ──
+    # Each row gets its own `bucket` key added here (not looked up via
+    # ATTENDANCE_AVAILABILITY_BUCKETS in the template — that dict is a
+    # Python-side constant, not a Jinja global) so desk_dashboard.html
+    # can group rows under In/Not In/On Leave with a plain equality
+    # check, no template-side dict lookup needed.
+    availability_counts = {"in": 0, "not_in": 0, "leave": 0}
+    availability_rows = []
+    for row in cls_db.get_today_attendance_overview(today_str):
+        row = dict(row)
+        row["bucket"] = ATTENDANCE_AVAILABILITY_BUCKETS.get(row["status"], "not_in")
+        availability_counts[row["bucket"]] += 1
+        availability_rows.append(row)
+    availability = {"counts": availability_counts, "rows": availability_rows}
+
+    agenda = cls_db.get_todays_agenda(owner=None)
+
+    return render_template(
+        "desk_dashboard.html",
+        filters=filters,
+        project_options=cls_db.get_all_bucket_names(),
+        source_options=cls_db.get_lead_origin_options(),
+        owner_options=cls_db.get_distinct_owners(),
+        date_preset_order=cls_reports.REPORT_DATE_PRESET_ORDER,
+        date_preset_labels=cls_reports.REPORT_DATE_PRESET_LABELS,
+        kpis=kpis,
+        totals=totals,
+        conducted_site_visits=conducted_site_visits,
+        today_stage_by_project=today_stage_by_project,
+        visits_status_by_project=visits_status_by_project,
+        stage_counts=stage_counts,
+        leads_by_owner=leads_by_owner,
+        leads_by_project=leads_by_project,
+        leads_by_source=leads_by_source,
+        visits_by_owner=visits_by_owner,
+        bookings_by_project=bookings_by_project,
+        bookings_by_owner=bookings_by_owner,
+        availability=availability,
+        agenda=agenda,
+        bar_colors=DESK_BAR_COLORS,
+        today_display=today_display,
+        refreshed_at=datetime.now().strftime("%d %b %Y, %I:%M %p"),
+        wrap_wide=True,
     )
 
 

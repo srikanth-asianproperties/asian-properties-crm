@@ -1,0 +1,468 @@
+{# desk_dashboard.html (v1, 2026-09-22) — Desk mode D2: admin-only "Desk
+   Dashboard", modeled on Sell.do's "System Default" dashboard + this
+   app's own "Leads to Booking Summary" page (dashboard_booking_summary.
+   html — read that file first if this one needs changing; the filter
+   bar, breakdown-table pattern and Quick Summary cards are deliberately
+   the same conventions, just laid out as a desktop-first grid instead
+   of a stacked mobile sub-tab page). READ-ONLY — nothing on this page
+   writes to leads/activity_log/site_visits/follow_ups/anything;
+   app.py's desk_dashboard() route only ever SELECTs.
+
+   Reached via base.html's "Desk Dashboard" drawer link (admin-only,
+   gated on desk_dashboard_roles) or directly at /desk/dashboard —
+   app.py's desk_dashboard() route 403s anyone not in
+   DESK_DASHBOARD_ROLES before this template ever renders, same
+   admin_required() logic, "Work As" impersonation included.
+
+   Layout: a CSS grid, main area (~72%) + right rail (~28%), collapsing
+   to a single column at <=1024px (DESK_MIN_WIDTH_PX — the same
+   breakpoint the sidebar itself uses, so the two collapse together) so
+   this still works stacked on a phone. All new CSS is scoped under a
+   single .desk-dash wrapper so it can't leak into any other page.
+
+   Bars: ONE Jinja macro, bar_table(), used for every "label -> count"
+   breakdown AND reused per-project for the two cross-tabs (Lead Stage
+   Stats Today / Site Visits by Project x Status) — pure CSS width
+   percentages, no Chart.js, no new CDN, no external request of any
+   kind from this page. Colors cycle app.py's DESK_BAR_COLORS
+   (bar_colors context var).
+
+   PRE-COMMIT FIX (same session): the third availability cell's label
+   changed from "On Leave" to "Off / Leave" — app.py's
+   ATTENDANCE_AVAILABILITY_BUCKETS now buckets "weekoff" into "leave"
+   too (was "not_in"), so this cell covers both a scheduled day off and
+   an approved leave request; "On Leave" alone undersold what it now
+   shows. #}
+{% extends "base.html" %}
+{% block title %}Desk Dashboard{% endblock %}
+
+{% block content %}
+<style>
+  .desk-dash-grid{
+    display: grid;
+    grid-template-columns: 72% 1fr;
+    gap: 16px;
+    margin-top: 14px;
+  }
+  @media (max-width: 1024px){
+    .desk-dash-grid{ grid-template-columns: 1fr; }
+  }
+
+  /* Quick Summary reuses the app-wide .stat-card/.stat-card-grid
+     classes (base.html), but those default to a 2-per-row aspect-ratio
+     box tuned for a phone. This page's own 4-across row is wide enough
+     that the aspect-ratio box gets absurdly tall, so it's overridden
+     here — scoped to .desk-dash, no other page's stat-card grid is
+     affected. */
+  .desk-dash .stat-card-grid{ grid-template-columns: repeat(4, 1fr); }
+  .desk-dash .stat-card{ aspect-ratio: auto; }
+  .desk-dash .stat-card-body{ padding: 20px 10px; }
+  @media (max-width: 700px){
+    .desk-dash .stat-card-grid{ grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* ── Filter bar ── */
+  .desk-dash-filterbar{
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  }
+  .desk-dash-filterbar select, .desk-dash-filterbar input[type="date"]{
+    height: 36px; font-size: 13px; padding: 4px 8px; min-width: 140px;
+  }
+  .desk-dash-refresh{
+    margin-left: auto; font-size: 12px; color: var(--ink-soft);
+    display: flex; align-items: center; gap: 8px; white-space: nowrap;
+  }
+
+  /* ── KPI tile row ── */
+  .desk-dash-kpi-caption{
+    font-size: 11px; color: var(--ink-soft); text-transform: uppercase;
+    letter-spacing: 0.05em; margin: 18px 0 6px;
+  }
+  .desk-dash-kpi-grid{
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px;
+  }
+  @media (max-width: 900px){
+    .desk-dash-kpi-grid{ grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (max-width: 520px){
+    .desk-dash-kpi-grid{ grid-template-columns: repeat(2, 1fr); }
+  }
+  .desk-dash-kpi{
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 10px; text-align: center; color: inherit; text-decoration: none;
+  }
+  a.desk-dash-kpi:hover{ background: #FAFBFC; text-decoration: none; }
+  .desk-dash-kpi-num{ font-size: 26px; font-weight: 700; line-height: 1.1; }
+  .desk-dash-kpi-label{ font-size: 11px; color: var(--ink-soft); margin-top: 4px; }
+
+  /* ── Widget cards ── */
+  .desk-widget-grid{
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px;
+  }
+  @media (max-width: 700px){
+    .desk-widget-grid{ grid-template-columns: 1fr; }
+  }
+  .desk-widget{
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    background: var(--card);
+  }
+  .desk-widget h4{ margin: 0; font-size: 14px; }
+  .desk-widget-caption{ font-size: 11px; color: var(--ink-soft); margin: 2px 0 10px; }
+  .desk-widget-empty{ font-size: 13px; color: var(--ink-soft); padding: 10px 0; }
+
+  .desk-bar-row{ display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+  .desk-bar-label{ flex: 0 0 38%; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .desk-bar-track{ flex: 1; height: 10px; border-radius: 4px; background: var(--paper); overflow: hidden; }
+  .desk-bar-fill{ height: 100%; border-radius: 4px; }
+  .desk-bar-count{ flex: 0 0 auto; font-size: 13px; font-weight: 700; min-width: 26px; text-align: right; }
+
+  .desk-crosstab-group{ margin-top: 10px; }
+  .desk-crosstab-group:first-child{ margin-top: 0; }
+  .desk-crosstab-head{
+    display: flex; justify-content: space-between; font-size: 13px; font-weight: 600;
+    padding: 4px 0; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+  }
+  .desk-crosstab-head span{ color: var(--ink-soft); font-weight: 400; }
+
+  /* ── Right rail ── */
+  .desk-rail-card{
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    background: var(--card); margin-bottom: 14px;
+  }
+  .desk-rail-card h4{ margin: 0 0 10px; font-size: 14px; }
+  .desk-avail-grid{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .desk-avail-cell{
+    border-radius: 8px; padding: 10px 6px; text-align: center; cursor: pointer;
+  }
+  .desk-avail-cell summary{ list-style: none; cursor: pointer; }
+  .desk-avail-cell summary::-webkit-details-marker{ display: none; }
+  .desk-avail-in{ background: #E8F6EE; }
+  .desk-avail-not-in{ background: #FBEAEA; }
+  .desk-avail-leave{ background: #FDF3E7; }
+  .desk-avail-num{ font-size: 22px; font-weight: 700; }
+  .desk-avail-in .desk-avail-num{ color: var(--green); }
+  .desk-avail-not-in .desk-avail-num{ color: var(--red); }
+  .desk-avail-leave .desk-avail-num{ color: var(--amber); }
+  .desk-avail-label{ font-size: 11px; color: var(--ink-soft); margin-top: 2px; }
+  .desk-avail-names{ font-size: 12px; margin-top: 8px; text-align: left; }
+  .desk-avail-names div{ padding: 2px 0; border-bottom: 1px solid var(--line); }
+  .desk-avail-names div:last-child{ border-bottom: none; }
+
+  .desk-today-tabbar{ display: flex; gap: 6px; margin-bottom: 8px; }
+  .desk-today-tab{
+    flex: 1; text-align: center; padding: 7px 4px; font-size: 12px; font-weight: 600;
+    color: var(--ink-soft); background: var(--paper); border: 1px solid var(--line);
+    border-radius: 8px; cursor: pointer;
+  }
+  .desk-today-tab.active{ color: #fff; background: var(--blue); border-color: var(--blue); }
+  .desk-today-panel{ display: none; }
+  .desk-today-panel.active{ display: block; }
+  .desk-today-row{
+    display: block; padding: 7px 0; border-bottom: 1px solid var(--line);
+    font-size: 13px; color: var(--ink); text-decoration: none;
+  }
+  .desk-today-row:last-child{ border-bottom: none; }
+  .desk-today-row:hover{ background: var(--paper); text-decoration: none; }
+  .desk-today-row .desk-today-time{ font-size: 11px; color: var(--ink-soft); display: block; margin-top: 1px; }
+
+  @media print{
+    .appbar, .nav-drawer, .nav-scrim, .no-print{ display: none !important; }
+  }
+</style>
+
+<div class="desk-dash">
+
+  {# ── FILTER BAR ── #}
+  <form method="get" action="{{ url_for('desk_dashboard') }}" id="deskFilterForm" class="no-print">
+    <div class="desk-dash-filterbar">
+      <select name="project" onchange="this.form.submit()">
+        <option value="">All Projects</option>
+        {% for p in project_options %}
+        <option value="{{ p }}" {% if filters.project == p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+
+      <select name="source" onchange="this.form.submit()">
+        <option value="">All Sources</option>
+        {% for s in source_options %}
+        <option value="{{ s }}" {% if filters.source == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+
+      <select name="owner" onchange="this.form.submit()">
+        <option value="">All Sales People</option>
+        {% for o in owner_options %}
+        <option value="{{ o }}" {% if filters.owner == o %}selected{% endif %}>{{ o }}</option>
+        {% endfor %}
+      </select>
+
+      <select name="preset" id="deskDatePresetSelect" onchange="onDeskDatePresetChange(this)">
+        {% for key in date_preset_order %}
+        <option value="{{ key }}" {% if filters.date_preset == key %}selected{% endif %}>{{ date_preset_labels[key] }}</option>
+        {% endfor %}
+      </select>
+
+      <span id="deskCustomDateFields" style="{% if filters.date_preset != 'custom' %}display:none;{% endif %} display:flex; gap:8px;">
+        <input type="date" name="from" value="{{ filters.date_from }}" aria-label="From date">
+        <input type="date" name="to" value="{{ filters.date_to }}" aria-label="To date">
+      </span>
+
+      <button type="submit" class="btn btn-primary" style="height:36px; padding:0 16px;">Apply</button>
+
+      <span class="desk-dash-refresh">
+        Last refreshed {{ refreshed_at }}
+        <a href="{{ url_for('desk_dashboard', **request.args.to_dict()) }}">Refresh</a>
+      </span>
+    </div>
+  </form>
+
+  {# ── KPI TILE ROW ── #}
+  <div class="desk-dash-kpi-caption">Live &middot; ignores the filters above</div>
+  <div class="desk-dash-kpi-grid">
+    <div class="desk-dash-kpi">
+      <div class="desk-dash-kpi-num">{{ kpis.all_leads }}</div>
+      <div class="desk-dash-kpi-label">All Leads</div>
+    </div>
+    <a href="{{ url_for('reengaged_list') }}" class="desk-dash-kpi">
+      <div class="desk-dash-kpi-num">{{ kpis.reengaged }}</div>
+      <div class="desk-dash-kpi-label">Reengaged</div>
+    </a>
+    <a href="{{ url_for('new_enquiries_list') }}" class="desk-dash-kpi">
+      <div class="desk-dash-kpi-num">{{ kpis.new_enquiries }}</div>
+      <div class="desk-dash-kpi-label">New Enquiries</div>
+    </a>
+    <a href="{{ url_for('no_future_activity_list') }}" class="desk-dash-kpi">
+      <div class="desk-dash-kpi-num">{{ kpis.no_future_activity }}</div>
+      <div class="desk-dash-kpi-label">No Future Activity</div>
+    </a>
+    <a href="{{ url_for('missed_calls_list') }}" class="desk-dash-kpi">
+      <div class="desk-dash-kpi-num">{{ kpis.missed_calls }}</div>
+      <div class="desk-dash-kpi-label">Missed Calls</div>
+    </a>
+    <a href="{{ url_for('due_list', kind='follow_up') }}" class="desk-dash-kpi">
+      <div class="desk-dash-kpi-num">{{ kpis.follow_ups_due }}</div>
+      <div class="desk-dash-kpi-label">Follow-ups Due</div>
+    </a>
+  </div>
+
+  {# ── QUICK SUMMARY ── #}
+  <h3 style="margin:20px 0 0;">Quick Summary</h3>
+  <div class="stat-card-grid">
+    <div class="stat-card">
+      <div class="stat-card-header">Total Leads</div>
+      <div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ totals.total_leads }}</div></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-header">Conducted Site Visits</div>
+      <div class="stat-card-body"><div class="stat-card-number stat-num-blue">{{ conducted_site_visits }}</div></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-header">Bookings</div>
+      <div class="stat-card-body"><div class="stat-card-number stat-num-green">{{ totals.bookings }}</div></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-header">Agreement Value</div>
+      <div class="stat-card-body">
+        <div class="stat-card-number stat-num-gray" title="Not tracked yet">&mdash;</div>
+        <div class="stat-card-caption">Not tracked yet</div>
+      </div>
+    </div>
+  </div>
+
+  {# ── MAIN / RAIL GRID ── #}
+  <div class="desk-dash-grid">
+    <div class="desk-dash-main">
+
+      {% macro bar_table(rows, empty_text='No data for the selected filters') %}
+        {% set counts = rows|map(attribute='count')|list %}
+        {% set max_c = counts|max if counts else 0 %}
+        {% if rows %}
+          {% for row in rows %}
+          <div class="desk-bar-row">
+            <div class="desk-bar-label" title="{{ row.label }}">{{ row.label }}</div>
+            <div class="desk-bar-track">
+              <div class="desk-bar-fill" style="width:{{ ((row.count / max_c * 100) if max_c else 0)|round(0, 'floor')|int }}%; min-width:{{ '3px' if row.count > 0 else '0' }}; background:{{ bar_colors[loop.index0 % (bar_colors|length)] }};"></div>
+            </div>
+            <div class="desk-bar-count">{{ row.count }}</div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="desk-widget-empty">{{ empty_text }}</div>
+        {% endif %}
+      {% endmacro %}
+
+      {# Lead Stage Stats — Today (project x stage cross-tab) #}
+      <div class="desk-widget-grid">
+        <div class="desk-widget" style="grid-column: 1 / -1;">
+          <h4>Lead Stage Stats &mdash; Today</h4>
+          <div class="desk-widget-caption">Created: {{ today_display }}</div>
+          {% if today_stage_by_project %}
+            {% for grp in today_stage_by_project %}
+            <div class="desk-crosstab-group">
+              <div class="desk-crosstab-head">{{ grp.project }} <span>{{ grp.total }}</span></div>
+              {{ bar_table(grp.stages) }}
+            </div>
+            {% endfor %}
+          {% else %}
+          <div class="desk-widget-empty">No data for the selected filters</div>
+          {% endif %}
+        </div>
+
+        <div class="desk-widget">
+          <h4>Lead by Sales</h4>
+          <div class="desk-widget-caption">Created: {{ filters.date_from_display or 'All time' }}{% if filters.date_to_display %} &ndash; {{ filters.date_to_display }}{% endif %}</div>
+          {{ bar_table(leads_by_owner) }}
+        </div>
+
+        <div class="desk-widget">
+          <h4>Lead by Stage</h4>
+          <div class="desk-widget-caption">Created: {{ filters.date_from_display or 'All time' }}{% if filters.date_to_display %} &ndash; {{ filters.date_to_display }}{% endif %}</div>
+          {{ bar_table(stage_counts) }}
+        </div>
+
+        <div class="desk-widget">
+          <h4>Lead by Project</h4>
+          <div class="desk-widget-caption">Created: {{ filters.date_from_display or 'All time' }}{% if filters.date_to_display %} &ndash; {{ filters.date_to_display }}{% endif %}</div>
+          {{ bar_table(leads_by_project) }}
+        </div>
+
+        <div class="desk-widget">
+          <h4>Lead by Source</h4>
+          <div class="desk-widget-caption">Created: {{ filters.date_from_display or 'All time' }}{% if filters.date_to_display %} &ndash; {{ filters.date_to_display }}{% endif %}</div>
+          {{ bar_table(leads_by_source) }}
+        </div>
+
+        <div class="desk-widget" style="grid-column: 1 / -1;">
+          <h4>Site Visits by Project &times; Status</h4>
+          <div class="desk-widget-caption">Scheduled: {{ filters.date_from_display or 'All time' }}{% if filters.date_to_display %} &ndash; {{ filters.date_to_display }}{% endif %}</div>
+          {% if visits_status_by_project %}
+            {% for grp in visits_status_by_project %}
+            <div class="desk-crosstab-group">
+              <div class="desk-crosstab-head">{{ grp.project }} <span>{{ grp.total }}</span></div>
+              {{ bar_table(grp.stages) }}
+            </div>
+            {% endfor %}
+          {% else %}
+          <div class="desk-widget-empty">No data for the selected filters</div>
+          {% endif %}
+        </div>
+
+        <div class="desk-widget">
+          <h4>Site Visits by Sales</h4>
+          <div class="desk-widget-caption">Scheduled: {{ filters.date_from_display or 'All time' }}{% if filters.date_to_display %} &ndash; {{ filters.date_to_display }}{% endif %}</div>
+          {{ bar_table(visits_by_owner) }}
+        </div>
+
+        <div class="desk-widget">
+          <h4>Bookings by Project</h4>
+          <div class="desk-widget-caption">Booked: {{ filters.date_from_display or 'All time' }}{% if filters.date_to_display %} &ndash; {{ filters.date_to_display }}{% endif %}</div>
+          {{ bar_table(bookings_by_project) }}
+        </div>
+
+        <div class="desk-widget">
+          <h4>Bookings by Sales</h4>
+          <div class="desk-widget-caption">Booked: {{ filters.date_from_display or 'All time' }}{% if filters.date_to_display %} &ndash; {{ filters.date_to_display }}{% endif %}</div>
+          {{ bar_table(bookings_by_owner) }}
+        </div>
+      </div>
+    </div>
+
+    <div class="desk-dash-rail">
+      {# ── USER AVAILABILITY ── #}
+      <div class="desk-rail-card">
+        <h4>User Availability &mdash; Today</h4>
+        <div class="desk-avail-grid">
+          <details class="desk-avail-cell desk-avail-in">
+            <summary>
+              <div class="desk-avail-num">{{ availability.counts.in }}</div>
+              <div class="desk-avail-label">In</div>
+            </summary>
+            <div class="desk-avail-names">
+              {% for row in availability.rows if row.bucket == 'in' %}
+              <div>{{ row.full_name or row.email }}</div>
+              {% else %}
+              <div>None</div>
+              {% endfor %}
+            </div>
+          </details>
+          <details class="desk-avail-cell desk-avail-not-in">
+            <summary>
+              <div class="desk-avail-num">{{ availability.counts.not_in }}</div>
+              <div class="desk-avail-label">Not In</div>
+            </summary>
+            <div class="desk-avail-names">
+              {% for row in availability.rows if row.bucket == 'not_in' %}
+              <div>{{ row.full_name or row.email }}</div>
+              {% else %}
+              <div>None</div>
+              {% endfor %}
+            </div>
+          </details>
+          <details class="desk-avail-cell desk-avail-leave">
+            <summary>
+              <div class="desk-avail-num">{{ availability.counts.leave }}</div>
+              <div class="desk-avail-label">Off / Leave</div>
+            </summary>
+            <div class="desk-avail-names">
+              {% for row in availability.rows if row.bucket == 'leave' %}
+              <div>{{ row.full_name or row.email }}</div>
+              {% else %}
+              <div>None</div>
+              {% endfor %}
+            </div>
+          </details>
+        </div>
+      </div>
+
+      {# ── TODAY ── #}
+      <div class="desk-rail-card">
+        <h4>Today</h4>
+        <div class="desk-today-tabbar">
+          <div class="desk-today-tab active" data-deskpanel="site_visits" onclick="showDeskTodayPanel('site_visits')">Site Visits ({{ agenda.site_visits|length }})</div>
+          <div class="desk-today-tab" data-deskpanel="follow_ups" onclick="showDeskTodayPanel('follow_ups')">Follow-ups ({{ agenda.follow_ups|length }})</div>
+        </div>
+        <div class="desk-today-panel active" data-deskpanel="site_visits">
+          {% for item in agenda.site_visits %}
+          <a href="{{ url_for('lead_detail', cls_id=item.cls_id) }}" class="desk-today-row">
+            {{ item.full_name or item.crm_lead_no or 'Lead' }}
+            <span class="desk-today-time">{{ item.scheduled_at }}</span>
+          </a>
+          {% else %}
+          <div class="desk-widget-empty">No site visits scheduled today.</div>
+          {% endfor %}
+        </div>
+        <div class="desk-today-panel" data-deskpanel="follow_ups">
+          {% for item in agenda.follow_ups %}
+          <a href="{{ url_for('lead_detail', cls_id=item.cls_id) }}" class="desk-today-row">
+            {{ item.full_name or item.crm_lead_no or 'Lead' }}
+            <span class="desk-today-time">{{ item.scheduled_at }}</span>
+          </a>
+          {% else %}
+          <div class="desk-widget-empty">No follow-ups scheduled today.</div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function onDeskDatePresetChange(sel){
+  var customBox = document.getElementById('deskCustomDateFields');
+  if (sel.value === 'custom') {
+    customBox.style.display = 'flex';
+    return;
+  }
+  customBox.style.display = 'none';
+  sel.form.submit();
+}
+function showDeskTodayPanel(name){
+  document.querySelectorAll('.desk-today-panel').forEach(function(p){
+    p.classList.toggle('active', p.dataset.deskpanel === name);
+  });
+  document.querySelectorAll('.desk-today-tab').forEach(function(t){
+    t.classList.toggle('active', t.dataset.deskpanel === name);
+  });
+}
+</script>
+{% endblock %}
