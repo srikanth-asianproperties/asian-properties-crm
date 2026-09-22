@@ -1,4 +1,15 @@
-{# report_view_charts.html (v0.6.2) — Lead Stage Analysis v2 (2026-09-21).
+{# report_view_charts.html (v0.6.3) — Lead Stage Analysis filter dropdowns
+   (2026-09-22). ADDITIVE, no other report affected:
+     - Export Excel link now carries the current request's full query
+       string (preset/from/to + any filter keys) via request.args.
+       to_dict(), instead of just {'from','to'} — so an export always
+       matches whatever the report page is currently showing. The
+       report.is_live branch (no date params at all) is unchanged.
+     - report.filter_summary, when set, shows as a small "Filtered: …"
+       line under the date picker — NOT inside a no-print element, so
+       Print/PDF shows which filters produced the printed numbers.
+
+   (v0.6.2) — Lead Stage Analysis v2 (2026-09-21).
    ADDITIVE — every non-tabbed report renders exactly as before:
      - report.tabs truthy -> a tab strip (no-print) above the view cards,
        one button per view.title; only the active card shows; the last tab
@@ -82,13 +93,17 @@
     {% if report.is_live %}
     <a href="{{ url_for('report_export_excel', report_id=report.id) }}" class="btn">Export Excel</a>
     {% else %}
-    <a href="{{ url_for('report_export_excel', report_id=report.id, **{'from': report.date_from, 'to': report.date_to}) }}" class="btn">Export Excel</a>
+    <a href="{{ url_for('report_export_excel', report_id=report.id, **request.args.to_dict()) }}" class="btn">Export Excel</a>
     {% endif %}
     <button type="button" class="btn" onclick="window.print();">Print / Save as PDF</button>
   </div>
 </div>
 
 {% include "_report_date_picker.html" %}
+
+{% if report.filter_summary %}
+<p style="font-size:12px; color:var(--ink-soft); margin:6px 0 0;">Filtered: {{ report.filter_summary }}</p>
+{% endif %}
 
 {% if report.caveat %}
 <div class="card" style="margin-top:14px; background:#FBF6E9; border-color:#EAD9A0;">

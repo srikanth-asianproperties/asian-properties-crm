@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.81
+Version : 0.82
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,15 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.82 (2026-09-22) — Lead Stage Analysis filter dropdowns (requires
+  cls_db.py v2.105, cls_reports.py v1.7). report_view() and
+  report_export_excel() ONLY: after resolve_date_range(), also call
+  cls_reports.resolve_report_filters(report_id, request.args, user) and
+  pass filters=filters into build_report(). Every other report route/
+  behavior is unchanged — resolve_report_filters() returns None for any
+  report without a "filters" key, which build_report() already treats
+  as "no filters" (v1.6 behavior).
+
 v0.81 (2026-09-21) — Leads-list "Score band" filter (Hot/Warm/Cold;
   requires cls_db.py v2.102). _parse_lead_filters() gets a whitelisted
   "score_band" key; leads_list() passes it to get_leads_page();
@@ -3249,7 +3258,8 @@ def report_view(report_id):
     _check_report_access(meta, user)
 
     date_from, date_to = cls_reports.resolve_date_range(report_id, request.args)
-    report = cls_reports.build_report(report_id, user, date_from=date_from, date_to=date_to)
+    filters = cls_reports.resolve_report_filters(report_id, request.args, user)
+    report = cls_reports.build_report(report_id, user, date_from=date_from, date_to=date_to, filters=filters)
     return render_template(
         meta.get("template", "report_view.html"),
         report=report,
@@ -3266,7 +3276,8 @@ def report_export_excel(report_id):
     _check_report_access(meta, user)
 
     date_from, date_to = cls_reports.resolve_date_range(report_id, request.args)
-    report = cls_reports.build_report(report_id, user, date_from=date_from, date_to=date_to)
+    filters = cls_reports.resolve_report_filters(report_id, request.args, user)
+    report = cls_reports.build_report(report_id, user, date_from=date_from, date_to=date_to, filters=filters)
     try:
         buf = cls_reports.export_to_excel(report)
     except RuntimeError as e:

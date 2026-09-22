@@ -1,9 +1,26 @@
-{# _report_date_picker.html (v0.7) — shared date-range picker, included
+{# _report_date_picker.html (v0.8) — shared date-range picker, included
    by both report_view.html and report_view_charts.html so the markup/
    logic for "which range is this report showing" lives in exactly one
    place. Expects `report` (from cls_reports.build_report()) in context
    — both templates' routes already pass this; `quick_select_links` is
    no longer read here (see below).
+
+   v0.8 (2026-09-22) — Lead Stage Analysis filter dropdowns. ADDITIVE,
+   only inside `{% if report.filter_options %}` (currently true for
+   Lead Stage Analysis alone) — every other report's picker markup is
+   byte-identical to v0.7. A second flex-wrap row of <select>s, one per
+   key in report.filter_values (built by cls_reports.resolve_report_
+   filters() by iterating the report's declared "filters" list, in that
+   order — same dict-preserves-insertion-order trick already used
+   elsewhere in this codebase, so no new key needs to travel from
+   app.py/cls_reports.py just to carry the order), auto-submitting
+   the SAME <form> the date picker already uses — no hidden inputs
+   needed, the existing preset/from/to fields submit along with it
+   regardless of the Custom fields' display:none. A "Clear filters"
+   link keeps only preset (or from/to when no preset matches).
+   Owner is simply absent from filter_values (and thus never rendered)
+   for a login that can't see all leads — resolve_report_filters()
+   already drops it server-side; no separate role check needed here.
 
    report.is_live reports (Pipeline Funnel Snapshot, Lead Score
    Distribution, Owner-wise Workload) get a small "Live snapshot" note
@@ -46,6 +63,41 @@
     <input type="date" name="to" value="{{ report.date_to }}" style="height:34px; font-size:13px; padding:4px 8px;" aria-label="To date">
   </div>
   <button type="submit" class="btn" style="padding:5px 14px; font-size:13px;">Apply</button>
+  {% if report.filter_options %}
+  {% set filter_all_labels = {
+    "project": "All Projects", "campaign": "All Campaigns", "source": "All Sources",
+    "sub_source": "All Sub Sources", "owner": "All Owners"
+  } %}
+  {% set filter_field_labels = {
+    "lead_type": "Lead Type filter", "project": "Project filter", "campaign": "Campaign filter",
+    "source": "Source filter", "sub_source": "Sub Source filter", "owner": "Owner filter",
+    "cross_reassigned": "Cross-reassigned filter"
+  } %}
+  <div style="width:100%; display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:2px;">
+    {% for key, value in report.filter_values.items() %}
+    <select name="{{ key }}" onchange="this.form.submit();" aria-label="{{ filter_field_labels.get(key, key) }}"
+            style="height:34px; font-size:13px; padding:4px 8px; min-width:140px;">
+      {% if key in ("lead_type", "cross_reassigned") %}
+      {% for opt_key, opt_label in report.filter_options[key] %}
+      <option value="{{ opt_key }}" {% if value == opt_key %}selected{% endif %}>{{ opt_label }}</option>
+      {% endfor %}
+      {% else %}
+      <option value="" {% if not value %}selected{% endif %}>{{ filter_all_labels.get(key, "All") }}</option>
+      {% for opt in report.filter_options[key] %}
+      <option value="{{ opt }}" {% if value == opt %}selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
+      {% endif %}
+    </select>
+    {% endfor %}
+    {% if report.date_preset and report.date_preset != "custom" %}
+    <a href="{{ url_for('report_view', report_id=report.id, preset=report.date_preset) }}"
+       class="btn" style="padding:5px 14px; font-size:13px;">Clear filters</a>
+    {% else %}
+    <a href="{{ url_for('report_view', report_id=report.id, **{'from': report.date_from, 'to': report.date_to}) }}"
+       class="btn" style="padding:5px 14px; font-size:13px;">Clear filters</a>
+    {% endif %}
+  </div>
+  {% endif %}
 </form>
 <script>
 function onReportDatePresetChange(sel){

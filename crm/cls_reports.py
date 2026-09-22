@@ -2,7 +2,7 @@
 =============================================================
 cls_reports.py — Asian Properties CRM (APX) | v0.6.1 Reports Enhancements
 =============================================================
-Version : 1.6
+Version : 1.7
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -85,6 +85,29 @@ don't print reliably, and the underlying table is the honest fallback.
 
 CHANGELOG
 ---------
+v1.7 (2026-09-22) — Lead Stage Analysis: filter dropdowns (Lead Type,
+  Project, Campaign, Source, Sub Source, Owner, Cross-reassigned).
+  Additive — a report with no "filters" key behaves exactly as v1.6.
+    - REPORTS "lead-stage-analysis" gains "filters": [7 keys]; caveat
+      extended with the filters-apply-to-every-tab / Site Visits-ignores-
+      Lead Type / re-engaged-Campaign-is-original note.
+    - NEW resolve_report_filters(report_id, args, current_user) -> dict
+      or None. Fetches cls_db.get_lead_report_filter_options() for the
+      resolved range/role scope and keeps a submitted value ONLY when
+      it's in that whitelist (lead_type defaults to "new",
+      cross_reassigned to "all"; everything else omitted when absent/
+      invalid). "owner" is dropped entirely for a salesperson login.
+    - build_report(..., filters=None): threads filters["values"] into
+      the report's builder (every builder already accepts **kwargs, so
+      this is a no-op for the other 23). Returned dict gains
+      "filter_values"/"filter_options"/"filter_summary" (all None for a
+      report without a "filters" key). NEW _report_filter_summary().
+    - _build_lead_stage_analysis(filters=None, ...): passes filters
+      straight into every cls_db.get_stage_breakdown()/
+      get_site_visits_by_campaign() call.
+    - export_to_excel(): appends " | Filters: <summary>" to each sheet's
+      existing title/range line when filter_summary is non-empty.
+
 v1.6 (2026-09-21) — Lead Stage Analysis v2 (Sell.do parity). Additive.
     - _stage_breakdown_view(): NEW optional kwargs hide_empty_stages,
       with_share, chart_type — all default to the old behaviour, so
@@ -406,6 +429,92 @@ def resolve_date_range(report_id, args):
     if from_arg and to_arg and _DATE_RE.match(from_arg) and _DATE_RE.match(to_arg) and from_arg <= to_arg:
         return from_arg, to_arg
     return default_range_for(report_id)
+
+
+# ─────────────────────────────────────────────────────────────
+# REPORT-LEVEL FILTERS  (v1.7 — Lead Stage Analysis)
+# ─────────────────────────────────────────────────────────────
+
+def resolve_report_filters(report_id, args, current_user):
+    """
+    (v1.7) Resolves a request's report-level filter query params into
+    {"values": {...}, "options": {...}}, for a report that declares a
+    "filters" list in REPORTS — or None for one that doesn't (every
+    other report is unaffected by this function entirely).
+
+    Every submitted value is checked against
+    cls_db.get_lead_report_filter_options() for the ALREADY-RESOLVED
+    date range and role scope, and kept ONLY when it's literally present
+    in that whitelist — an unrecognised or tampered value (e.g. a stray
+    SQL-looking string) is silently dropped, never reaches cls_db.
+    lead_type defaults to "new" and cross_reassigned to "all" when
+    absent/invalid (both always resolve to a value); every other filter
+    is simply omitted (no filter applied) when absent/invalid.
+
+    "owner" is dropped from the options entirely — not even offered —
+    for a login that can't see all leads (cls_db.can_view_all_leads()
+    False): a salesperson's own role-scope can never be widened via
+    this filter, and the template renders no Owner dropdown for them.
+    """
+    meta = REPORTS_BY_ID.get(report_id)
+    if meta is None or not meta.get("filters"):
+        return None
+
+    date_from, date_to = resolve_date_range(report_id, args)
+    owner_scope = _scope_owner(current_user)
+    options = cls_db.get_lead_report_filter_options(date_from=date_from, date_to=date_to, owner=owner_scope)
+
+    if not cls_db.can_view_all_leads(current_user["role"]):
+        options = dict(options)
+        options.pop("owner", None)
+
+    values = {}
+    for key in meta["filters"]:
+        if key not in options:
+            continue
+        opt_list = options[key]
+        # lead_type/cross_reassigned options are (key, label) pairs;
+        # every other filter's options are plain value strings.
+        valid_values = {o[0] for o in opt_list} if key in ("lead_type", "cross_reassigned") else set(opt_list)
+        raw = args.get(key)
+        if raw in valid_values:
+            values[key] = raw
+        elif key == "lead_type":
+            values[key] = "new"
+        elif key == "cross_reassigned":
+            values[key] = "all"
+        # else: omitted entirely — no filter applied for this key.
+
+    return {"values": values, "options": options}
+
+
+def _report_filter_summary(meta, values):
+    """
+    (v1.7) Human string like "Re-engaged · Naishka Homes · Instagram" built
+    only from filter VALUES that differ from their default — lead_type's
+    default is "new", cross_reassigned's is "all" (both always present
+    once resolve_report_filters() has run); every other key is simply
+    absent from `values` when not set. "" when nothing is active.
+    Order follows meta["filters"].
+    """
+    if not values:
+        return ""
+    parts = []
+    for key in meta.get("filters", []):
+        v = values.get(key)
+        if not v:
+            continue
+        if key == "lead_type":
+            if v == "new":
+                continue
+            parts.append(cls_db.LEAD_TYPE_OPTIONS.get(v, v))
+        elif key == "cross_reassigned":
+            if v == "all":
+                continue
+            parts.append(cls_db.CROSS_REASSIGN_OPTIONS.get(v, v))
+        else:
+            parts.append(v)
+    return " · ".join(parts)
 
 
 def quick_select_links():
@@ -953,11 +1062,14 @@ def _build_monday_weekly_report(current_user, date_from=None, date_to=None, **kw
 
 # ── Lead Stage Analysis (Requirement 4) ──
 
-def _build_lead_stage_analysis(current_user, date_from=None, date_to=None, **kwargs):
+def _build_lead_stage_analysis(current_user, date_from=None, date_to=None, filters=None, **kwargs):
     owner = _scope_owner(current_user)
 
     # v1.6 — five breakdown tabs, Sell.do-style: empty stages hidden, a
     # "% of Total" share, grouped horizontal bars, and a Total Leads badge.
+    # v1.7 — `filters` (resolve_report_filters()'s "values" dict, or None)
+    # threads straight through to every cls_db call below; None keeps
+    # each call's original, unfiltered behavior.
     # (tab title, get_stage_breakdown group_by, first-column label)
     breakdown_tabs = [
         ("Owners", "owner", "Owner"),
@@ -968,11 +1080,11 @@ def _build_lead_stage_analysis(current_user, date_from=None, date_to=None, **kwa
     ]
     views = []
     for title, group_by, group_label in breakdown_tabs:
-        data = cls_db.get_stage_breakdown(group_by, date_from=date_from, date_to=date_to, owner=owner)
+        data = cls_db.get_stage_breakdown(group_by, date_from=date_from, date_to=date_to, owner=owner, filters=filters)
         views.append({"title": title, **_stage_breakdown_view(
             data, group_label, hide_empty_stages=True, with_share=True, chart_type="grouped_hbar")})
 
-    visits = cls_db.get_site_visits_by_campaign(date_from=date_from, date_to=date_to, owner=owner)
+    visits = cls_db.get_site_visits_by_campaign(date_from=date_from, date_to=date_to, owner=owner, filters=filters)
     visits_view = {
         "columns": [("campaign", "Campaign"), ("count", "Site Visits")], "rows": visits,
         "chart": {"type": "bar", "labels": [r["campaign"] for r in visits],
@@ -1216,10 +1328,12 @@ REPORTS = [
         "caveat": (
             "Campaign = Meta lead form name (captured since July 2026). Sub Source = Facebook/Instagram "
             "platform (captured since 30 Jul 2026); older Meta leads show 'platform not captured'. "
-            "Leads are dated by when they entered CLS."
+            "Leads are dated by when they entered CLS. Filters apply to every tab; Site Visits ignores "
+            "Lead Type (dated by booking). For re-engaged leads, Campaign is the lead's original campaign."
         ),
         "build": _build_lead_stage_analysis, "date_default": "this_month",
         "template": "report_view_charts.html",
+        "filters": ["lead_type", "project", "campaign", "source", "sub_source", "owner", "cross_reassigned"],
     },
     {
         "id": "campaign-lead-volume", "title": "Campaign Lead Volume",
@@ -1318,16 +1432,26 @@ def visible_categories(current_user):
     return result
 
 
-def build_report(report_id, current_user, date_from=None, date_to=None, **kwargs):
+def build_report(report_id, current_user, date_from=None, date_to=None, filters=None, **kwargs):
     """
     Runs one report's builder and returns the full renderable dict:
     {id, title, description, cadence, caveat, date_default, is_live,
     template, date_from, date_to, columns, rows, chart, views}.
     Raises KeyError for an unknown report_id — the route treats that
     as a 404, never a 500.
+
+    filters : (v1.7) the dict resolve_report_filters() returns
+        ({"values": {...}, "options": {...}}), or None — the default,
+        which behaves exactly as before this parameter existed. Every
+        builder already accepts **kwargs, so passing filters=<values-
+        dict-or-None> through to meta["build"]() is a no-op for the 23
+        reports that don't read it; only _build_lead_stage_analysis()
+        uses it.
     """
     meta = REPORTS_BY_ID[report_id]
-    table = meta["build"](current_user, date_from=date_from, date_to=date_to, **kwargs)
+    filter_values = filters.get("values") if filters else None
+    filter_options = filters.get("options") if filters else None
+    table = meta["build"](current_user, date_from=date_from, date_to=date_to, filters=filter_values, **kwargs)
     columns = table.get("columns", [])
     rows = table.get("rows", [])
     result = {
@@ -1348,6 +1472,9 @@ def build_report(report_id, current_user, date_from=None, date_to=None, **kwargs
         "chart": table.get("chart"), "views": table.get("views"),
         # v1.6 — True only for tabbed multi-view reports (Lead Stage Analysis).
         "tabs": table.get("tabs", False),
+        # v1.7 — None for a report without a "filters" key.
+        "filter_values": filter_values, "filter_options": filter_options,
+        "filter_summary": None if filter_values is None else _report_filter_summary(meta, filter_values),
     }
     # v1.2 — Task 2: mobile transpose, additive alongside columns/rows
     # (export_to_excel() keeps reading columns/rows only, untouched).
@@ -1415,6 +1542,8 @@ def export_to_excel(report):
         generated_line = f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         if range_note:
             generated_line += f" — {range_note}"
+        if report.get("filter_summary"):
+            generated_line += f" | Filters: {report['filter_summary']}"
         ws.append([generated_line])
         if report.get("caveat"):
             ws.append([report["caveat"]])

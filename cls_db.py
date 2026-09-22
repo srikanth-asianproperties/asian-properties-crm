@@ -2,11 +2,35 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.104
+Version : 2.105
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.105 (2026-09-22) — Lead Stage Analysis: report-level filter dropdowns
+  (Lead Type, Project, Campaign, Source, Sub Source, Owner, Cross-
+  reassigned). ADDITIVE — every existing call with filters=None (or
+  omitted) runs the EXACT prior SQL/behavior, byte-for-byte.
+    - NEW config (next to META_PLATFORM_LABELS): LEAD_TYPE_OPTIONS
+      (new/reengaged/all), CROSS_REASSIGN_OPTIONS (all/exclude/only).
+    - NEW _lead_report_filter_sql(filters, date_from, date_to, alias="l",
+      apply_lead_type=True) -> (clauses, params): builds the WHERE
+      fragments for all 7 filter keys. Lead Type ("new"/"reengaged"/
+      "all") only applies when both dates are given; "reengaged" reads
+      activity_log('lead_reengaged') in range OR leads.reengaged_at in
+      range. Every filter VALUE is a bound `?` param — only config-built
+      SQL (column names, lead_origin_sql()/sub_source_sql()) is inlined.
+    - get_stage_breakdown()/get_site_visits_by_campaign() gain an
+      optional `filters=None` kwarg: None keeps the original code path
+      verbatim; given, the leads table is aliased "l" and filtered via
+      the helper above (site visits: apply_lead_type=False, stays dated
+      by t.created_at). The existing role-scope `owner` param is ALWAYS
+      applied in addition to any filters["owner"] — never widened.
+    - NEW get_lead_report_filter_options(date_from, date_to, owner) —
+      the whitelisted option lists every submitted filter value is
+      checked against before it can reach SQL.
+    - No schema change; no existing signature or return shape changed.
+
 v2.104 (2026-09-21) — Sub Source now keyed on recorded meta_platform
   regardless of source — 34 leads move from Non-Meta to Facebook/Instagram
   (24 selldo_only: 12 fb / 12 ig; 10 manual_crm: 2 fb / 8 ig). Grand total
@@ -3267,6 +3291,22 @@ META_PLATFORM_LABELS = {
 SUB_SOURCE_META_UNKNOWN_LABEL = "Meta – platform not captured"
 SUB_SOURCE_NON_META_LABEL = "Non-Meta"
 
+# v2.105 — Lead Stage Analysis report-level filters. Config-not-code;
+# both dicts are ordered (Python 3.7+ dict) so they double as the
+# dropdown option order. LEAD_TYPE_OPTIONS keys are the F1 rule names
+# used throughout _lead_report_filter_sql(); CROSS_REASSIGN_OPTIONS keys
+# map to leads.cross_reassigned_at IS NULL / IS NOT NULL.
+LEAD_TYPE_OPTIONS = {
+    "new": "New",
+    "reengaged": "Re-engaged",
+    "all": "All (New + Re-engaged)",
+}
+CROSS_REASSIGN_OPTIONS = {
+    "all": "All",
+    "exclude": "Exclude cross-reassigned",
+    "only": "Only cross-reassigned",
+}
+
 
 def _sql_str(value):
     """Single-quote-escape a CONFIG constant for inline SQL (never user input)."""
@@ -3309,6 +3349,101 @@ def sub_source_sql(alias=""):
             f"WHEN {p}source = {_sql_str(SUB_SOURCE_META_SOURCE)} THEN "
             f"{_sql_str(SUB_SOURCE_META_UNKNOWN_LABEL)} "
             f"ELSE {_sql_str(SUB_SOURCE_NON_META_LABEL)} END")
+
+
+def _lead_report_filter_sql(filters, date_from, date_to, alias="l", apply_lead_type=True):
+    """
+    (v2.105) Builds the WHERE-clause fragments + bound params for Lead
+    Stage Analysis's report-level filters. Every filter is OPTIONAL: an
+    absent/falsy key contributes nothing. Only config-built SQL (column
+    names, lead_origin_sql()/sub_source_sql()) is ever inlined — every
+    user-supplied VALUE is a bound `?` parameter, so a filter value can
+    never reach raw SQL text.
+
+    filters : dict, any of lead_type/project/campaign/source/sub_source/
+        owner/cross_reassigned -> a value ALREADY validated by the caller
+        (cls_reports.resolve_report_filters(), against
+        get_lead_report_filter_options()) — this function trusts the
+        keys are legitimate matches, but still binds every value.
+    date_from/date_to : the report's resolved range — feeds the F1 Lead
+        Type predicate only. project/campaign/source/sub_source/owner/
+        cross_reassigned are NOT themselves date-scoped; the caller's
+        own date clause (when one exists outside this helper) still
+        applies on top.
+    alias : the leads-table alias in the caller's FROM clause (e.g. "l").
+        Required (non-"") whenever lead_type is in play, since the
+        "reengaged" rule's EXISTS subquery correlates via {alias}.cls_id.
+    apply_lead_type : False for get_site_visits_by_campaign() — site
+        visits stay dated by t.created_at, never by Lead Type (F1).
+
+    Returns (clauses, params): clauses is a list of SQL fragments meant
+    to be AND-joined into the caller's WHERE; params is the parallel
+    flat list of bound values, in the same left-to-right order they
+    appear across the clauses.
+    """
+    filters = filters or {}
+    p = f"{alias}." if alias else ""
+    clauses = []
+    params = []
+
+    if apply_lead_type and date_from and date_to:
+        lead_type = filters.get("lead_type")
+        if lead_type not in LEAD_TYPE_OPTIONS:
+            lead_type = "new"
+        new_clause = f"substr({p}cls_created_at, 1, 10) BETWEEN ? AND ?"
+        reengaged_clause = (
+            f"(substr({p}cls_created_at, 1, 10) < ? AND ("
+            f"EXISTS (SELECT 1 FROM activity_log a WHERE a.cls_id = {p}cls_id "
+            f"AND a.activity_type = 'lead_reengaged' "
+            f"AND substr(a.created_at, 1, 10) BETWEEN ? AND ?) "
+            f"OR substr({p}reengaged_at, 1, 10) BETWEEN ? AND ?))"
+        )
+        if lead_type == "new":
+            clauses.append(new_clause)
+            params.extend([date_from, date_to])
+        elif lead_type == "reengaged":
+            clauses.append(reengaged_clause)
+            params.extend([date_from, date_from, date_to, date_from, date_to])
+        else:  # "all" — new OR reengaged, disjoint by construction (F1)
+            clauses.append(f"({new_clause} OR {reengaged_clause})")
+            params.extend([date_from, date_to])
+            params.extend([date_from, date_from, date_to, date_from, date_to])
+
+    project = filters.get("project")
+    if project:
+        clauses.append(f"{p}project_bucket = ?")
+        params.append(project)
+
+    campaign = filters.get("campaign")
+    if campaign:
+        if campaign == "Unknown/Manual":
+            clauses.append(f"TRIM(COALESCE({p}campaign, '')) = ''")
+        else:
+            clauses.append(f"TRIM({p}campaign) = ?")
+            params.append(campaign)
+
+    source = filters.get("source")
+    if source:
+        clauses.append(f"{lead_origin_sql(alias)} = ?")
+        params.append(source)
+
+    sub_source = filters.get("sub_source")
+    if sub_source:
+        clauses.append(f"{sub_source_sql(alias)} = ?")
+        params.append(sub_source)
+
+    owner_filter = filters.get("owner")
+    if owner_filter:
+        clauses.append(f"{p}lead_owner = ?")
+        params.append(owner_filter)
+
+    cross_reassigned = filters.get("cross_reassigned")
+    if cross_reassigned == "exclude":
+        clauses.append(f"{p}cross_reassigned_at IS NULL")
+    elif cross_reassigned == "only":
+        clauses.append(f"{p}cross_reassigned_at IS NOT NULL")
+
+    return clauses, params
 
 
 def lead_origin_for(lead_row):
@@ -13265,7 +13400,7 @@ _STAGE_BREAKDOWN_GROUP_COLUMNS = {
 }
 
 
-def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None):
+def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None, filters=None):
     """
     (v2.13) Lead Stage Analysis report — views A (by owner), B (by
     project), and C (by campaign), plus Campaign Insights C2 (Campaign
@@ -13287,6 +13422,14 @@ def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None):
     owner : scope to one salesperson's owned leads (independent of
         group_by — e.g. group_by="project" with owner set shows one
         salesperson's own project-wise breakdown).
+    filters : (v2.105) optional dict of Lead Stage Analysis's report-
+        level filters (see _lead_report_filter_sql()). None (default)
+        runs the EXACT prior SQL/behavior verbatim — date_from/date_to
+        scope cls_created_at directly, as always. Given, the leads
+        table is aliased "l" and the date predicate comes from the
+        filters' Lead Type rule instead of the plain cls_created_at
+        clause; `owner` (role scope) is ALWAYS applied in addition to
+        any filters["owner"] — a filter can never widen role scope.
 
     "project" grouping (v2.67, F2 Phase 3) reads the stored, kept-in-
     sync leads.project_bucket column directly — previously ran raw
@@ -13305,18 +13448,32 @@ def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None):
 
     conn = _connect()
     try:
-        query = f"SELECT {column} AS raw_group, current_stage FROM leads"
-        clauses = []
-        params = []
-        if owner:
-            clauses.append("lead_owner = ?")
-            params.append(owner)
-        if date_from and date_to:
-            clauses.append("substr(cls_created_at, 1, 10) BETWEEN ? AND ?")
-            params.extend([date_from, date_to])
-        if clauses:
-            query += " WHERE " + " AND ".join(clauses)
-        rows = conn.execute(query, params).fetchall()
+        if filters is None:
+            # EXACT prior SQL/behavior — unchanged verbatim.
+            query = f"SELECT {column} AS raw_group, current_stage FROM leads"
+            clauses = []
+            params = []
+            if owner:
+                clauses.append("lead_owner = ?")
+                params.append(owner)
+            if date_from and date_to:
+                clauses.append("substr(cls_created_at, 1, 10) BETWEEN ? AND ?")
+                params.extend([date_from, date_to])
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+            rows = conn.execute(query, params).fetchall()
+        else:
+            # v2.105 — filtered branch: leads aliased "l" (needed for the
+            # Lead Type "reengaged" rule's correlated EXISTS subquery).
+            query = f"SELECT {column} AS raw_group, current_stage FROM leads l"
+            clauses, params = _lead_report_filter_sql(
+                filters, date_from, date_to, alias="l", apply_lead_type=True)
+            if owner:
+                clauses.append("l.lead_owner = ?")
+                params.append(owner)
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+            rows = conn.execute(query, params).fetchall()
     finally:
         conn.close()
 
@@ -13345,7 +13502,7 @@ def get_stage_breakdown(group_by, date_from=None, date_to=None, owner=None):
     return result
 
 
-def get_site_visits_by_campaign(date_from=None, date_to=None, owner=None):
+def get_site_visits_by_campaign(date_from=None, date_to=None, owner=None, filters=None):
     """
     (v2.13) Lead Stage Analysis view D, and standalone Campaign
     Insights C6 (Site Visits by Campaign) — the same underlying data,
@@ -13357,6 +13514,14 @@ def get_site_visits_by_campaign(date_from=None, date_to=None, owner=None):
     ones, matching the requirement's "conducted + scheduled" wording)
     whose created_at falls in [date_from, date_to] when given, grouped
     by the owning lead's campaign bucket (_campaign_bucket()).
+
+    filters : (v2.105) optional dict of Lead Stage Analysis's report-
+        level filters. None (default) runs the EXACT prior SQL/behavior
+        verbatim. Given, every filter EXCEPT Lead Type is applied via
+        _lead_report_filter_sql(..., apply_lead_type=False) — site
+        visits always stay dated by t.created_at, never by Lead Type
+        (F1's "new"/"reengaged" rule is about when a LEAD entered/
+        re-entered the pipeline, not when a visit was booked).
 
     Returns a list of dicts sorted by count desc:
         [{"campaign": "Unknown/Manual", "count": 41}, ...]
@@ -13372,6 +13537,11 @@ def get_site_visits_by_campaign(date_from=None, date_to=None, owner=None):
         if date_from and date_to:
             clauses.append("substr(t.created_at, 1, 10) BETWEEN ? AND ?")
             params.extend([date_from, date_to])
+        if filters is not None:
+            filt_clauses, filt_params = _lead_report_filter_sql(
+                filters, date_from, date_to, alias="l", apply_lead_type=False)
+            clauses.extend(filt_clauses)
+            params.extend(filt_params)
         if owner:
             clauses.append("l.lead_owner = ?")
             params.append(owner)
@@ -13390,6 +13560,72 @@ def get_site_visits_by_campaign(date_from=None, date_to=None, owner=None):
     result = [{"campaign": k, "count": v} for k, v in by_campaign.items()]
     result.sort(key=lambda r: r["count"], reverse=True)
     return result
+
+
+def get_lead_report_filter_options(date_from=None, date_to=None, owner=None):
+    """
+    (v2.105) Lead Stage Analysis's filter dropdown option lists. Every
+    list here is server-computed and whitelisted — cls_reports.py's
+    resolve_report_filters() keeps a submitted filter value only when
+    it's literally present in the matching list, so a request can never
+    smuggle an arbitrary value into _lead_report_filter_sql()'s SQL.
+
+    date_from/date_to : optional range — restricts ONLY the campaign
+        list, to campaigns among leads created OR re-engaged in that
+        range (any lead if no range given, matching F1's "new"/
+        "reengaged" definitions). Every other list is not date-scoped.
+    owner : role-scope restriction (None = admin/manager, company-wide;
+        a name = one salesperson's own scope) — restricts the campaign
+        list the same way get_stage_breakdown()'s `owner` param does.
+
+    Returns:
+        {"lead_type": [(key, label), ...], "cross_reassigned": [(key, label), ...],
+         "project": [name, ...], "campaign": [name, ...] ("Unknown/Manual" last),
+         "source": [label, ...], "sub_source": [label, ...], "owner": [name, ...]}
+    """
+    conn = _connect()
+    try:
+        project_rows = conn.execute("""
+            SELECT DISTINCT project_bucket FROM leads
+            WHERE project_bucket IS NOT NULL AND TRIM(project_bucket) != ''
+            ORDER BY project_bucket
+        """).fetchall()
+        project_options = [r["project_bucket"] for r in project_rows]
+
+        campaign_query = "SELECT DISTINCT campaign FROM leads"
+        campaign_clauses = []
+        campaign_params = []
+        if date_from and date_to:
+            campaign_clauses.append(
+                "(substr(cls_created_at, 1, 10) BETWEEN ? AND ? "
+                "OR substr(reengaged_at, 1, 10) BETWEEN ? AND ?)"
+            )
+            campaign_params.extend([date_from, date_to, date_from, date_to])
+        if owner:
+            campaign_clauses.append("lead_owner = ?")
+            campaign_params.append(owner)
+        if campaign_clauses:
+            campaign_query += " WHERE " + " AND ".join(campaign_clauses)
+        campaign_rows = conn.execute(campaign_query, campaign_params).fetchall()
+    finally:
+        conn.close()
+
+    campaign_buckets = {_campaign_bucket(r["campaign"]) for r in campaign_rows}
+    has_unknown = "Unknown/Manual" in campaign_buckets
+    campaign_options = sorted(campaign_buckets - {"Unknown/Manual"})
+    if has_unknown:
+        campaign_options.append("Unknown/Manual")
+
+    return {
+        "lead_type": list(LEAD_TYPE_OPTIONS.items()),
+        "cross_reassigned": list(CROSS_REASSIGN_OPTIONS.items()),
+        "project": project_options,
+        "campaign": campaign_options,
+        "source": get_lead_origin_options(),
+        "sub_source": (list(META_PLATFORM_LABELS.values())
+                       + [SUB_SOURCE_META_UNKNOWN_LABEL, SUB_SOURCE_NON_META_LABEL]),
+        "owner": get_distinct_owners(),
+    }
 
 
 def get_campaign_lead_volume(date_from=None, date_to=None):
