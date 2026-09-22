@@ -2,11 +2,49 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.105
+Version : 2.106
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.106 (2026-09-22) — F2 Phase 3 follow-up: Booking Summary/Desk
+  Dashboard helpers were missed by F2 Phase 3 (v2.67) — they still
+  filtered/grouped by the RAW leads.project column instead of the
+  stored, kept-in-sync leads.project_bucket column get_leads_page()
+  (leads_list) has filtered on since Phase 3. Now bucket-consistent
+  with leads_list: same project value means the same leads everywhere
+  in the app.
+    - _booking_summary_where(): default project_col changed from
+      "l.project" to "l.project_bucket". No caller (12 total, across
+      cls_db.py; none in crm/app.py or crm/cls_reports.py — confirmed
+      by grep) overrides project_col, and every caller's query already
+      has leads aliased as `l` in scope, so this is a safe default-only
+      change with zero JOIN/alias fallout.
+    - get_leads_by_project_for_period() / get_site_visits_by_project_
+      for_period() / get_bookings_by_project_for_period(): GROUP BY
+      switched from COALESCE(NULLIF(TRIM(l.project),''),'Not
+      Available') to the same expression over l.project_bucket. Blank-
+      handling pattern (and the 'Not Available' label) unchanged.
+    - Verified on a throwaway CLS1.db copy: BEFORE this fix, 4 of the
+      5 real buckets (get_all_bucket_names()) gave a Booking Summary
+      Total Leads count that didn't match leads_list's own project-
+      filtered count for the same bucket — one bucket (Naishka Homes)
+      was off by over 10x (198 vs 2,851), because most leads tagged
+      under that bucket carry a raw project alias string that isn't
+      literally "Naishka Homes". AFTER this fix, all 5 match exactly.
+      Unfiltered (no project filter) totals are unchanged before vs
+      after, as expected — this only changes which column rows are
+      grouped/filtered BY, not which rows exist.
+    - No schema change — leads.project_bucket + idx_leads_project_
+      bucket already exist since v2.64, already 0 NULL/blank on both
+      live databases as of that migration.
+    - get_booked_leads_for_period() (the Bookings sub-tab's lead-list
+      detail rows, not a *_by_project_for_period grouping function) is
+      UNCHANGED — it still SELECTs raw l.project for display, which is
+      correct there: that's a per-lead detail column, not a filter/
+      group key, and showing the lead's actual stored alias (not its
+      bucket) is the right thing for a detail row.
+
 v2.105 (2026-09-22) — Lead Stage Analysis: report-level filter dropdowns
   (Lead Type, Project, Campaign, Source, Sub Source, Owner, Cross-
   reassigned). ADDITIVE — every existing call with filters=None (or
@@ -9767,7 +9805,7 @@ def get_todays_agenda(owner=None):
 # as every other owner= param in this file.
 
 def _booking_summary_where(date_col, date_from, date_to, project=None, source=None, owner=None,
-                            project_col="l.project", source_col=None, owner_col="l.lead_owner"):
+                            project_col="l.project_bucket", source_col=None, owner_col="l.lead_owner"):
     """
     (v2.31) Shared WHERE-clause fragment builder for every Booking
     Summary query below — all of them filter by the same date range +
@@ -9784,6 +9822,26 @@ def _booking_summary_where(date_col, date_from, date_to, project=None, source=No
     Booking Summary page's date picker behaves identically to every
     other report's. A bare "1=1" placeholder keeps the fragment valid
     SQL even when every optional filter is skipped.
+
+    v2.106 — project_col default changed from "l.project" (the raw
+    alias/campaign-name column) to "l.project_bucket" (F2 Phase 1/3's
+    stored, kept-in-sync bucket column, same one get_leads_page()'s
+    _build_lead_filter_where() already filters on). Every one of this
+    function's 12 callers has `leads` in scope aliased as `l` (either
+    `FROM leads l` directly, or `JOIN leads l ON ...` for the site_
+    visits/activity_log queries) and none override project_col, so
+    l.project_bucket resolves cleanly everywhere with zero JOIN
+    changes. Booking Summary's project filter/options were sourced
+    from get_all_bucket_names() (bucket names) all along, but was being
+    matched against the RAW l.project column — silently missing every
+    lead whose raw project alias differs from its own bucket name
+    (confirmed on a throwaway CLS1.db copy: 4 of 5 real buckets
+    mismatched leads_list()'s own project_bucket-filtered count before
+    this fix, one of them off by over 10x). See cls_db.py's own v2.64/
+    v2.66/v2.67 changelog entries (F2 Phases 1-3) for how project_bucket
+    is populated/kept in sync — this fix simply extends that same
+    already-completed alignment to the Booking Summary/Desk Dashboard
+    functions below, which F2 Phase 3 missed.
     """
     if source_col is None:
         source_col = lead_origin_sql("l")   # v2.96 — effective origin, same rule on every panel
@@ -9888,14 +9946,21 @@ def get_leads_by_project_for_period(date_from, date_to, project=None, source=Non
     """
     (v2.31) "Lead By Project" (Decision 2 relabel — ours is single-value
     leads.project, not Sell.do's multi-select "Interested Project(s)").
-    Blank/NULL project grouped as "Not Available", the label already
-    used elsewhere in this app for an unset project. Ordered by count desc.
+    Blank/NULL project_bucket grouped as "Not Available", the label
+    already used elsewhere in this app for an unset project. Ordered by
+    count desc.
+
+    v2.106 — groups by l.project_bucket instead of raw l.project (see
+    _booking_summary_where()'s own v2.106 changelog note) — same bucket
+    column get_leads_page() already groups/filters leads_list by, so
+    "Lead By Project" now shows one row per real project instead of
+    fragmenting across every raw alias spelling of that project.
     """
     conn = _connect()
     try:
         where, params = _booking_summary_where("l.cls_created_at", date_from, date_to, project, source, owner)
         rows = conn.execute(f"""
-            SELECT COALESCE(NULLIF(TRIM(l.project), ''), 'Not Available') AS label, COUNT(*) c
+            SELECT COALESCE(NULLIF(TRIM(l.project_bucket), ''), 'Not Available') AS label, COUNT(*) c
             FROM leads l WHERE {where} GROUP BY label ORDER BY c DESC
         """, params).fetchall()
         return [{"label": r["label"], "count": r["c"]} for r in rows]
@@ -9978,12 +10043,16 @@ def get_site_visits_by_status_for_period(date_from, date_to, project=None, sourc
 
 
 def get_site_visits_by_project_for_period(date_from, date_to, project=None, source=None, owner=None):
-    """(v2.31) "Site Visits By Project" — via leads.project, 'Not Available' if blank."""
+    """
+    (v2.31) "Site Visits By Project" — via leads.project_bucket,
+    'Not Available' if blank. v2.106 — bucket column, not raw project
+    (see _booking_summary_where()'s own v2.106 changelog note).
+    """
     conn = _connect()
     try:
         where, params = _booking_summary_where("v.scheduled_at", date_from, date_to, project, source, owner)
         rows = conn.execute(f"""
-            SELECT COALESCE(NULLIF(TRIM(l.project), ''), 'Not Available') AS label, COUNT(*) c
+            SELECT COALESCE(NULLIF(TRIM(l.project_bucket), ''), 'Not Available') AS label, COUNT(*) c
             FROM site_visits v JOIN leads l ON l.cls_id = v.cls_id
             WHERE {where} GROUP BY label ORDER BY c DESC
         """, params).fetchall()
@@ -10033,12 +10102,16 @@ def get_bookings_by_owner_for_period(date_from, date_to, project=None, source=No
 
 
 def get_bookings_by_project_for_period(date_from, date_to, project=None, source=None, owner=None):
-    """(v2.31) "Bookings By Project" — EVENT count (Decision 3), grouped by leads.project."""
+    """
+    (v2.31) "Bookings By Project" — EVENT count (Decision 3), grouped by
+    leads.project_bucket. v2.106 — bucket column, not raw project (see
+    _booking_summary_where()'s own v2.106 changelog note).
+    """
     conn = _connect()
     try:
         where, params = _booking_summary_where("a.created_at", date_from, date_to, project, source, owner)
         rows = conn.execute(f"""
-            SELECT COALESCE(NULLIF(TRIM(l.project), ''), 'Not Available') AS label, COUNT(*) c
+            SELECT COALESCE(NULLIF(TRIM(l.project_bucket), ''), 'Not Available') AS label, COUNT(*) c
             FROM activity_log a JOIN leads l ON l.cls_id = a.cls_id
             WHERE a.activity_type='stage_change' AND a.new_value='Booked' AND {where}
             GROUP BY label ORDER BY c DESC
