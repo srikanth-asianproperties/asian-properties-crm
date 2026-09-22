@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.82
+Version : 0.83
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -111,6 +111,9 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
 
 CHANGELOG
 ---------
+v0.83 (2026-09-22) — APP_VERSION now derived from header — fixes
+  long-standing drift (was 0.64). Display-only; no other usage.
+
 v0.82 (2026-09-22) — Lead Stage Analysis filter dropdowns (requires
   cls_db.py v2.105, cls_reports.py v1.7). report_view() and
   report_export_excel() ONLY: after resolve_date_range(), also call
@@ -2228,11 +2231,14 @@ import meta_leads_fetcher  # v0.57 — Meta webhook Phase 2: fetch_single_lead_b
 # that exclusion was reversed in cls_backup.py v1.3 (Srikanth's explicit
 # confirmation the consent-notice design is resolved) — RECORDINGS_DIR
 # is backed up like everything else now.
-# v0.40 — single source-of-truth app version, config-not-code. Keep in
-# lockstep with this file's own docstring "Version :" line above (see
-# CHANGELOG v0.40) — surfaced into every template via
-# inject_current_user() as `app_version`.
-APP_VERSION = "0.64"
+# v0.40 — single source-of-truth app version, config-not-code — surfaced
+# into every template via inject_current_user() as `app_version`.
+# v0.83 — no longer hand-maintained (the v0.40 "keep in lockstep with
+# this file's own docstring Version: line" convention had silently
+# drifted ~17 versions stale). Parsed from this module's own docstring
+# at import time instead, so it can never drift from the header again.
+_app_version_match = re.search(r"^Version\s*:\s*([\d.]+)", __doc__ or "", re.M)
+APP_VERSION = _app_version_match.group(1) if _app_version_match else "unknown"
 
 RECORDINGS_DIR = os.path.join(BASE_DIR, "call_recordings")
 
