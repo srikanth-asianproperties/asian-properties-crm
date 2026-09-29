@@ -2,11 +2,24 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.106
+Version : 2.107
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.107 (2026-09-29) — AI phase Step 1 (AI Hub + provider config + score
+  explainer). ADDITIONS ONLY, nothing existing removed or modified except
+  compute_lead_scores() (see below, second half of this entry):
+  - NEW ai_suggestions table (self-healing CREATE TABLE IF NOT EXISTS +
+    lookup index): cache/audit of LLM outputs keyed UNIQUE(cls_id,
+    purpose, suggestion_key). Deliberately its own table, NOT activity_log
+    rows — activity_log counts feed the Salesperson Scorecard/weekly
+    reports via ACTIVITY_METRIC_MAP and AI rows would corrupt them.
+  - NEW connect() (public alias of _connect(), so crm/cls_ai.py and
+    app.py can hold a connection without touching a private name),
+    get_app_setting()/set_app_setting(), get_cached_ai_suggestion(),
+    get_latest_ai_suggestion(), save_ai_suggestion(),
+    count_ai_suggestions_today(), get_latest_activity_id().
 v2.106 (2026-09-22) — F2 Phase 3 follow-up: Booking Summary/Desk
   Dashboard helpers were missed by F2 Phase 3 (v2.67) — they still
   filtered/grouped by the RAW leads.project column instead of the
@@ -4690,6 +4703,29 @@ def init_db():
         "INSERT OR IGNORE INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
         ("lead_score_config", json.dumps(_LEAD_SCORE_CONFIG_SEED), _now())
     )
+
+    # ── v2.107 — ai_suggestions: cache + audit of LLM outputs ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_suggestions (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            cls_id         TEXT NOT NULL,
+            purpose        TEXT NOT NULL,
+            suggestion_key TEXT NOT NULL,
+            input_summary  TEXT,
+            output_text    TEXT,
+            provider       TEXT,
+            model          TEXT,
+            tokens_in      INTEGER,
+            tokens_out     INTEGER,
+            generated_by   TEXT,
+            created_at     TEXT NOT NULL,
+            UNIQUE(cls_id, purpose, suggestion_key)
+        );
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ai_suggestions_lookup
+            ON ai_suggestions(cls_id, purpose, suggestion_key);
+    """)
 
     # ── v2.28 — bulk_jobs: audit history for admin bulk actions ──
     # Written generically (job_type column, validated against
@@ -10398,6 +10434,86 @@ def compute_lead_scores(cls_ids):
         return results
     finally:
         conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# AI SUGGESTIONS  (v2.107) — cache/audit store for crm/cls_ai.py
+# ─────────────────────────────────────────────────────────────
+
+def connect():
+    """(v2.107) Public alias of _connect() for callers that need to hold
+    a connection open across several calls (crm/cls_ai.py, app.py)."""
+    return _connect()
+
+
+def get_app_setting(conn, key):
+    """(v2.107) Raw app_settings value string for `key`, or None."""
+    row = conn.execute(
+        "SELECT setting_value FROM app_settings WHERE setting_key=?", (key,)
+    ).fetchone()
+    return row["setting_value"] if row else None
+
+
+def set_app_setting(conn, key, value):
+    """(v2.107) Upsert one app_settings row and commit. Callers validate
+    before calling — this is the raw write."""
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+        (key, value, _now())
+    )
+    conn.commit()
+
+
+def get_cached_ai_suggestion(conn, cls_id, purpose, suggestion_key):
+    """(v2.107) The cached ai_suggestions row for this exact key, or None."""
+    return conn.execute(
+        "SELECT * FROM ai_suggestions WHERE cls_id=? AND purpose=? AND suggestion_key=?",
+        (cls_id, purpose, suggestion_key)
+    ).fetchone()
+
+
+def get_latest_ai_suggestion(conn, cls_id, purpose):
+    """(v2.107) Most recent ai_suggestions row for a lead+purpose under ANY
+    key — lets the UI tell "never generated" from "generated but stale"."""
+    return conn.execute(
+        "SELECT * FROM ai_suggestions WHERE cls_id=? AND purpose=? ORDER BY id DESC LIMIT 1",
+        (cls_id, purpose)
+    ).fetchone()
+
+
+def save_ai_suggestion(conn, cls_id, purpose, suggestion_key, input_summary,
+                       output_text, provider, model, tokens_in, tokens_out,
+                       generated_by):
+    """(v2.107) Stores an LLM output. INSERT OR REPLACE on the UNIQUE
+    (cls_id, purpose, suggestion_key) so an explicit Regenerate overwrites
+    rather than colliding."""
+    conn.execute("""
+        INSERT OR REPLACE INTO ai_suggestions
+            (cls_id, purpose, suggestion_key, input_summary, output_text,
+             provider, model, tokens_in, tokens_out, generated_by, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, (cls_id, purpose, suggestion_key, input_summary, output_text,
+          provider, model, tokens_in, tokens_out, generated_by, _now()))
+    conn.commit()
+
+
+def count_ai_suggestions_today(conn, purpose):
+    """(v2.107) Provider calls made today for `purpose` (each successful
+    call writes exactly one ai_suggestions row; cache hits write none)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM ai_suggestions WHERE purpose=? AND created_at >= ?",
+        (purpose, today)
+    ).fetchone()
+    return row["n"] if row else 0
+
+
+def get_latest_activity_id(conn, cls_id):
+    """(v2.107) Highest activity_log.activity_id for this lead, or 0."""
+    row = conn.execute(
+        "SELECT MAX(activity_id) AS m FROM activity_log WHERE cls_id=?", (cls_id,)
+    ).fetchone()
+    return (row["m"] or 0) if row else 0
 
 
 # ─────────────────────────────────────────────────────────────
