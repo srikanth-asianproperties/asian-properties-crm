@@ -119,6 +119,9 @@ v0.86 (2026-09-29) — AI phase Step 1. Admin-only "AI" section:
   New import: cls_ai (crm/cls_ai.py). No existing route touched except
   lead_detail(), which now also passes score-breakdown/AI context.
   AI-1a: lead_detail() passes score_breakdown (cls_db v2.107).
+  AI-1b: POST /leads/<cls_id>/ai-score-explanation (admin-only, cached in
+  ai_suggestions by md5 fingerprint, PII-free prompt, graceful failure);
+  lead_detail() also passes ai_explain (button state + cached text).
 ---------
 v0.85 (2026-09-22) — Desk mode D2: admin-only "Desk Dashboard"
   (requires base.html v0.26, NEW crm/templates/desk_dashboard.html
@@ -3193,6 +3196,65 @@ def _require_ai_role():
     return user
 
 
+SCORE_EXPLAIN_PURPOSE = "score_explanation"
+
+
+def _score_explain_key(conn, lead, breakdown):
+    """Cache fingerprint for this lead's CURRENT score state (cls_ai.PROMPT_VERSION included)."""
+    return cls_ai.build_suggestion_key(
+        lead["cls_id"], cls_db.get_latest_activity_id(conn, lead["cls_id"]),
+        lead["current_stage"] or "", breakdown["total_score"])
+
+
+def _score_explain_prompt(lead, breakdown):
+    """PII-free by construction: only stage/temperature/band and rule line
+    items (labels + points) go in — never name, phone, email or notes."""
+    lines = "\n".join(f"- {it['label']}: {it['points']:+d}" for it in breakdown["line_items"])
+    temp = lead.get("opportunity_temperature") if lead["current_stage"] == "Opportunity" else None
+    return (
+        "You are helping a real-estate sales manager understand a lead's priority score. "
+        "In 2-3 plain-English sentences, explain why this lead is rated "
+        f"{breakdown['band'].upper()} with a total of {breakdown['total_score']} points, "
+        "and what would most raise or lower it. Do not invent facts beyond the list.\n\n"
+        f"Current stage: {lead['current_stage']}"
+        + (f" (temperature: {temp})" if temp else "")
+        + f"\nScore components:\n{lines}"
+    )
+
+
+@app.route("/leads/<cls_id>/ai-score-explanation", methods=["POST"])
+@login_required
+def ai_score_explanation(cls_id):
+    user = _require_ai_role()
+    lead = cls_db.get_lead_by_id(cls_id)
+    if not lead:
+        abort(404, description="No lead found with that id.")
+    force = request.form.get("force") == "1"
+    conn = cls_db.connect()
+    try:
+        breakdown = cls_db.get_lead_score_breakdown(conn, cls_id)
+        if not breakdown:
+            return jsonify({"ok": False, "error": "Explanation unavailable right now"})
+        key = _score_explain_key(conn, lead, breakdown)
+        if not force:
+            hit = cls_db.get_cached_ai_suggestion(conn, cls_id, SCORE_EXPLAIN_PURPOSE, key)
+            if hit and hit["output_text"]:
+                return jsonify({"ok": True, "text": hit["output_text"], "cached": True})
+        prompt = _score_explain_prompt(lead, breakdown)
+        res = cls_ai.call_llm(prompt, SCORE_EXPLAIN_PURPOSE, conn)
+        if not res["ok"]:
+            return jsonify({"ok": False, "error": res["error"] or "Explanation unavailable right now"})
+        cls_db.save_ai_suggestion(
+            conn, cls_id, SCORE_EXPLAIN_PURPOSE, key, prompt, res["text"],
+            res.get("provider"), res.get("model"), res["tokens_in"], res["tokens_out"],
+            user["email"])
+        return jsonify({"ok": True, "text": res["text"], "cached": False})
+    except Exception:
+        return jsonify({"ok": False, "error": "Explanation unavailable right now"})
+    finally:
+        conn.close()
+
+
 @app.route("/ai")
 @login_required
 def ai_home():
@@ -4765,16 +4827,26 @@ def lead_detail(cls_id):
     # v0.86 — AI-1a: deterministic score breakdown (no LLM), same rules as
     # the badge above. Not fetched for restricted viewers.
     score_breakdown = None
+    ai_explain = None   # v0.86 AI-1b: only for AI_SECTION_ROLES; button state + cached text
     if not restricted:
         _bconn = cls_db.connect()
         try:
             score_breakdown = cls_db.get_lead_score_breakdown(_bconn, cls_id)
+            if score_breakdown and user["role"] in AI_SECTION_ROLES:
+                _key = _score_explain_key(_bconn, lead, score_breakdown)
+                _hit = cls_db.get_cached_ai_suggestion(_bconn, cls_id, SCORE_EXPLAIN_PURPOSE, _key)
+                _old = None if _hit else cls_db.get_latest_ai_suggestion(_bconn, cls_id, SCORE_EXPLAIN_PURPOSE)
+                ai_explain = {
+                    "state": "fresh" if _hit else ("stale" if _old else "none"),
+                    "text": (_hit["output_text"] if _hit else None),
+                }
         finally:
             _bconn.close()
 
     return render_template(
         "lead_detail.html",
         score_breakdown=score_breakdown,
+        ai_explain=ai_explain,
         lead=lead, events=events, comms=comms,
         activity_log=activity_log,
         site_visits=site_visits,

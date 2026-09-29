@@ -3,6 +3,10 @@
    line items + total from cls_db.get_lead_score_breakdown(), pure
    computation on data already fetched, no LLM. Hidden for `restricted`
    viewers (they only get contact info). Same score as the badge.
+   Also (AI-1b): "Explain this score" button + result box inside it,
+   admin-only via ai_explain (app.py v0.86). One AJAX POST to
+   /leads/<id>/ai-score-explanation; failure shows only "Explanation
+   unavailable right now" and nothing else on the page changes.
 
    v16 (2026-09-21) — "Source" + conditional "Source detail"
    fields replaced by "Lead source" (effective origin via lead_origin_for)
@@ -323,7 +327,35 @@
       <span>Total ({{ score_breakdown.band|capitalize }})</span>
       <span>{{ score_breakdown.total_score }}</span>
     </div>
-    {# AI_EXPLAIN_SLOT #}
+    {% if ai_explain %}
+    <div style="margin-top:10px;">
+      <div id="aiExplainText" style="font-size:13px; margin-bottom:6px;">{{ ai_explain.text or '' }}</div>
+      <button type="button" id="aiExplainBtn" class="btn-pill-green" style="font-size:12px;"
+              data-url="{{ url_for('ai_score_explanation', cls_id=lead.cls_id) }}"
+              data-force="{{ '1' if ai_explain.state != 'none' else '0' }}">
+        {% if ai_explain.state == 'fresh' %}Regenerate{% elif ai_explain.state == 'stale' %}Score changed — regenerate{% else %}Explain this score{% endif %}
+      </button>
+    </div>
+    <script>
+    (function () {
+      var btn = document.getElementById('aiExplainBtn');
+      var box = document.getElementById('aiExplainText');
+      if (!btn) return;
+      btn.addEventListener('click', function () {
+        var label = btn.textContent; btn.disabled = true; btn.textContent = 'Thinking…';
+        var fd = new FormData(); fd.append('force', btn.getAttribute('data-force'));
+        fetch(btn.getAttribute('data-url'), {method: 'POST', body: fd, credentials: 'same-origin'})
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d && d.ok) { box.textContent = d.text; btn.textContent = 'Regenerate'; btn.setAttribute('data-force', '1'); }
+            else { box.textContent = 'Explanation unavailable right now'; btn.textContent = label; }
+          })
+          .catch(function () { box.textContent = 'Explanation unavailable right now'; btn.textContent = label; })
+          .finally(function () { btn.disabled = false; });
+      });
+    })();
+    </script>
+    {% endif %}
   </div>
 </details>
 {% endif %}
