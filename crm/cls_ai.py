@@ -2,11 +2,13 @@
 =============================================================
 cls_ai.py — Asian Properties CRM (APX) | AI provider layer
 =============================================================
-Version : 0.1
+Version : 0.2
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v0.2 (2026-09-29) — DEFAULT_DAILY_CAPS gains "daily_brief": 5 (AI-2 Daily AI Brief;
+  one call/day expected, cap leaves room for manual re-runs).
 v0.1 (2026-09-29) — initial. AI phase Step 1.
   - PROVIDER_REGISTRY (config-not-code): one entry per provider. Adding
     Gemini later = one registry entry + one _call_<provider>() function
@@ -41,7 +43,7 @@ import cls_db
 PROMPT_VERSION = "score_explain_v1"      # bump -> every cached explanation goes stale
 LLM_TIMEOUT_SECONDS = 12
 AI_CONFIG_KEY = "ai_provider_config"
-DEFAULT_DAILY_CAPS = {"score_explanation": 100}
+DEFAULT_DAILY_CAPS = {"score_explanation": 100, "daily_brief": 5}
 FALLBACK_DAILY_CAP = 100                 # purposes with no explicit cap
 
 PROVIDER_REGISTRY = {

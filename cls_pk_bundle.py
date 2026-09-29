@@ -160,6 +160,7 @@ INCLUDE_FILES = [
     "cls_dashboard.py",
     "cls_telecaller_report.py",
     "cls_notifications_poller.py",
+    "cls_ai_daily_brief.py",   # AI-2 Daily AI Brief (added 2026-09-29)
     "migrate_db.py",
     "setup_task_scheduler.py",
 
