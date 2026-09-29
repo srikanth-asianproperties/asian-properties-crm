@@ -1,0 +1,50 @@
+{# ai_home.html (v0.1, 2026-09-29) — AI hub (admin-only, app.py v0.86).
+   Tile grid copied from settings.html's card pattern. Active tiles link
+   or inform; the rest are placeholders for later AI phases. #}
+{% extends "base.html" %}
+{% block title %}AI{% endblock %}
+
+{% block content %}
+{% include "_back_button.html" %}
+<h2 style="margin-top:0;">AI</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:560px; margin-top:-6px;">
+  Admin-only AI tools. No lead names, phone numbers or emails are ever sent to an AI provider.
+</p>
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px;">
+  <a href="{{ url_for('ai_provider_settings') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+      <span style="font-weight:700; font-size:16px;">AI Provider</span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">Choose which AI provider and model the CRM uses.</p>
+  </a>
+  <div class="card" style="opacity:0.6;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+      <span style="font-weight:700; font-size:16px;">Score Explanations <span style="font-size:11px; font-weight:700; color:var(--ink-soft); border:1px solid var(--ink-soft); border-radius:8px; padding:1px 7px; margin-left:6px;">Active</span></span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">Lives on each lead's detail page ("Explain this score"), not a standalone page.</p>
+  </div>
+  <div class="card" style="opacity:0.6;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+      <span style="font-weight:700; font-size:16px;">Daily AI Brief <span style="font-size:11px; font-weight:700; color:var(--ink-soft); border:1px solid var(--ink-soft); border-radius:8px; padding:1px 7px; margin-left:6px;">Coming soon</span></span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">A morning summary for admins.</p>
+  </div>
+  <div class="card" style="opacity:0.6;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+      <span style="font-weight:700; font-size:16px;">Lead Suggestions <span style="font-size:11px; font-weight:700; color:var(--ink-soft); border:1px solid var(--ink-soft); border-radius:8px; padding:1px 7px; margin-left:6px;">On hold</span></span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">AI next-step suggestions inside lead pages.</p>
+  </div>
+  <div class="card" style="opacity:0.6;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+      <span style="font-weight:700; font-size:16px;">Call Transcription <span style="font-size:11px; font-weight:700; color:var(--ink-soft); border:1px solid var(--ink-soft); border-radius:8px; padding:1px 7px; margin-left:6px;">On hold</span></span>
+    </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">Transcripts of recorded calls.</p>
+  </div>
+</div>
+{% endblock %}

@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.85
+Version : 0.86
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,14 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.86 (2026-09-29) — AI phase Step 1. Admin-only "AI" section:
+  AI_SECTION_ROLES (config-not-code), ai_home() hub page,
+  ai_provider_settings() (GET/POST — provider+model picker driven by
+  cls_ai.get_available_providers()), and the score-explanation route
+  ai_score_explanation() (see lead_detail.html v17). Every AI route
+  checks the role IN the route (the template {% if %} is cosmetic only).
+  New import: cls_ai (crm/cls_ai.py). No existing route touched except
+  lead_detail(), which now also passes score-breakdown/AI context.
 ---------
 v0.85 (2026-09-22) — Desk mode D2: admin-only "Desk Dashboard"
   (requires base.html v0.26, NEW crm/templates/desk_dashboard.html
@@ -2313,6 +2321,7 @@ BASE_DIR = r"D:\CLS"
 sys.path.insert(0, BASE_DIR)
 import cls_db  # noqa: E402  (must follow the sys.path insert above)
 import cls_capi_core  # v0.49 — inline CAPI firing (fire_single_lead_event) for change_lead_stage()
+import cls_ai  # v0.86 — AI provider layer (crm/cls_ai.py); the only module that calls an LLM
 import cls_reports  # v0.6 — Reports section; lives in crm/ alongside app.py, no sys.path change needed
 import cls_attendance_photo  # v0.35 — APX Attendance Chunk A: map-thumbnail photo watermarking
 import meta_leads_fetcher  # v0.57 — Meta webhook Phase 2: fetch_single_lead_by_id()/LEAD_FORMS/resolve_page_token() reused for real-time lead capture
@@ -3165,6 +3174,50 @@ def dashboard_booking_summary():
         bookings_by_project=cls_db.get_bookings_by_project_for_period(date_from, date_to, project, source, owner),
         booked_leads=cls_db.get_booked_leads_for_period(date_from, date_to, project, source, owner),
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# AI SECTION  (v0.86) — admin-only hub, provider config, score explainer
+# ─────────────────────────────────────────────────────────────
+# Config-not-code: extending the AI section to another role later is a
+# one-line change here. The base.html drawer link is cosmetic only —
+# every AI route re-checks the role itself via _require_ai_role().
+AI_SECTION_ROLES = ("admin",)
+
+
+def _require_ai_role():
+    user = cls_db.get_user_by_id(session["user_id"])
+    if not user or user["role"] not in AI_SECTION_ROLES:
+        abort(403, description="The AI section is for admins only.")
+    return user
+
+
+@app.route("/ai")
+@login_required
+def ai_home():
+    _require_ai_role()
+    return render_template("ai_home.html")
+
+
+@app.route("/ai/provider", methods=["GET", "POST"])
+@login_required
+def ai_provider_settings():
+    _require_ai_role()
+    conn = cls_db.connect()
+    try:
+        if request.method == "POST":
+            try:
+                cls_ai.set_ai_provider_config(
+                    conn, request.form.get("provider", ""), request.form.get("model", ""))
+                flash("AI provider saved.", "success")
+            except ValueError as e:
+                flash(str(e), "error")
+            return redirect(url_for("ai_provider_settings"))
+        providers = cls_ai.get_available_providers()
+        config = cls_ai.get_ai_provider_config(conn)
+    finally:
+        conn.close()
+    return render_template("ai_provider_settings.html", providers=providers, config=config)
 
 
 @app.route("/desk/dashboard")

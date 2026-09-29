@@ -1,0 +1,51 @@
+{# ai_provider_settings.html (v0.1, 2026-09-29) — pick the active AI
+   provider/model (app.py v0.86 ai_provider_settings()). Providers come
+   from cls_ai.get_available_providers(): one with no API key set never
+   appears here. #}
+{% extends "base.html" %}
+{% block title %}AI Provider{% endblock %}
+
+{% block content %}
+{% include "_back_button.html" %}
+<h2 style="margin-top:0;">AI Provider</h2>
+
+{% if not providers %}
+<div class="card" style="max-width:560px;">
+  No AI provider configured. Set the CLS_AI_ANTHROPIC_KEY environment variable and restart the app.
+</div>
+{% else %}
+<form method="post" class="card" style="max-width:560px; display:flex; flex-direction:column; gap:12px;">
+  <label style="font-size:13px; font-weight:700;">Provider
+    <select name="provider" id="aiProvider" style="display:block; width:100%; margin-top:4px;">
+      {% for p in providers %}
+      <option value="{{ p.key }}" {{ 'selected' if p.key == config.provider }}>{{ p.label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label style="font-size:13px; font-weight:700;">Model
+    <select name="model" id="aiModel" style="display:block; width:100%; margin-top:4px;"></select>
+  </label>
+  <button type="submit" class="btn-pill-green">Save</button>
+</form>
+<script>
+  var AI_PROVIDERS = {{ providers|tojson }};
+  var AI_CURRENT_MODEL = {{ (config.model or '')|tojson }};
+  function fillModels() {
+    var key = document.getElementById('aiProvider').value;
+    var sel = document.getElementById('aiModel');
+    sel.innerHTML = '';
+    AI_PROVIDERS.forEach(function (p) {
+      if (p.key !== key) return;
+      p.models.forEach(function (m) {
+        var o = document.createElement('option');
+        o.value = m; o.textContent = m;
+        if (m === AI_CURRENT_MODEL) o.selected = true;
+        sel.appendChild(o);
+      });
+    });
+  }
+  document.getElementById('aiProvider').addEventListener('change', fillModels);
+  fillModels();
+</script>
+{% endif %}
+{% endblock %}

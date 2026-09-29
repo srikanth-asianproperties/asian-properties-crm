@@ -1,4 +1,7 @@
-<!-- base.html v0.26 — Desk mode D2: NEW "Desk Dashboard" drawer link,
+<!-- base.html v0.27 — AI phase Step 1: NEW admin-only "AI" drawer link
+     (ai_home, app.py v0.86), right after "Work As", same admin-only
+     {% raw %}{% if %}{% endraw %} block. Cosmetic only — ai_home() enforces AI_SECTION_ROLES itself.
+     base.html v0.26 — Desk mode D2: NEW "Desk Dashboard" drawer link,
      directly under "Dashboard", shown only when current_user.role is
      in `desk_dashboard_roles` (app.py v0.85's inject_current_user(),
      same DESK_DASHBOARD_ROLES tuple the new desk_dashboard() route
@@ -862,6 +865,7 @@ html.desk .action-bar{
      using the same conditional this app already uses everywhere else,
      just newly applied here. #}
   <a href="{{ url_for('settings_work_as') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_work_as', 'settings_work_as_start'] }}">Work As</a>
+  <a href="{{ url_for('ai_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['ai_home', 'ai_provider_settings'] }}">AI</a>
   {% endif %}
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   <div class="drawer-divider"></div>
