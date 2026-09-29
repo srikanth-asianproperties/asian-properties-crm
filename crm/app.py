@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.86
+Version : 0.87
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,10 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.87 (2026-09-29) — AI-2: NEW GET /settings/ai-daily-brief (settings_ai_daily_brief(),
+  @login_required + @admin_required): the logged-in admin's own last 10 Daily
+  AI Briefs from cls_db.get_daily_brief_history() (cls_db v2.108). Template:
+  settings_ai_daily_brief.html; linked from the ai_home.html tile.
 v0.86 (2026-09-29) — AI phase Step 1. Admin-only "AI" section:
   AI_SECTION_ROLES (config-not-code), ai_home() hub page,
   ai_provider_settings() (GET/POST — provider+model picker driven by
@@ -7142,6 +7146,19 @@ def settings_attendance_dashboard_export():
         buf, as_attachment=True, download_name=filename,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+@app.route("/settings/ai-daily-brief")
+@login_required
+@admin_required
+def settings_ai_daily_brief():
+    """
+    v0.87 — AI-2: the logged-in admin's own Daily AI Brief history (last
+    10, newest first). No employee picker — a brief has one audience per
+    viewer. Reads the existing notifications table only.
+    """
+    briefs = cls_db.get_daily_brief_history(session["user_id"], limit=10)
+    return render_template("settings_ai_daily_brief.html", briefs=briefs)
 
 
 @app.route("/settings/eod-reports")

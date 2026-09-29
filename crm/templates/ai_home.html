@@ -1,4 +1,8 @@
-{# ai_home.html (v0.1, 2026-09-29) — AI hub (admin-only, app.py v0.86).
+{# ai_home.html (v0.2, 2026-09-29) — AI-2: "Daily AI Brief" tile is now a
+   real link to settings_ai_daily_brief (app.py v0.87), replacing the
+   "Coming soon" placeholder. Lead Suggestions / Call Transcription stay
+   "On hold".
+   v0.1 — AI hub (admin-only, app.py v0.86).
    Tile grid copied from settings.html's card pattern. Active tiles link
    or inform; the rest are placeholders for later AI phases. #}
 {% extends "base.html" %}
@@ -25,13 +29,13 @@
     </div>
     <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">Lives on each lead's detail page ("Explain this score"), not a standalone page.</p>
   </div>
-  <div class="card" style="opacity:0.6;">
+  <a href="{{ url_for('settings_ai_daily_brief') }}" class="card" style="display:block; text-decoration:none; color:inherit;">
     <div style="display:flex; align-items:center; gap:10px;">
       <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
-      <span style="font-weight:700; font-size:16px;">Daily AI Brief <span style="font-size:11px; font-weight:700; color:var(--ink-soft); border:1px solid var(--ink-soft); border-radius:8px; padding:1px 7px; margin-left:6px;">Coming soon</span></span>
+      <span style="font-weight:700; font-size:16px;">Daily AI Brief</span>
     </div>
-    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">A morning summary for admins.</p>
-  </div>
+    <p style="font-size:13px; color:var(--ink-soft); margin:10px 0 0;">Your 7 AM summary of yesterday, and past briefs.</p>
+  </a>
   <div class="card" style="opacity:0.6;">
     <div style="display:flex; align-items:center; gap:10px;">
       <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--green)" stroke-width="2"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>

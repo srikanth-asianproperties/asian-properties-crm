@@ -1,0 +1,32 @@
+{# settings_ai_daily_brief.html (v1, 2026-09-29) — admin AI > Daily AI Brief
+   history. Mirrors settings_eod_reports.html but with no employee picker:
+   it shows the LOGGED-IN admin's own last 10 briefs (cls_db.
+   get_daily_brief_history(), read-only against the notifications table).
+   Each message is rendered pre-wrap — read exactly as it arrived in the
+   notification bell, not re-parsed. #}
+{% extends "base.html" %}
+{% block title %}Daily AI Brief{% endblock %}
+
+{% block content %}
+{% include "_back_button.html" %}
+<h2 style="margin-top:10px;">Daily AI Brief</h2>
+<p style="font-size:13px; color:var(--ink-soft); max-width:640px; margin-top:-6px;">
+  Sent to every admin at 7:00 AM: yesterday's numbers plus a short AI summary.
+  If the AI is unavailable, the numbers still arrive.
+</p>
+
+{% if briefs %}
+<div style="margin-top:16px; display:flex; flex-direction:column; gap:12px;">
+  {% for b in briefs %}
+  <div class="card">
+    <strong style="font-size:14px;">{{ b.date }}</strong>
+    <pre style="white-space:pre-wrap; font-family:inherit; font-size:13px; margin:8px 0 0;">{{ b.message }}</pre>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty-state" style="margin-top:16px;">
+  <p>No briefs yet. The first one arrives at 7:00 AM once the daily task is scheduled.</p>
+</div>
+{% endif %}
+{% endblock %}
