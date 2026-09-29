@@ -2,11 +2,21 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.107
+Version : 2.108
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.108 (2026-09-29) — AI phase Step 2 (admin Daily AI Brief). NEW
+  get_daily_brief_stats(conn, date_str=None) (pure read, defaults to
+  yesterday), notify_daily_brief(message) (per-admin cls_id, notify_
+  holiday_declared() shape), get_daily_brief_history(admin_user_id,
+  limit). One non-additive change: the staleness-days calculation inside
+  _score_lead_items() was extracted verbatim into _staleness_days() so
+  the brief's stale-lead count and score decay share one definition
+  (scores re-verified identical across every lead). No new table; no
+  NOTIFICATION_EVENTS entry (the message is built whole by the job, and
+  insert_notification() takes the event_type string as-is).
 v2.107 (2026-09-29) — AI phase Step 1 (AI Hub + provider config + score
   explainer). ADDITIONS ONLY, nothing existing removed or modified except
   compute_lead_scores() (see below):
@@ -10357,6 +10367,23 @@ def _score_band(score, rules):
     return "Cold"
 
 
+def _staleness_days(rules, stage, cls_updated_at):
+    """
+    (v2.108) Days since a lead's last touch, or None when staleness does
+    not apply (stage in decay_exempt_stages, no/malformed timestamp).
+    Extracted verbatim from _score_lead_items() so the scoring decay and
+    get_daily_brief_stats()'s stale-lead count share ONE definition; the
+    caller compares against rules["decay_after_days"].
+    """
+    if stage in rules["decay_exempt_stages"] or not cls_updated_at:
+        return None
+    try:
+        last_touch = datetime.strptime(cls_updated_at, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None  # malformed/legacy timestamp — skip decay, don't crash scoring
+    return (datetime.now() - last_touch).days
+
+
 def _score_lead_items(rules, lead, activities):
     """
     (v2.107) The ONE place lead-scoring rules are evaluated (extracted
@@ -10408,17 +10435,12 @@ def _score_lead_items(rules, lead, activities):
     add(f"Call activity ({len(call_days)} distinct days)", len(call_days), rules["call_tap_points_per_day"])
 
     # Staleness decay — skipped entirely for exempt stages.
-    if stage not in rules["decay_exempt_stages"] and lead["cls_updated_at"]:
-        try:
-            last_touch = datetime.strptime(lead["cls_updated_at"], "%Y-%m-%d %H:%M:%S")
-            stale_days = (datetime.now() - last_touch).days
-            if stale_days >= rules["decay_after_days"]:
-                periods = stale_days // rules["decay_after_days"]
-                d = rules["decay_points_per_period"] * periods
-                score += d
-                items.append({"label": f"Staleness decay ({stale_days} days idle)", "points": d})
-        except ValueError:
-            pass  # malformed/legacy timestamp — skip decay, don't crash scoring
+    stale_days = _staleness_days(rules, stage, lead["cls_updated_at"])
+    if stale_days is not None and stale_days >= rules["decay_after_days"]:
+        periods = stale_days // rules["decay_after_days"]
+        d = rules["decay_points_per_period"] * periods
+        score += d
+        items.append({"label": f"Staleness decay ({stale_days} days idle)", "points": d})
 
     if score < 0:
         items.append({"label": "Floored at 0", "points": -score})
@@ -15996,6 +16018,132 @@ def get_eod_reports_for_user(user_id, limit=10):
             {"date": r["created_at"][:10], "message": r["message"], "created_at": r["created_at"]}
             for r in rows
         ]
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# AI DAILY BRIEF  (v2.108) — deterministic stats, delivery, history
+# ─────────────────────────────────────────────────────────────
+
+def get_daily_brief_stats(conn, date_str=None):
+    """
+    (v2.108) AI-2: pure read-only aggregation for the admin Daily AI
+    Brief. date_str defaults to YESTERDAY (the brief goes out at 7 AM,
+    when "today" has no data yet). Returns ONLY counts plus employee
+    FIRST names — no lead name/phone/email/cls_id can appear in this
+    dict, which is what makes the LLM prompt PII-free by construction.
+
+    "Open lead" = current_stage NOT IN DRIP_TERMINAL_STAGES (Booked /
+    Lost / Unqualified) — the same definition get_open_workload() and
+    the stale-stage counter already use. "Stale" = _staleness_days() >=
+    get_lead_score_config()['decay_after_days'], i.e. exactly what
+    triggers score decay (so decay-exempt stages are never counted).
+    idle_employees: active non-admin users with zero activity_log rows
+    (by actor email) on date_str, excluding anyone whose attendance row
+    for date_str is leave/weekoff, and everyone if date_str was a
+    declared holiday.
+    """
+    if not date_str:
+        date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    def one(sql, params=()):
+        return conn.execute(sql, params).fetchone()[0]
+
+    leads_created = one(
+        "SELECT COUNT(*) FROM leads WHERE substr(cls_created_at,1,10)=?", (date_str,))
+    stage_movements = one(
+        "SELECT COUNT(*) FROM activity_log WHERE activity_type='stage_change' "
+        "AND substr(created_at,1,10)=?", (date_str,))
+    visits = one(
+        "SELECT COUNT(*) FROM activity_log WHERE activity_type='site_visit_conducted' "
+        "AND substr(created_at,1,10)=?", (date_str,))
+    overdue = one(
+        "SELECT COUNT(*) FROM follow_ups WHERE status='scheduled' "
+        "AND substr(scheduled_at,1,10)<=?", (today,))
+
+    rules = get_lead_score_config()
+    ph = ",".join("?" for _ in DRIP_TERMINAL_STAGES)
+    stale = 0
+    for r in conn.execute(
+            f"SELECT current_stage, cls_updated_at FROM leads "
+            f"WHERE current_stage IS NULL OR current_stage NOT IN ({ph})",
+            DRIP_TERMINAL_STAGES):
+        d = _staleness_days(rules, r["current_stage"], r["cls_updated_at"])
+        if d is not None and d >= rules["decay_after_days"]:
+            stale += 1
+
+    idle = []
+    is_holiday = one(
+        "SELECT COUNT(*) FROM attendance_holidays WHERE holiday_date=?", (date_str,)) > 0
+    if not is_holiday:
+        for u in conn.execute(
+                "SELECT user_id, full_name, email FROM users WHERE active=1 AND role != 'admin' "
+                "ORDER BY full_name"):
+            att = conn.execute(
+                "SELECT status FROM attendance WHERE user_id=? AND attendance_date=?",
+                (u["user_id"], date_str)).fetchone()
+            if att and att["status"] in ("leave", "weekoff"):
+                continue
+            n = one("SELECT COUNT(*) FROM activity_log WHERE actor=? AND substr(created_at,1,10)=?",
+                    (u["email"], date_str))
+            if n == 0:
+                name = (u["full_name"] or u["email"] or "").split()
+                if name:
+                    idle.append(name[0].split("@")[0])
+
+    return {
+        "date": date_str,
+        "leads_created": leads_created,
+        "stage_movements": stage_movements,
+        "site_visits_conducted": visits,
+        "follow_ups_overdue": overdue,
+        "stale_leads_count": stale,
+        "idle_employees": idle,
+    }
+
+
+def notify_daily_brief(message):
+    """
+    (v2.108) Fan the Daily AI Brief out to every ACTIVE admin. Same shape
+    as notify_holiday_declared(): cls_id is per-admin
+    (f"ai:daily_brief:{admin_id}") because insert_notification()'s
+    event_id = md5(cls_id+event_type+today) is global, not per-recipient
+    — a shared cls_id (what notify_admins() would use) would notify only
+    the first admin. Re-running the job the same day is a no-op per
+    admin. Returns the number of admins newly notified.
+    """
+    conn = _connect()
+    sent = 0
+    try:
+        for admin_id in _get_admin_user_ids(conn):
+            cls_id = f"ai:daily_brief:{admin_id}"
+            if insert_notification(admin_id, cls_id, "ai_daily_brief", message, conn=conn):
+                sent += 1
+                send_fcm_push(admin_id, "Daily AI Brief", message)
+        conn.commit()
+    finally:
+        conn.close()
+    return sent
+
+
+def get_daily_brief_history(admin_user_id, limit=10):
+    """
+    (v2.108) One admin's past Daily AI Briefs, newest first, read from
+    the existing notifications table (no new table). Same shape as
+    get_eod_reports_for_user(): [{date, message, created_at}].
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT message, created_at FROM notifications "
+            "WHERE cls_id=? AND event_type='ai_daily_brief' "
+            "ORDER BY created_at DESC LIMIT ?",
+            (f"ai:daily_brief:{admin_user_id}", limit)
+        ).fetchall()
+        return [{"date": r["created_at"][:10], "message": r["message"],
+                 "created_at": r["created_at"]} for r in rows]
     finally:
         conn.close()
 
