@@ -135,6 +135,7 @@ INCLUDE_FILES = [
     # --- core app ---
     "crm/app.py",
     "crm/cls_reports.py",
+    "crm/cls_ai.py",   # AI provider layer (added 2026-09-29)
     "crm/create_admin.py",
     "crm/schema_check.py",
     "crm/requirements.txt",
