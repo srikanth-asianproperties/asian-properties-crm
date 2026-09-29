@@ -3215,7 +3215,8 @@ def _score_explain_prompt(lead, breakdown):
         "You are helping a real-estate sales manager understand a lead's priority score. "
         "In 2-3 plain-English sentences, explain why this lead is rated "
         f"{breakdown['band'].upper()} with a total of {breakdown['total_score']} points, "
-        "and what would most raise or lower it. Do not invent facts beyond the list.\n\n"
+        "and what would most raise or lower it. Do not invent facts beyond the list. "
+        "Refer to it only as \"this lead\". Plain text only, no headings or markdown.\n\n"
         f"Current stage: {lead['current_stage']}"
         + (f" (temperature: {temp})" if temp else "")
         + f"\nScore components:\n{lines}"
