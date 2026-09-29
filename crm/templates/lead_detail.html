@@ -1,4 +1,10 @@
-{# lead_detail.html v16 (2026-09-21) — "Source" + conditional "Source detail"
+{# lead_detail.html v17 (2026-09-29) — AI phase Step 1: NEW collapsible
+   "Score Breakdown" (AI-1a) right under the stage/score badges — plain
+   line items + total from cls_db.get_lead_score_breakdown(), pure
+   computation on data already fetched, no LLM. Hidden for `restricted`
+   viewers (they only get contact info). Same score as the badge.
+
+   v16 (2026-09-21) — "Source" + conditional "Source detail"
    fields replaced by "Lead source" (effective origin via lead_origin_for)
    and "Captured via" (CAPTURED_VIA_LABELS); app.py v0.77 / cls_db.py
    v2.95. Match tier + admin "Change source" control unchanged.
@@ -301,6 +307,25 @@
   <div class="stage-pill" onclick="selectStagePill('{{ s }}')">{{ s }}</div>
   {% endfor %}
 </div>
+{% endif %}
+
+{% if score_breakdown and not restricted %}
+<details id="scoreBreakdown" style="margin:8px 0; font-size:13px;">
+  <summary style="cursor:pointer; font-weight:700; color:var(--ink-soft);">Score Breakdown</summary>
+  <div class="card" style="margin-top:6px; max-width:420px;">
+    {% for it in score_breakdown.line_items %}
+    <div style="display:flex; justify-content:space-between; gap:12px; padding:2px 0;">
+      <span>{{ it.label }}</span>
+      <span style="font-weight:700; color:{{ 'var(--green)' if it.points > 0 else ('var(--red, #c0392b)' if it.points < 0 else 'var(--ink-soft)') }};">{{ '%+d' % it.points }}</span>
+    </div>
+    {% endfor %}
+    <div style="display:flex; justify-content:space-between; gap:12px; padding-top:6px; margin-top:6px; border-top:1px solid var(--line, #ddd); font-weight:700;">
+      <span>Total ({{ score_breakdown.band|capitalize }})</span>
+      <span>{{ score_breakdown.total_score }}</span>
+    </div>
+    {# AI_EXPLAIN_SLOT #}
+  </div>
+</details>
 {% endif %}
 
 {% if can_write %}

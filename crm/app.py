@@ -118,6 +118,7 @@ v0.86 (2026-09-29) — AI phase Step 1. Admin-only "AI" section:
   checks the role IN the route (the template {% if %} is cosmetic only).
   New import: cls_ai (crm/cls_ai.py). No existing route touched except
   lead_detail(), which now also passes score-breakdown/AI context.
+  AI-1a: lead_detail() passes score_breakdown (cls_db v2.107).
 ---------
 v0.85 (2026-09-22) — Desk mode D2: admin-only "Desk Dashboard"
   (requires base.html v0.26, NEW crm/templates/desk_dashboard.html
@@ -4761,8 +4762,19 @@ def lead_detail(cls_id):
     lead["lead_score"] = score["score"]
     lead["lead_score_band"] = score["band"]
 
+    # v0.86 — AI-1a: deterministic score breakdown (no LLM), same rules as
+    # the badge above. Not fetched for restricted viewers.
+    score_breakdown = None
+    if not restricted:
+        _bconn = cls_db.connect()
+        try:
+            score_breakdown = cls_db.get_lead_score_breakdown(_bconn, cls_id)
+        finally:
+            _bconn.close()
+
     return render_template(
         "lead_detail.html",
+        score_breakdown=score_breakdown,
         lead=lead, events=events, comms=comms,
         activity_log=activity_log,
         site_visits=site_visits,

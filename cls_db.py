@@ -9,7 +9,7 @@ CHANGELOG
 ---------
 v2.107 (2026-09-29) — AI phase Step 1 (AI Hub + provider config + score
   explainer). ADDITIONS ONLY, nothing existing removed or modified except
-  compute_lead_scores() (see below, second half of this entry):
+  compute_lead_scores() (see below):
   - NEW ai_suggestions table (self-healing CREATE TABLE IF NOT EXISTS +
     lookup index): cache/audit of LLM outputs keyed UNIQUE(cls_id,
     purpose, suggestion_key). Deliberately its own table, NOT activity_log
@@ -20,6 +20,11 @@ v2.107 (2026-09-29) — AI phase Step 1 (AI Hub + provider config + score
     get_app_setting()/set_app_setting(), get_cached_ai_suggestion(),
     get_latest_ai_suggestion(), save_ai_suggestion(),
     count_ai_suggestions_today(), get_latest_activity_id().
+  - AI-1a: NEW get_lead_score_breakdown(conn, cls_id). The one non-additive
+    change: compute_lead_scores()'s per-lead rule loop was EXTRACTED
+    verbatim into _score_lead_items() (+ _score_band()) so the breakdown
+    and the badge share a single rule evaluation. Behaviour unchanged —
+    verified score-for-score against the old loop on a copy of CLS1.db.
 v2.106 (2026-09-22) — F2 Phase 3 follow-up: Booking Summary/Desk
   Dashboard helpers were missed by F2 Phase 3 (v2.67) — they still
   filtered/grouped by the RAW leads.project column instead of the
@@ -10342,6 +10347,107 @@ def set_lead_score_config(config_dict):
         conn.close()
 
 
+def _score_band(score, rules):
+    """(v2.107) Hot/Warm/Cold for a final score — split out of
+    compute_lead_scores() so it and get_lead_score_breakdown() share it."""
+    if score >= rules["hot_threshold"]:
+        return "Hot"
+    if score >= rules["warm_threshold"]:
+        return "Warm"
+    return "Cold"
+
+
+def _score_lead_items(rules, lead, activities):
+    """
+    (v2.107) The ONE place lead-scoring rules are evaluated (extracted
+    verbatim from compute_lead_scores(); behaviour unchanged). `lead` needs
+    current_stage / opportunity_temperature / cls_updated_at; `activities`
+    is that lead's activity_log rows (activity_type, created_at).
+    Returns (final_score, line_items) where line_items is a list of
+    {"label", "points"} — every points value comes from `rules`
+    (app_settings['lead_score_config']). If the raw sum is negative a
+    final "Floored at 0" item is appended so items always sum to score.
+    """
+    items = []
+    stage = lead["current_stage"]
+    pts = rules["stage_points"].get(stage, 0)
+    score = pts
+    items.append({"label": f"Stage: {stage}", "points": pts})
+
+    if stage == "Opportunity" and lead["opportunity_temperature"] in rules["temperature_points"]:
+        t = rules["temperature_points"][lead["opportunity_temperature"]]
+        score += t
+        items.append({"label": f"Temperature: {lead['opportunity_temperature']}", "points": t})
+
+    note_days, call_days = set(), set()
+    visits = no_shows = followups = 0
+    for a in activities:
+        atype = a["activity_type"]
+        day = (a["created_at"] or "")[:10]
+        if atype == "site_visit_conducted":
+            visits += 1
+        elif atype == "site_visit_no_show":
+            no_shows += 1
+        elif atype == "follow_up_completed":
+            followups += 1
+        elif atype == "note":
+            note_days.add(day)
+        elif atype == "call_attempted":
+            call_days.add(day)
+
+    def add(label, count, per):
+        nonlocal score
+        if count:
+            score += count * per
+            items.append({"label": label, "points": count * per})
+
+    add(f"Site visit conducted ({visits}x)" if visits > 1 else "Site visit conducted", visits, rules["site_visit_conducted"])
+    add(f"Site visit no-show ({no_shows}x)" if no_shows > 1 else "Site visit no-show", no_shows, rules["site_visit_no_show"])
+    add(f"Follow-up completed ({followups}x)" if followups > 1 else "Follow-up completed", followups, rules["follow_up_completed"])
+    add(f"Notes ({len(note_days)} distinct days)", len(note_days), rules["note_points_per_day"])
+    add(f"Call activity ({len(call_days)} distinct days)", len(call_days), rules["call_tap_points_per_day"])
+
+    # Staleness decay — skipped entirely for exempt stages.
+    if stage not in rules["decay_exempt_stages"] and lead["cls_updated_at"]:
+        try:
+            last_touch = datetime.strptime(lead["cls_updated_at"], "%Y-%m-%d %H:%M:%S")
+            stale_days = (datetime.now() - last_touch).days
+            if stale_days >= rules["decay_after_days"]:
+                periods = stale_days // rules["decay_after_days"]
+                d = rules["decay_points_per_period"] * periods
+                score += d
+                items.append({"label": f"Staleness decay ({stale_days} days idle)", "points": d})
+        except ValueError:
+            pass  # malformed/legacy timestamp — skip decay, don't crash scoring
+
+    if score < 0:
+        items.append({"label": "Floored at 0", "points": -score})
+        score = 0
+    return score, items
+
+
+def get_lead_score_breakdown(conn, cls_id):
+    """
+    (v2.107) AI-1a: why this lead has its current score — deterministic,
+    zero-cost, no LLM. Reuses _score_lead_items() (the same evaluation
+    compute_lead_scores() runs) against app_settings['lead_score_config'].
+    Returns {"total_score", "band" ('hot'/'warm'/'cold'), "line_items"}
+    or None if the lead doesn't exist.
+    """
+    lead = conn.execute(
+        "SELECT cls_id, current_stage, opportunity_temperature, cls_updated_at FROM leads WHERE cls_id=?",
+        (cls_id,)
+    ).fetchone()
+    if not lead:
+        return None
+    acts = conn.execute(
+        "SELECT activity_type, created_at FROM activity_log WHERE cls_id=?", (cls_id,)
+    ).fetchall()
+    rules = get_lead_score_config()
+    score, items = _score_lead_items(rules, lead, acts)
+    return {"total_score": score, "band": _score_band(score, rules).lower(), "line_items": items}
+
+
 def compute_lead_scores(cls_ids):
     """
     Batch lead scoring (v2.2) — one connection, one pass, for however
@@ -10385,51 +10491,8 @@ def compute_lead_scores(cls_ids):
         results = {}
 
         for l in leads:
-            cls_id = l["cls_id"]
-            score = rules["stage_points"].get(l["current_stage"], 0)
-
-            if l["current_stage"] == "Opportunity" and l["opportunity_temperature"] in rules["temperature_points"]:
-                score += rules["temperature_points"][l["opportunity_temperature"]]
-
-            note_days, call_days = set(), set()
-            for a in activity_by_lead.get(cls_id, []):
-                atype = a["activity_type"]
-                day = (a["created_at"] or "")[:10]
-                if atype == "site_visit_conducted":
-                    score += rules["site_visit_conducted"]
-                elif atype == "site_visit_no_show":
-                    score += rules["site_visit_no_show"]
-                elif atype == "follow_up_completed":
-                    score += rules["follow_up_completed"]
-                elif atype == "note":
-                    note_days.add(day)
-                elif atype == "call_attempted":
-                    call_days.add(day)
-
-            score += len(note_days) * rules["note_points_per_day"]
-            score += len(call_days) * rules["call_tap_points_per_day"]
-
-            # Staleness decay — skipped entirely for exempt stages.
-            if (l["current_stage"] not in rules["decay_exempt_stages"]
-                    and l["cls_updated_at"]):
-                try:
-                    last_touch = datetime.strptime(l["cls_updated_at"], "%Y-%m-%d %H:%M:%S")
-                    stale_days = (datetime.now() - last_touch).days
-                    if stale_days >= rules["decay_after_days"]:
-                        periods = stale_days // rules["decay_after_days"]
-                        score += rules["decay_points_per_period"] * periods
-                except ValueError:
-                    pass  # malformed/legacy timestamp — skip decay, don't crash scoring
-
-            score = max(0, score)
-            if score >= rules["hot_threshold"]:
-                band = "Hot"
-            elif score >= rules["warm_threshold"]:
-                band = "Warm"
-            else:
-                band = "Cold"
-
-            results[cls_id] = {"score": score, "band": band}
+            score, _items = _score_lead_items(rules, l, activity_by_lead.get(l["cls_id"], []))
+            results[l["cls_id"]] = {"score": score, "band": _score_band(score, rules)}
 
         return results
     finally:
