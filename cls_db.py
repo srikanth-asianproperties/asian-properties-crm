@@ -2,11 +2,22 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.115
+Version : 2.116
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.116 (2026-09-30) — Finance F3b. READ FUNCTIONS ONLY: no schema change, no writes; booking_deals
+  logic, leads, stage logic, Job A untouched. NEW get_marketing_roi(date_from, date_to, project):
+  commission + "Marketing ROI, not profit" on TWO bases — A = deals booked in the range, B = deals
+  whose lead was created in the range. Only COUNTED deals (booked_on >= FINANCE_REVENUE_START_DATE)
+  from Meta-sourced leads enter ROI; booked commission = state expected/invoiced/received, NOT under
+  review, commission not NULL; received = state received only; NULL-commission deals are a
+  "pending entry" count; other-source deals are a separate line. Project of a deal = the lead's
+  F1.3 attributed (ad) project (helper _fin_attributed_project(), the F1.3 rule factored out, same
+  logic). get_marketing_by_project() gains a_/b_ booked/received/deals/pending + roi_a/roi_b (own
+  property -> None) and commission-only rows; get_marketing_by_campaign() gains b_booked/b_received/
+  roi_b (latest campaign, cohort basis). Each basis carries a reconciliation of the pieces.
 v2.115 (2026-09-30) — Finance F3a.1. ADDITIONS ONLY (self-healing); commission logic, leads,
   activity_log, stage logic untouched. DEAL_STATES gains "cancelled" and "void"
   (DEAL_ACTIVE_STATES / DEAL_CLOSED_STATES split); booking_deals gains cancelled_on and
@@ -16503,6 +16514,22 @@ def _fin_spend_rows(conn, date_from, date_to, project=None):
 _FIN_REASSIGN_RE = re.compile(r"Auto-reassigned:\s*(.+?)\s*->\s*(.+?)\.\s")
 
 
+def _fin_attributed_project(match, campaign_name, xr_desc, current_project):
+    """
+    (v2.116) The F1.3 rule, in ONE place (used by the cohort leads AND the deal/ROI code):
+    (1) the campaign's project via _fin_project_matcher; else (2) the "from" project of the
+    lead's first cross_project_reassigned row; else (3) its current project_bucket.
+    '(unknown)'/blank -> FINANCE_UNASSIGNED_LABEL.
+    """
+    proj, _rule = match(campaign_name)
+    if not proj and xr_desc:
+        m = _FIN_REASSIGN_RE.search(xr_desc)
+        proj = m.group(1).strip() if m else None
+    if not proj:
+        proj = current_project
+    return FINANCE_UNASSIGNED_LABEL if (not proj or proj == "(unknown)") else proj
+
+
 def _fin_cohort_leads(conn, date_from, date_to, project=None, extra_where="", extra_params=()):
     """
     (v2.112) One dict per Meta-sourced lead CREATED in range, with 0/1 flags for
@@ -16556,13 +16583,7 @@ def _fin_cohort_leads(conn, date_from, date_to, project=None, extra_where="", ex
         for k in ("is_q", "is_sv", "is_bk", "is_rej", "is_unq", "is_lost"):
             d[k] = 1 if d[k] else 0   # NULL current_stage makes "x IN (...)" NULL, not 0
         d["passed"] = 1 if d["xr_desc"] else 0
-        proj, _rule = match(d["meta_campaign_name"])
-        if not proj and d["xr_desc"]:
-            m = _FIN_REASSIGN_RE.search(d["xr_desc"])
-            proj = m.group(1).strip() if m else None
-        if not proj:
-            proj = d["current_project"]
-        d["project"] = FINANCE_UNASSIGNED_LABEL if proj == "(unknown)" else proj
+        d["project"] = _fin_attributed_project(match, d["meta_campaign_name"], d["xr_desc"], d["current_project"])
         if project and d["project"] != project:
             continue
         out.append(d)
@@ -16642,13 +16663,21 @@ def get_marketing_by_project(date_from, date_to, project=None):
     for l in leads:
         a = agg.setdefault(l["project"], {"spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0, "sr": []})
         a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_rej"]
+    roi = get_marketing_roi(date_from, date_to, project)["by_project"]   # v2.116
+    for name in roi:                      # projects with commission but no spend/cohort lead in range
+        agg.setdefault(name, {"spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0, "sr": []})
     rows = []
     for name, a in agg.items():
         m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"], _fin_meta_total(a["sr"]))
         m["project"] = name
         m["is_own_property"] = name in own
+        r = roi.get(name) or {}
+        for b in ("a", "b"):
+            for k in ("booked", "received", "deals", "pending"):
+                m[f"{b}_{k}"] = r.get(f"{b}_{k}", 0)
+            m[f"roi_{b}"] = None if m["is_own_property"] else r.get(f"roi_{b}")
         rows.append(m)
-    rows.sort(key=lambda r: (-r["spend"], -r["leads"]))
+    rows.sort(key=lambda r: (-r["spend"], -r["leads"], -r["b_booked"]))
     return rows
 
 
@@ -16664,6 +16693,7 @@ def get_marketing_by_campaign(date_from, date_to, project=None):
         leads = _fin_cohort_leads(conn, date_from, date_to, project)
     finally:
         conn.close()
+    campaign_b = get_marketing_roi(date_from, date_to, project)["by_campaign_b"]
     agg = {}
     proj_spend = {}
     for r in spend_rows:
@@ -16687,6 +16717,10 @@ def get_marketing_by_campaign(date_from, date_to, project=None):
         m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"], _fin_meta_total(a["sr"]))
         m["campaign_id"] = cid
         m["passed"] = a.get("passed", 0)
+        cb = campaign_b.get(cid) or {}          # v2.116 — "by latest campaign, cohort basis"
+        m["b_booked"] = cb.get("booked", 0.0)
+        m["b_received"] = cb.get("received", 0.0)
+        m["roi_b"] = _fin_ratio(m["b_booked"], m["spend"])
         m["unqualified"] = a.get("unq", 0)   # ever Unqualified (a lead can be in both this and lost)
         m["lost"] = a.get("lost", 0)         # ever Lost
         m["campaign_name"] = a["name"] or cid
@@ -16770,6 +16804,135 @@ def get_wasted_spend_ads(days=None, min_spend=None, project=None, today=None):
                         "project": r["project"], "spend": r["spend"], "leads": n_leads})
     out.sort(key=lambda x: -x["spend"])
     return {"days": days, "date_from": d_from, "date_to": d_to, "min_spend": min_spend, "ads": out}
+
+
+# ─────────────────────────────────────────────────────────────
+# FINANCE F3b — commission + marketing ROI  (v2.116)  READ-ONLY
+# ─────────────────────────────────────────────────────────────
+# "Marketing ROI, not profit": commission from Meta-sourced deals / Meta ad spend.
+# Basis A = deals BOOKED in the range; Basis B = deals whose LEAD was created in the range
+# (the same cohort as the rest of the page). A deal only counts if booked_on is on/after
+# FINANCE_REVENUE_START_DATE. Booked commission = state expected/invoiced/received, NOT under
+# review, commission not NULL; Received = state received only. Project of a deal = the lead's
+# F1.3 attributed (ad) project. Never writes.
+
+def _fin_deal_rows(conn):
+    """(v2.116) Every COUNTED deal with its lead's source/attribution facts."""
+    match = _fin_project_matcher(conn)
+    rows = conn.execute("""
+        SELECT d.deal_id, d.cls_id, d.project AS snapshot_project, d.state, d.commission_amount,
+               d.booked_on, l.cls_created_at, l.current_stage, l.source, l.meta_campaign_id,
+               l.meta_campaign_name, COALESCE(NULLIF(l.project_bucket,''),'(unknown)') AS current_project,
+               (SELECT x.description FROM activity_log x WHERE x.cls_id=l.cls_id
+                  AND x.activity_type='cross_project_reassigned' ORDER BY x.activity_id LIMIT 1) AS xr_desc,
+               (l.cls_id IS NOT NULL AND (l.source='meta' OR l.meta_campaign_id IS NOT NULL)) AS is_meta
+        FROM booking_deals d LEFT JOIN leads l ON l.cls_id = d.cls_id
+        WHERE d.booked_on IS NOT NULL AND d.booked_on >= ?
+    """, (FINANCE_REVENUE_START_DATE,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["is_meta"] = bool(d["is_meta"])
+        d["attributed"] = (_fin_attributed_project(match, d["meta_campaign_name"], d["xr_desc"], d["current_project"])
+                           if d["is_meta"] else None)
+        d["under_review"] = bool(d["state"] in DEAL_ACTIVE_STATES and d["current_stage"] != "Booked")
+        d["lead_created"] = (d["cls_created_at"] or "")[:10] or None
+        out.append(d)
+    return out
+
+
+def _fin_roi_pieces(deals, basis, date_from, date_to, project):
+    """Bucket the deals that fall in the range for one basis. Returns (per_project, other, buckets)."""
+    per = {}
+    other = {"booked": 0.0, "received": 0.0, "deals": 0, "pending": 0}
+    bk = {"closed": {"deals": 0, "commission": 0.0}, "review": {"deals": 0, "commission": 0.0},
+          "pending": 0, "total": 0.0, "deals": 0, "campaign": {}}
+    for d in deals:
+        day = d["booked_on"] if basis == "a" else d["lead_created"]
+        if not day or day < date_from or day > date_to:
+            continue
+        if project and ((d["attributed"] if d["is_meta"] else d["snapshot_project"]) != project):
+            continue
+        amt = d["commission_amount"]
+        bk["total"] += amt or 0.0
+        bk["deals"] += 1
+        if d["state"] in DEAL_CLOSED_STATES:
+            bk["closed"]["deals"] += 1; bk["closed"]["commission"] += amt or 0.0
+            continue
+        if d["under_review"]:
+            bk["review"]["deals"] += 1; bk["review"]["commission"] += amt or 0.0
+            continue
+        tgt = per.setdefault(d["attributed"], {"booked": 0.0, "received": 0.0, "deals": 0, "pending": 0}) if d["is_meta"] else other
+        if amt is None:
+            tgt["pending"] += 1
+            bk["pending"] += 1
+            continue
+        tgt["booked"] += amt
+        tgt["deals"] += 1
+        if d["state"] == "received":
+            tgt["received"] += amt
+        if d["is_meta"]:
+            cid = d["meta_campaign_id"] or "(none)"
+            c = bk["campaign"].setdefault(cid, {"booked": 0.0, "received": 0.0, "deals": 0})
+            c["booked"] += amt; c["deals"] += 1
+            if d["state"] == "received":
+                c["received"] += amt
+    return per, other, bk
+
+
+def get_marketing_roi(date_from, date_to, project=None):
+    """
+    (v2.116) Commission + ROI for BOTH bases (see the section comment). Returns
+    {"spend", "a"/"b": {"booked","received","deals","roi","net","pending","other":{...},
+    "closed","review","reconciliation"}, "by_project": {project: {...a_/b_ figures, spend, roi,
+    is_own}}, "by_campaign_b": {campaign_id: {...}}}. ROI is commission / spend (None when spend
+    is 0 or the project is an own property); net = commission - spend ("not profit").
+    """
+    conn = _connect()
+    try:
+        deals = _fin_deal_rows(conn)
+        spend_rows = _fin_spend_rows(conn, date_from, date_to, project)
+        own = {r["project"] for r in conn.execute("SELECT project FROM project_commission_rates WHERE is_own_property=1")}
+    finally:
+        conn.close()
+    spend_by = {}
+    for r in spend_rows:
+        spend_by[r["project"]] = spend_by.get(r["project"], 0.0) + r["spend"]
+    total_spend = sum(spend_by.values())
+    out = {"spend": total_spend, "by_project": {}, "by_campaign_b": {}}
+    for basis in ("a", "b"):
+        per, other, bk = _fin_roi_pieces(deals, basis, date_from, date_to, project)
+        booked = sum(v["booked"] for v in per.values())
+        received = sum(v["received"] for v in per.values())
+        out[basis] = {
+            "booked": booked, "received": received, "deals": sum(v["deals"] for v in per.values()),
+            "roi": _fin_ratio(booked, total_spend), "net": booked - total_spend,
+            "roi_received": _fin_ratio(received, total_spend),
+            "pending": bk["pending"], "other": other, "closed": bk["closed"], "review": bk["review"],
+            "reconciliation": {      # every piece of commission over counted deals in scope
+                "meta_by_project": booked, "other_sources": other["booked"],
+                "cancelled_or_void": bk["closed"]["commission"], "under_review": bk["review"]["commission"],
+                "pending_entry_count": bk["pending"], "total": bk["total"],
+                "adds_up": abs(booked + other["booked"] + bk["closed"]["commission"] + bk["review"]["commission"] - bk["total"]) < 0.005,
+            },
+        }
+        for proj, v in per.items():
+            row = out["by_project"].setdefault(proj, {})
+            row.update({f"{basis}_booked": v["booked"], f"{basis}_received": v["received"],
+                        f"{basis}_deals": v["deals"], f"{basis}_pending": v["pending"]})
+        if basis == "b":
+            out["by_campaign_b"] = bk["campaign"]
+    for proj in set(out["by_project"]) | set(spend_by):
+        row = out["by_project"].setdefault(proj, {})
+        for b in ("a", "b"):
+            for k in ("booked", "received", "deals", "pending"):
+                row.setdefault(f"{b}_{k}", 0 if k in ("deals", "pending") else 0.0)
+        row["spend"] = spend_by.get(proj, 0.0)
+        row["is_own"] = proj in own
+        for b in ("a", "b"):
+            row[f"roi_{b}"] = None if row["is_own"] else _fin_ratio(row[f"{b}_booked"], row["spend"])
+            row[f"net_{b}"] = None if row["is_own"] else row[f"{b}_booked"] - row["spend"]
+    return out
 
 
 # ─────────────────────────────────────────────────────────────
