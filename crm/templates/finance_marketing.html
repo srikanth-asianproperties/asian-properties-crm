@@ -1,4 +1,8 @@
-{# finance_marketing.html (v1.2, 2026-09-30) — F1.2: Repeat shown as count AND % of
+{# finance_marketing.html (v1.3, 2026-09-30) — F1.3: leads counted under the project of
+   the ad campaign that brought them in (cls_db v2.112); "Junk" renamed "Rejected at
+   first call (Unqualified)"; campaign table gains "Passed to other project"; the
+   Unassigned banner lists every unmatched campaign with its reason; note updated.
+   v1.2 — F1.2: Repeat shown as count AND % of
    Meta leads (also on the Leads card); the "> 25%" warning rule is removed —
    the "possible missed leads" tag now shows ONLY when Repeat is negative;
    dash when Meta leads is NULL/zero; note updated.
@@ -74,15 +78,19 @@
   shown as a count and as a % of Meta leads (a high % is normal and is not a warning). Only a <b>negative</b> Repeat
   (Meta counted fewer leads than the CRM created) is flagged &ldquo;possible missed leads &mdash; check Job A&rdquo;;
   a dash means Meta's count isn't available. Cost per lead uses Meta's count (matches Ads Manager). Cost per qualified / visit / booking and the funnel
-  percentages use the CRM's new leads. Project-level rows can show odd repeat numbers when a lead's own project differs from its ad's project. &#8220;Qualified&#8221; = reached
-  Opportunity or later; &#8220;site visit&#8221; = a conducted visit or reached Site Visited; junk = currently Unqualified.
+  percentages use the CRM's new leads. &#8220;Qualified&#8221; = reached
+  Opportunity or later; &#8220;site visit&#8221; = a conducted visit or reached Site Visited.
+  <b>Projects:</b> leads are counted under the project of the ad campaign that brought them in, even if the CRM later moved
+  them to another project. <b>Rejected at first call</b> counts leads ever marked Unqualified; the CRM cannot tell whether
+  it was literally the first call. A lead can be both rejected (for one project) and qualified (for another).
+  <b>Passed to other project</b> (campaign table) = leads the CRM moved to another project after they were rejected.
 </p>
 
 {% if unassigned.total and unassigned.total > 0 %}
 <div class="fin-banner warn">
   <b>&#8377;{{ "{:,.0f}".format(unassigned.total) }} of spend is not assigned to a project</b>
-  (campaign name doesn't match a project alias and no lead links to those ads):
-  {% for c in unassigned.campaigns[:4] %}{{ c.campaign_name }} (&#8377;{{ "{:,.0f}".format(c.spend) }}){% if not loop.last %}, {% endif %}{% endfor %}.
+ &mdash; these campaign names could not be matched to exactly one project:
+  {% for c in unassigned.campaigns %}{{ c.campaign_name }} (&#8377;{{ "{:,.0f}".format(c.spend) }}, {{ c.reason }}){% if not loop.last %}; {% endif %}{% endfor %}.
   Add an alias under Settings &rarr; Projects to fix it.
 </div>
 {% endif %}
@@ -106,7 +114,7 @@
     <span>Lead &rarr; qualified: <b>{{ pct(summary.pct_lead_to_qualified) }}</b></span>
     <span>Qualified &rarr; site visit: <b>{{ pct(summary.pct_qualified_to_visit) }}</b></span>
     <span>Site visit &rarr; booking: <b>{{ pct(summary.pct_visit_to_booking) }}</b></span>
-    <span>Junk (Unqualified): <b>{{ pct(summary.junk_rate) }}</b></span>
+    <span>Rejected at first call (Unqualified): <b>{{ pct(summary.rejected_rate) }}</b></span>
   </div>
 </div>
 
@@ -140,14 +148,14 @@
     {% endfor %}
     </tbody>
   </table></div>
-  <div class="fin-note">A lead is counted under the project on the lead itself; spend under the project its campaign belongs to, so the two can differ slightly.</div>
+  <div class="fin-note">Spend, Meta leads and CRM leads all follow the project of the ad campaign, so each row describes the same people.</div>
 </div>
 
 <div class="fin-card">
   <h4>By campaign</h4>
   <div class="report-table-wrap"><table class="report-table">
     <thead><tr><th>Campaign</th><th>Project</th><th class="num">Spend</th><th class="num">Meta leads</th><th class="num">Repeat</th><th class="num">New in CRM</th><th class="num">Qualified</th>
-      <th class="num">Junk rate</th><th class="num">Cost/lead</th><th class="num">Cost/qualified</th></tr></thead>
+      <th class="num">Rejected at first call</th><th class="num">Passed to other project</th><th class="num">Cost/lead</th><th class="num">Cost/qualified</th></tr></thead>
     <tbody>
     {% for r in by_campaign %}
       <tr>
@@ -156,10 +164,10 @@
         <td class="num">{% if r.meta_leads is none %}&mdash;{% else %}{{ r.meta_leads }}{% endif %}</td>
         <td class="num">{{ repeat_cell(r) }}</td>
         <td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
-        <td class="num">{{ pct(r.junk_rate) }}</td><td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
+        <td class="num">{{ pct(r.rejected_rate) }}</td><td class="num">{{ r.passed }}</td><td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="8" style="color:var(--ink-soft);">No data for this range.</td></tr>
+      <tr><td colspan="11" style="color:var(--ink-soft);">No data for this range.</td></tr>
     {% endfor %}
     </tbody>
   </table></div>
