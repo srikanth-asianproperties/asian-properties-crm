@@ -2,11 +2,22 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.114
+Version : 2.115
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.115 (2026-09-30) — Finance F3a.1. ADDITIONS ONLY (self-healing); commission logic, leads,
+  activity_log, stage logic untouched. DEAL_STATES gains "cancelled" and "void"
+  (DEAL_ACTIVE_STATES / DEAL_CLOSED_STATES split); booking_deals gains cancelled_on and
+  cancel_reason (PRAGMA-checked ALTERs) — setting cancelled/void defaults cancelled_on to
+  today and takes an optional reason. get_booking_deal_totals() now counts commission only
+  for COUNTED deals that are active AND not under review, and adds net / cancelled / void /
+  under_review buckets that reconcile to counted. "Under review" = lead no longer Booked while
+  the deal is expected/invoiced/received; it clears when the lead is Booked again or the deal
+  is set to cancelled/void. FINANCE_STALE_DEAL_DAYS (45): display-only "Stale" tag on a counted
+  deal still 'expected' — never changes a state. get_booking_deals() views: review, stale,
+  cancelled, void added; "attention" now includes under review and stale.
 v2.114 (2026-09-30) — Finance F3a. ADDITIONS ONLY (self-healing). project_commission_rates gains
   commission_type ('fixed'/'percent', default 'fixed') and percent_value (PRAGMA-checked
   ALTERs); seed extended (INSERT OR IGNORE, never clobbers edits) with Prima Paradiso
@@ -4109,7 +4120,12 @@ FINANCE_COMMISSION_SEED = [
 ]
 # v2.114 — Finance F3a: deals booked on/after this date count; earlier/undated ones do not.
 FINANCE_REVENUE_START_DATE = "2026-06-01"
-DEAL_STATES = ["expected", "invoiced", "received"]
+DEAL_ACTIVE_STATES = ["expected", "invoiced", "received"]   # count toward commission totals
+DEAL_CLOSED_STATES = ["cancelled", "void"]                   # v2.115 — out of the totals, never deleted
+DEAL_STATES = DEAL_ACTIVE_STATES + DEAL_CLOSED_STATES
+# v2.115 — display-only: a counted deal still 'expected' after this many days gets a "Stale" tag.
+# NEVER changes a state automatically.
+FINANCE_STALE_DEAL_DAYS = 45
 DEAL_UNIT_TYPES = ["any", "2BHK", "3BHK"]
 
 
@@ -5345,6 +5361,12 @@ def init_db():
         );
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_booking_deals_booked_on ON booking_deals(booked_on);")
+    # v2.115 — cancelled/void bookkeeping, PRAGMA-checked additive columns.
+    _bd_cols = [r["name"] for r in conn.execute("PRAGMA table_info(booking_deals)").fetchall()]
+    if "cancelled_on" not in _bd_cols:
+        conn.execute("ALTER TABLE booking_deals ADD COLUMN cancelled_on TEXT;")
+    if "cancel_reason" not in _bd_cols:
+        conn.execute("ALTER TABLE booking_deals ADD COLUMN cancel_reason TEXT;")
 
     conn.commit()
     conn.close()
@@ -16849,15 +16871,18 @@ def _deal_count_status(booked_on):
 
 def get_booking_deals(filters=None):
     """
-    (v2.114) One dict per deal. filters: {"view": all|counted|undated|before|attention,
-    "project": str}. Adds: name, phone_last4, count_status (counted/undated/before),
-    review_flag ("review: moved out of Booked" if the lead is no longer Booked),
-    commission_note ("needs unit type" / "needs sale price" / "Own project - no commission"),
-    needs_attention (commission missing, or no booked date).
+    (v2.115) One dict per deal. filters: {"view": all|counted|undated|before|attention|review|
+    stale|cancelled|void, "project": str}. Adds: name, phone_last4, count_status
+    (counted/undated/before), under_review (lead no longer Booked while the deal is expected/
+    invoiced/received — clears when the lead is Booked again or the deal is cancelled/void),
+    review_flag (its text), stale ("Stale - confirm ..." for a COUNTED, still-'expected' deal
+    older than FINANCE_STALE_DEAL_DAYS; display only), commission_note, needs_attention
+    (no booked date, commission missing, under review, or stale).
     """
     filters = filters or {}
     view = filters.get("view") or "all"
     project = filters.get("project") or None
+    stale_cut = (datetime.now() - timedelta(days=FINANCE_STALE_DEAL_DAYS)).strftime("%Y-%m-%d")
     conn = _connect()
     try:
         own = {r["project"].lower() for r in conn.execute(
@@ -16877,8 +16902,11 @@ def get_booking_deals(filters=None):
             d["phone_last4"] = digits[-4:] if digits else ""
             d["name"] = d.pop("full_name") or ""
             d["count_status"] = _deal_count_status(d["booked_on"])
-            d["review_flag"] = ("review: moved out of Booked"
-                                if d.get("current_stage") != "Booked" else "")
+            d["under_review"] = bool(d["state"] in DEAL_ACTIVE_STATES and d.get("current_stage") != "Booked")
+            d["review_flag"] = "review: moved out of Booked" if d["under_review"] else ""
+            d["stale"] = ("Stale - confirm the booking is still valid and check payment"
+                          if (d["count_status"] == "counted" and d["state"] == "expected"
+                              and d["booked_on"] < stale_cut) else "")
             d["is_own"] = (d["project"] or "").lower() in own
             note = None
             if d["is_own"]:
@@ -16887,11 +16915,17 @@ def get_booking_deals(filters=None):
                 _amt, note = _deal_commission(conn, d["project"], d["unit_type"], d["sale_price"])
                 note = note or "needs unit type or sale price"
             d["commission_note"] = note
-            d["needs_attention"] = bool(d["booked_on"] is None or (d["commission_amount"] is None and not d["is_own"]))
+            d["needs_attention"] = bool(d["booked_on"] is None
+                                        or (d["commission_amount"] is None and not d["is_own"])
+                                        or d["under_review"] or d["stale"])
             if view == "counted" and d["count_status"] != "counted": continue
             if view == "undated" and d["count_status"] != "undated": continue
             if view == "before" and d["count_status"] != "before": continue
             if view == "attention" and not d["needs_attention"]: continue
+            if view == "review" and not d["under_review"]: continue
+            if view == "stale" and not d["stale"]: continue
+            if view == "cancelled" and d["state"] != "cancelled": continue
+            if view == "void" and d["state"] != "void": continue
             out.append(d)
         return out
     finally:
@@ -16899,18 +16933,44 @@ def get_booking_deals(filters=None):
 
 
 def get_booking_deal_totals():
-    """(v2.114) Counters + COUNTED-deal commission by state. Commission, not profit."""
+    """
+    (v2.115) Counters + commission totals. Commission, not profit.
+    Every COUNTED deal falls in exactly one bucket, so
+        net + cancelled + void + under_review == counted   (t["reconciles"])
+      net          : active state (expected/invoiced/received) AND not under review
+      cancelled    : state 'cancelled';  void : state 'void'
+      under_review : active state but the lead is no longer Booked (excluded from by_state)
+    by_state (expected/invoiced/received) covers the NET deals only. Each bucket carries the
+    deal count and the commission amount (NULL commission counts as 0).
+    """
     deals = get_booking_deals({"view": "all"})
+    zero = lambda: {"deals": 0, "commission": 0.0}
     t = {"total": len(deals),
          "counted": sum(d["count_status"] == "counted" for d in deals),
          "undated": sum(d["count_status"] == "undated" for d in deals),
          "before": sum(d["count_status"] == "before" for d in deals),
-         "review": sum(bool(d["review_flag"]) for d in deals),
-         "by_state": {st: {"deals": 0, "commission": 0.0} for st in DEAL_STATES}}
+         "review": sum(d["under_review"] for d in deals),     # all deals under review, counted or not
+         "stale": sum(bool(d["stale"]) for d in deals),
+         "net": zero(), "cancelled": zero(), "void": zero(), "under_review": zero(),
+         "by_state": {st: zero() for st in DEAL_ACTIVE_STATES}}
     for d in deals:
-        if d["count_status"] == "counted" and d["state"] in t["by_state"]:
+        if d["count_status"] != "counted":
+            continue
+        amt = d["commission_amount"] or 0.0
+        if d["state"] == "cancelled":
+            bucket = t["cancelled"]
+        elif d["state"] == "void":
+            bucket = t["void"]
+        elif d["under_review"]:
+            bucket = t["under_review"]
+        else:
+            bucket = t["net"]
             t["by_state"][d["state"]]["deals"] += 1
-            t["by_state"][d["state"]]["commission"] += d["commission_amount"] or 0.0
+            t["by_state"][d["state"]]["commission"] += amt
+        bucket["deals"] += 1
+        bucket["commission"] += amt
+    t["reconciles"] = (t["net"]["deals"] + t["cancelled"]["deals"] + t["void"]["deals"]
+                       + t["under_review"]["deals"] == t["counted"])
     return t
 
 
@@ -16977,6 +17037,10 @@ def update_booking_deal(deal_id, fields, user, session_id=None):
             new["state"] = fields["state"]
         if "notes" in fields:
             new["notes"] = (fields["notes"] or "").strip() or None
+        if "cancel_reason" in fields:
+            new["cancel_reason"] = (fields["cancel_reason"] or "").strip()[:300] or None
+        if "cancelled_on" in fields:
+            new["cancelled_on"] = _parse_date(fields["cancelled_on"], "Cancelled date")
 
         changes = {k: v for k, v in new.items() if deal.get(k) != v and not (
             isinstance(v, float) and isinstance(deal.get(k), (int, float)) and abs(v - deal[k]) < 1e-9)}
@@ -16994,6 +17058,8 @@ def update_booking_deal(deal_id, fields, user, session_id=None):
             changes["invoiced_on"] = today
         if changes.get("state") == "received" and not merged.get("received_on"):
             changes["received_on"] = today
+        if changes.get("state") in DEAL_CLOSED_STATES and not merged.get("cancelled_on"):
+            changes["cancelled_on"] = today     # default to today; an explicit date in the form wins
 
         now = _now()
         sets = ", ".join(f"{k}=?" for k in changes)
