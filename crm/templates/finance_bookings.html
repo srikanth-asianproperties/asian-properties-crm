@@ -1,4 +1,9 @@
-{# finance_bookings.html (v1, 2026-09-30) — Finance F3a admin-only Bookings page (app.py
+{# finance_bookings.html (v1.1, 2026-09-30) — F3a.1: states cancelled/void (+ optional reason,
+   cancelled_on); counters Net / Cancelled / Void / Under review with a reconciliation line;
+   net commission by state excludes cancelled, void and under-review deals; new filters
+   (Under review, Stale, Cancelled, Void); "Stale" and under-review tags. Display only — no
+   state is ever changed automatically.
+   v1 (2026-09-30) — Finance F3a admin-only Bookings page (app.py
    finance_bookings()). One row per booking deal with inline edits. Commission shown here is
    what the builder owes Asian Properties — NOT profit. No ROI columns (that is F3b). Tables
    scroll sideways inside their own container so the page stays usable on a phone. #}
@@ -34,26 +39,42 @@
   <div class="fin-counter"><b>{{ totals.counted }}</b>Counted (booked on/after {{ revenue_start }})</div>
   <div class="fin-counter"><b>{{ totals.undated }}</b>Undated &mdash; not counted</div>
   <div class="fin-counter"><b>{{ totals.before }}</b>Before tracking &mdash; not counted</div>
-  {% if totals.review %}<div class="fin-counter"><b>{{ totals.review }}</b>Review: moved out of Booked</div>{% endif %}
+  {% if totals.stale %}<div class="fin-counter"><b>{{ totals.stale }}</b>Stale (still expected after {{ stale_days }} days)</div>{% endif %}
 </div>
 
 <div class="fin-card">
-  <h4 style="margin:0 0 4px;font-size:14px;">Commission on counted deals, by state</h4>
+  <h4 style="margin:0 0 4px;font-size:14px;">Counted deals &mdash; where they stand</h4>
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>Bucket</th><th>Deals</th><th>Commission</th></tr></thead>
+    <tbody>
+      <tr><td><b>Net bookings</b> (expected + invoiced + received, not under review)</td><td><b>{{ totals.net.deals }}</b></td><td><b>{{ totals.net.commission|inr }}</b></td></tr>
+      <tr><td>Cancelled</td><td>{{ totals.cancelled.deals }}</td><td>{{ totals.cancelled.commission|inr }}</td></tr>
+      <tr><td>Void</td><td>{{ totals.void.deals }}</td><td>{{ totals.void.commission|inr }}</td></tr>
+      <tr><td>Under review (lead no longer Booked)</td><td>{{ totals.under_review.deals }}</td><td>{{ totals.under_review.commission|inr }}</td></tr>
+      <tr><td>Counted deals in total</td><td>{{ totals.counted }}</td><td></td></tr>
+    </tbody>
+  </table></div>
+  <div class="fin-note">Check: {{ totals.net.deals }} net + {{ totals.cancelled.deals }} cancelled + {{ totals.void.deals }} void + {{ totals.under_review.deals }} under review
+    = {{ totals.net.deals + totals.cancelled.deals + totals.void.deals + totals.under_review.deals }}
+    {% if totals.reconciles %}(matches the {{ totals.counted }} counted deals){% else %}<b>&mdash; does NOT match the {{ totals.counted }} counted deals</b>{% endif %}.</div>
+
+  <h4 style="margin:14px 0 4px;font-size:14px;">Net commission by state</h4>
   <div class="report-table-wrap"><table class="report-table">
     <thead><tr><th>State</th><th>Deals</th><th>Commission</th></tr></thead>
     <tbody>
-    {% for st in deal_states %}
+    {% for st in active_states %}
       <tr><td>{{ st|capitalize }}</td><td>{{ totals.by_state[st].deals }}</td><td>{{ totals.by_state[st].commission|inr }}</td></tr>
     {% endfor %}
     </tbody>
   </table></div>
   <div class="fin-note">This is <b>commission</b> the builders owe Asian Properties &mdash; it is <b>not profit</b>; costs such as ad spend and salaries are not deducted here.
-    Only deals booked on or after {{ revenue_start }} are counted.</div>
+    Only deals booked on or after {{ revenue_start }} are counted. Cancelled, void and under-review deals are kept out of the three state totals.
+    A deal is <b>under review</b> when its lead is no longer Booked; it clears by itself if the lead is Booked again, or once you set the deal to cancelled or void.</div>
 </div>
 
 <form method="get" action="{{ url_for('finance_bookings') }}" class="fin-filter-row">
   <select name="view" onchange="this.form.submit()">
-    {% for key, label in [('all','All deals'),('counted','Counted'),('undated','Undated'),('before','Before tracking'),('attention','Needs attention')] %}
+    {% for key, label in [('all','All deals'),('counted','Counted'),('undated','Undated'),('before','Before tracking'),('attention','Needs attention'),('review','Under review'),('stale','Stale'),('cancelled','Cancelled'),('void','Void')] %}
     <option value="{{ key }}" {% if view == key %}selected{% endif %}>{{ label }}</option>
     {% endfor %}
   </select>
@@ -62,7 +83,7 @@
     {% for p in project_options %}<option value="{{ p }}" {% if project == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
   </select>
 </form>
-<div class="fin-note">&ldquo;Needs attention&rdquo; = no booked date, or the commission can't be worked out yet (needs unit type or sale price).
+<div class="fin-note">&ldquo;Needs attention&rdquo; = no booked date, commission can't be worked out yet (needs unit type or sale price), under review, or stale.
   Setting a booked date on or after {{ revenue_start }} makes an undated deal count automatically.</div>
 
 <div class="fin-card">
@@ -77,6 +98,8 @@
           {% elif d.count_status == 'undated' %}<span class="fin-tag warn">Undated &mdash; not counted</span>
           {% else %}<span class="fin-tag warn">Before tracking &mdash; not counted</span>{% endif %}
           {% if d.review_flag %}<span class="fin-tag warn">{{ d.review_flag }}</span>{% endif %}
+          {% if d.stale %}<span class="fin-tag warn">{{ d.stale }}</span>{% endif %}
+          {% if d.state == 'cancelled' %}<span class="fin-tag warn">Cancelled</span>{% elif d.state == 'void' %}<span class="fin-tag warn">Void</span>{% endif %}
         </td>
         <td>{{ d.project }}{% if d.is_own %}<br><span class="fin-tag">Own project - no commission</span>{% endif %}</td>
         <td><select name="unit_type" form="{{ fid }}" class="deal-input">
@@ -90,8 +113,10 @@
         <td><select name="state" form="{{ fid }}" class="deal-input">
           {% for st in deal_states %}<option value="{{ st }}" {% if d.state == st %}selected{% endif %}>{{ st }}</option>{% endfor %}
         </select>
-          {% if d.state != 'expected' %}<div class="fin-note" style="margin-top:2px;">inv {{ d.invoiced_on or '—' }} &middot; rec {{ d.received_on or '—' }}</div>{% endif %}</td>
-        <td><input class="deal-input wide" type="text" name="notes" form="{{ fid }}" value="{{ d.notes or '' }}" maxlength="300"></td>
+          {% if d.state in ('cancelled', 'void') %}<div class="fin-note" style="margin-top:2px;">{{ d.state }} on {{ d.cancelled_on or '—' }}</div>
+          {% elif d.state != 'expected' %}<div class="fin-note" style="margin-top:2px;">inv {{ d.invoiced_on or '—' }} &middot; rec {{ d.received_on or '—' }}</div>{% endif %}</td>
+        <td><input class="deal-input wide" type="text" name="notes" form="{{ fid }}" value="{{ d.notes or '' }}" maxlength="300" placeholder="Notes">
+          <input class="deal-input wide" type="text" name="cancel_reason" form="{{ fid }}" value="{{ d.cancel_reason or '' }}" maxlength="300" placeholder="Reason (if cancelled or void)" style="margin-top:4px;"></td>
         <td><button type="submit" form="{{ fid }}" class="btn">Save</button></td>
       </tr>
     {% else %}

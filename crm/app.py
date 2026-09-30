@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.89
+Version : 0.90
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,9 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.90 (2026-09-30) — Finance F3a.1: finance_bookings() accepts the new views (review, stale,
+  cancelled, void) and passes stale_days; finance_booking_edit() also takes cancel_reason.
+  Guards, audit and routes otherwise unchanged.
 v0.89 (2026-09-30) — Finance F3a: NEW GET /finance/bookings (finance_bookings(); runs the
   idempotent cls_db.sync_booking_deals() on load), POST /finance/bookings/<deal_id>/edit,
   GET /finance/rates, POST /finance/rates/edit — all @login_required + @admin_required, refused
@@ -7955,7 +7958,7 @@ def finance_bookings():
     _finance_admin_guard()
     cls_db.sync_booking_deals()
     view = request.args.get("view") or "all"
-    if view not in ("all", "counted", "undated", "before", "attention"):
+    if view not in ("all", "counted", "undated", "before", "attention", "review", "stale", "cancelled", "void"):
         view = "all"
     project = request.args.get("project") or ""
     return render_template(
@@ -7966,6 +7969,8 @@ def finance_bookings():
         project_options=sorted({d["project"] for d in cls_db.get_booking_deals({"view": "all"}) if d["project"]}),
         deal_states=cls_db.DEAL_STATES, unit_types=cls_db.DEAL_UNIT_TYPES,
         revenue_start=cls_db.FINANCE_REVENUE_START_DATE,
+        stale_days=cls_db.FINANCE_STALE_DEAL_DAYS,
+        active_states=cls_db.DEAL_ACTIVE_STATES,
     )
 
 
@@ -7977,7 +7982,7 @@ def finance_booking_edit(deal_id):
     user = cls_db.get_user_by_id(session["user_id"])
     fields = {k: request.form.get(k) for k in
               ("unit_type", "sale_price", "commission_amount", "booked_on", "state",
-               "invoiced_on", "received_on", "notes") if k in request.form}
+               "invoiced_on", "received_on", "notes", "cancel_reason") if k in request.form}
     try:
         changed = cls_db.update_booking_deal(deal_id, fields, user, session_id=session.get("session_row_id"))
         flash(f"Deal #{deal_id} saved." if changed else f"Deal #{deal_id}: nothing changed.", "success")
