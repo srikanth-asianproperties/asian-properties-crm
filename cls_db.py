@@ -2,11 +2,16 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.112
+Version : 2.113
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.113 (2026-09-30) — Finance F1.4. READ FUNCTIONS ONLY, no schema change, no writes.
+  FINANCE_REJECT_STAGES = ["Unqualified", "Lost"]: "rejected" = ever Unqualified OR Lost
+  at any stage (current_stage or any stage_change new_value). Campaign rows gain
+  "unqualified" and "lost" (each ever-reached; one lead can be in both, so they can
+  add up to more than "rejected"). "passed" and qualified logic unchanged.
 v2.112 (2026-09-30) — Finance F1.3. READ FUNCTIONS ONLY, no schema change, no writes.
   (1) NEW Finance-only campaign->project matcher _fin_project_matcher(): alias found in
   the alphanumeric-only campaign name, else the campaign's project token as a prefix of
@@ -4072,9 +4077,10 @@ FINANCE_WASTED_SPEND_DAYS = 14                # "wasted spend" look-back window 
 FINANCE_WASTED_MIN_SPEND  = 500.0             # ignore ads with less spend than this (INR) in that window
 META_AD_ACCOUNTS          = ["act_825098213089084"]
 FINANCE_UNASSIGNED_LABEL  = "Unassigned"
-# v2.112 — a lead is "rejected at first call" if it is, or ever was, in one of these stages
-# (ever-reached, same idiom as qualified). Add "Lost" here later if wanted.
-FINANCE_REJECT_STAGES     = ["Unqualified"]
+# v2.113 — a lead is "rejected" if it is, or ever was (current_stage or any stage_change
+# new_value), in one of these stages — ever-reached, same idiom as qualified. In the CRM
+# both stages hand a Naishka or Grace lead to the other project.
+FINANCE_REJECT_STAGES     = ["Unqualified", "Lost"]
 # (project bucket, unit_type, commission_amount, is_own_property) — INSERT OR IGNORE only.
 # Project names are the live leads.project_bucket strings ("Naishka Homes" is the
 # bucket that the alias "Naishka" maps to).
@@ -16460,7 +16466,13 @@ def _fin_cohort_leads(conn, date_from, date_to, project=None, extra_where="", ex
                       AND a.new_value IN ({ph(b)}))) AS is_bk,
                (l.current_stage IN ({ph(rej)}) OR EXISTS (SELECT 1 FROM activity_log a
                     WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
-                      AND a.new_value IN ({ph(rej)}))) AS is_rej
+                      AND a.new_value IN ({ph(rej)}))) AS is_rej,
+               (l.current_stage = 'Unqualified' OR EXISTS (SELECT 1 FROM activity_log a
+                    WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
+                      AND a.new_value = 'Unqualified')) AS is_unq,
+               (l.current_stage = 'Lost' OR EXISTS (SELECT 1 FROM activity_log a
+                    WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
+                      AND a.new_value = 'Lost')) AS is_lost
         FROM leads l
         WHERE (l.source='meta' OR l.meta_campaign_id IS NOT NULL)
           AND l.cls_created_at >= ? AND l.cls_created_at <= ? {extra_where}
@@ -16470,7 +16482,7 @@ def _fin_cohort_leads(conn, date_from, date_to, project=None, extra_where="", ex
     out = []
     for r in conn.execute(sql, params):
         d = dict(r)
-        for k in ("is_q", "is_sv", "is_bk", "is_rej"):
+        for k in ("is_q", "is_sv", "is_bk", "is_rej", "is_unq", "is_lost"):
             d[k] = 1 if d[k] else 0   # NULL current_stage makes "x IN (...)" NULL, not 0
         d["passed"] = 1 if d["xr_desc"] else 0
         proj, _rule = match(d["meta_campaign_name"])
@@ -16596,12 +16608,16 @@ def get_marketing_by_campaign(date_from, date_to, project=None):
                                  "spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0, "sr": []})
         a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_rej"]
         a["passed"] = a.get("passed", 0) + l["passed"]
+        a["unq"] = a.get("unq", 0) + l["is_unq"]
+        a["lost"] = a.get("lost", 0) + l["is_lost"]
         proj_spend.setdefault(cid, {}).setdefault(l["project"], 0.0)
     rows = []
     for cid, a in agg.items():
         m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"], _fin_meta_total(a["sr"]))
         m["campaign_id"] = cid
         m["passed"] = a.get("passed", 0)
+        m["unqualified"] = a.get("unq", 0)   # ever Unqualified (a lead can be in both this and lost)
+        m["lost"] = a.get("lost", 0)         # ever Lost
         m["campaign_name"] = a["name"] or cid
         ps = proj_spend.get(cid) or {}
         m["project"] = max(ps, key=ps.get) if ps else FINANCE_UNASSIGNED_LABEL
