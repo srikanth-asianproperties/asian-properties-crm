@@ -1,0 +1,56 @@
+{# finance_rates.html (v1, 2026-09-30) — Finance F3a admin-only commission Rates page (app.py
+   finance_rates()). Edit only: no add, no delete. Changes apply to NEW deals only. #}
+{% extends "base.html" %}
+{% block title %}Finance — Rates{% endblock %}
+
+{% block content %}
+<style>
+  .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .report-table th, .report-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: middle; }
+  .report-table th { color: var(--ink-soft); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; }
+  .report-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .fin-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 14px; background: var(--card); }
+  .fin-note { font-size: 12px; color: var(--ink-soft); margin-top: 8px; line-height: 1.5; }
+  .fin-tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--paper); border: 1px solid var(--line); color: var(--ink-soft); }
+  .fin-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 13px; }
+  .rate-input { font-size: 13px; padding: 4px 6px; height: 32px; width: 130px; box-sizing: border-box; }
+  .rate-form { display: flex; gap: 6px; align-items: center; margin: 0; }
+</style>
+
+{% include "_back_button.html" %}
+<h2 style="margin:6px 0 0;">Finance &mdash; Commission rates</h2>
+<div class="fin-nav"><a href="{{ url_for('finance_marketing') }}">Marketing</a> &middot; <a href="{{ url_for('finance_bookings') }}">Bookings</a> &middot; <b>Rates</b></div>
+
+<div class="fin-card">
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>Project</th><th>Unit type</th><th>Type</th><th>Rate</th><th>Last changed</th></tr></thead>
+    <tbody>
+    {% for r in rates %}
+      <tr>
+        <td>{{ r.project }}</td>
+        <td>{{ r.unit_type }}</td>
+        {% if r.is_own_property %}
+        <td colspan="2"><span class="fin-tag">Own project - no commission</span></td>
+        {% else %}
+        <td>{{ 'Percent of sale price' if r.commission_type == 'percent' else 'Fixed per deal' }}</td>
+        <td>
+          <form method="post" action="{{ url_for('finance_rate_edit') }}" class="rate-form">
+            <input type="hidden" name="project" value="{{ r.project }}"><input type="hidden" name="unit_type" value="{{ r.unit_type }}">
+            {% if r.commission_type == 'percent' %}
+            <input class="rate-input" type="number" step="any" min="0" max="100" name="percent_value" value="{{ r.percent_value }}" aria-label="Percent"> %
+            {% else %}
+            &#8377;<input class="rate-input" type="number" step="any" min="0" name="commission_amount" value="{{ '' if r.commission_amount is none else r.commission_amount|int }}" aria-label="Amount">
+            {% endif %}
+            <button type="submit" class="btn">Save</button>
+          </form>
+        </td>
+        {% endif %}
+        <td style="white-space:nowrap;color:var(--ink-soft);">{{ (r.updated_at or '')[:10] }}{% if r.updated_by %} &middot; {{ r.updated_by }}{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <div class="fin-note"><b>Changes apply to NEW deals only.</b> Every existing deal keeps the commission it was created with, so past figures never move.
+    Rates can be edited but not deleted. Every change is recorded (who, old value, new value).</div>
+</div>
+{% endblock %}

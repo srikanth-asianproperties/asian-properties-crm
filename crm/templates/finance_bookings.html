@@ -1,0 +1,105 @@
+{# finance_bookings.html (v1, 2026-09-30) — Finance F3a admin-only Bookings page (app.py
+   finance_bookings()). One row per booking deal with inline edits. Commission shown here is
+   what the builder owes Asian Properties — NOT profit. No ROI columns (that is F3b). Tables
+   scroll sideways inside their own container so the page stays usable on a phone. #}
+{% extends "base.html" %}
+{% macro num(v) %}{% if v is none %}{% elif v == v|int %}{{ v|int }}{% else %}{{ v }}{% endif %}{% endmacro %}
+{% block title %}Finance — Bookings{% endblock %}
+
+{% block content %}
+<style>
+  .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .report-table th, .report-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
+  .report-table th { color: var(--ink-soft); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; }
+  .report-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .fin-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 14px; background: var(--card); }
+  .fin-note { font-size: 12px; color: var(--ink-soft); margin-top: 8px; line-height: 1.5; }
+  .fin-tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--paper); border: 1px solid var(--line); color: var(--ink-soft); margin: 2px 4px 0 0; }
+  .fin-tag.warn { border-color: #d9a400; color: #6b4e00; background: #fff8e1; }
+  .fin-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 13px; }
+  .fin-filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .fin-filter-row select { height: 36px; font-size: 13px; padding: 4px 8px; min-width: 150px; }
+  .deal-input { font-size: 13px; padding: 4px 6px; height: 32px; width: 100%; min-width: 92px; box-sizing: border-box; }
+  .deal-input.wide { min-width: 150px; }
+  .fin-counters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .fin-counter { flex: 1; min-width: 110px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--card); }
+  .fin-counter b { display: block; font-size: 20px; }
+</style>
+
+{% include "_back_button.html" %}
+<h2 style="margin:6px 0 0;">Finance &mdash; Bookings</h2>
+<div class="fin-nav"><a href="{{ url_for('finance_marketing') }}">Marketing</a> &middot; <b>Bookings</b> &middot; <a href="{{ url_for('finance_rates') }}">Rates</a></div>
+
+<div class="fin-counters">
+  <div class="fin-counter"><b>{{ totals.counted }}</b>Counted (booked on/after {{ revenue_start }})</div>
+  <div class="fin-counter"><b>{{ totals.undated }}</b>Undated &mdash; not counted</div>
+  <div class="fin-counter"><b>{{ totals.before }}</b>Before tracking &mdash; not counted</div>
+  {% if totals.review %}<div class="fin-counter"><b>{{ totals.review }}</b>Review: moved out of Booked</div>{% endif %}
+</div>
+
+<div class="fin-card">
+  <h4 style="margin:0 0 4px;font-size:14px;">Commission on counted deals, by state</h4>
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>State</th><th>Deals</th><th>Commission</th></tr></thead>
+    <tbody>
+    {% for st in deal_states %}
+      <tr><td>{{ st|capitalize }}</td><td>{{ totals.by_state[st].deals }}</td><td>{{ totals.by_state[st].commission|inr }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <div class="fin-note">This is <b>commission</b> the builders owe Asian Properties &mdash; it is <b>not profit</b>; costs such as ad spend and salaries are not deducted here.
+    Only deals booked on or after {{ revenue_start }} are counted.</div>
+</div>
+
+<form method="get" action="{{ url_for('finance_bookings') }}" class="fin-filter-row">
+  <select name="view" onchange="this.form.submit()">
+    {% for key, label in [('all','All deals'),('counted','Counted'),('undated','Undated'),('before','Before tracking'),('attention','Needs attention')] %}
+    <option value="{{ key }}" {% if view == key %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <select name="project" onchange="this.form.submit()">
+    <option value="">All projects</option>
+    {% for p in project_options %}<option value="{{ p }}" {% if project == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+  </select>
+</form>
+<div class="fin-note">&ldquo;Needs attention&rdquo; = no booked date, or the commission can't be worked out yet (needs unit type or sale price).
+  Setting a booked date on or after {{ revenue_start }} makes an undated deal count automatically.</div>
+
+<div class="fin-card">
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>Lead</th><th>Project</th><th>Unit</th><th>Sale price (&#8377;)</th><th>Commission (&#8377;)</th><th>Booked on</th><th>State</th><th>Notes</th><th></th></tr></thead>
+    <tbody>
+    {% for d in deals %}
+      {% set fid = 'deal-' ~ d.deal_id %}
+      <tr>
+        <td><form id="{{ fid }}" method="post" action="{{ url_for('finance_booking_edit', deal_id=d.deal_id) }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="project" value="{{ project }}"></form>{{ d.name or '(no name)' }}<br><span style="color:var(--ink-soft);">&hellip;{{ d.phone_last4 or '----' }}</span>
+          {% if d.count_status == 'counted' %}<span class="fin-tag">Counted</span>
+          {% elif d.count_status == 'undated' %}<span class="fin-tag warn">Undated &mdash; not counted</span>
+          {% else %}<span class="fin-tag warn">Before tracking &mdash; not counted</span>{% endif %}
+          {% if d.review_flag %}<span class="fin-tag warn">{{ d.review_flag }}</span>{% endif %}
+        </td>
+        <td>{{ d.project }}{% if d.is_own %}<br><span class="fin-tag">Own project - no commission</span>{% endif %}</td>
+        <td><select name="unit_type" form="{{ fid }}" class="deal-input">
+          {% for u in unit_types %}<option value="{{ u }}" {% if d.unit_type == u %}selected{% endif %}>{{ u }}</option>{% endfor %}
+        </select></td>
+        <td><input class="deal-input" type="number" step="any" min="0" name="sale_price" form="{{ fid }}" value="{{ num(d.sale_price)|trim }}" placeholder="e.g. 17700000"></td>
+        <td><input class="deal-input" type="number" step="any" min="0" name="commission_amount" form="{{ fid }}" value="{{ num(d.commission_amount)|trim }}" placeholder="&mdash;">
+          {% if d.commission_note and d.commission_amount is none %}<div class="fin-tag warn">{{ d.commission_note }}</div>{% endif %}
+          <div class="fin-note" style="margin-top:2px;">{{ d.commission_amount|inr }} &middot; {{ d.commission_source or 'rate' }}</div></td>
+        <td><input class="deal-input" type="date" name="booked_on" form="{{ fid }}" value="{{ d.booked_on or '' }}"></td>
+        <td><select name="state" form="{{ fid }}" class="deal-input">
+          {% for st in deal_states %}<option value="{{ st }}" {% if d.state == st %}selected{% endif %}>{{ st }}</option>{% endfor %}
+        </select>
+          {% if d.state != 'expected' %}<div class="fin-note" style="margin-top:2px;">inv {{ d.invoiced_on or '—' }} &middot; rec {{ d.received_on or '—' }}</div>{% endif %}</td>
+        <td><input class="deal-input wide" type="text" name="notes" form="{{ fid }}" value="{{ d.notes or '' }}" maxlength="300"></td>
+        <td><button type="submit" form="{{ fid }}" class="btn">Save</button></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="9" style="color:var(--ink-soft);">No deals match this filter.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <div class="fin-note">Commission is set once when the deal is created, and re-worked only if you change the unit type or sale price while it is still a rate-based amount.
+    Typing a different commission makes it a manual amount. Later changes on the Rates page never alter an existing deal. Deals are never deleted.</div>
+</div>
+{% endblock %}

@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.88
+Version : 0.89
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,14 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.89 (2026-09-30) — Finance F3a: NEW GET /finance/bookings (finance_bookings(); runs the
+  idempotent cls_db.sync_booking_deals() on load), POST /finance/bookings/<deal_id>/edit,
+  GET /finance/rates, POST /finance/rates/edit — all @login_required + @admin_required, refused
+  mid-"Work As" (_finance_admin_guard()), session-cookie routes only (no token_required).
+  NEW template filter |inr (Indian digit grouping). Deal/rate edits are audited old -> new
+  through cls_db's existing user_action_log; an edit with no audit session is refused. No CSRF
+  token (none exists app-wide; same posture as every other POST here: SameSite=Lax session
+  cookie). Templates finance_bookings.html v1, finance_rates.html v1; base.html v0.29 menu.
 v0.88 (2026-09-30) — Finance F1: NEW GET /finance/marketing (finance_marketing(),
   @login_required + @admin_required, plus an explicit 403 while impersonating) —
   admin-only Marketing dashboard (spend, cohort funnel, cost per lead/qualified/
@@ -7907,6 +7915,103 @@ def finance_marketing():
         wasted=cls_db.get_wasted_spend_ads(project=project),
         series=cls_db.get_daily_spend_series(date_from, date_to, project),
     )
+
+
+# ── Finance F3a (v0.89): booking deals + commission rates ─────────────────
+def _finance_admin_guard():
+    """Same rule as finance_marketing(): admin-only (decorators) AND refused mid-"Work As"."""
+    if session.get("impersonator_id"):
+        abort(403, description="Finance is not available while working as another user.")
+
+
+@app.template_filter("inr")
+def _inr_filter(value):
+    """Rupees with Indian digit grouping (17700000 -> 1,77,00,000). None -> em dash."""
+    if value is None or value == "":
+        return "—"
+    n = int(round(float(value)))
+    sign, s = ("-" if n < 0 else ""), str(abs(n))
+    if len(s) > 3:
+        head, tail = s[:-3], s[-3:]
+        parts = []
+        while len(head) > 2:
+            parts.insert(0, head[-2:]); head = head[:-2]
+        if head:
+            parts.insert(0, head)
+        s = ",".join(parts) + "," + tail
+    return f"{sign}₹{s}"
+
+
+@app.route("/finance/bookings")
+@login_required
+@admin_required
+def finance_bookings():
+    """
+    v0.89 — Finance F3a. Booking deals (one per booked lead). Loading this page runs
+    cls_db.sync_booking_deals() (idempotent) so new bookings appear without touching any
+    stage-change code. Admin-only, blocked while impersonating, session-cookie routes only
+    (nothing here is reachable through a token_required API).
+    """
+    _finance_admin_guard()
+    cls_db.sync_booking_deals()
+    view = request.args.get("view") or "all"
+    if view not in ("all", "counted", "undated", "before", "attention"):
+        view = "all"
+    project = request.args.get("project") or ""
+    return render_template(
+        "finance_bookings.html",
+        deals=cls_db.get_booking_deals({"view": view, "project": project or None}),
+        totals=cls_db.get_booking_deal_totals(),
+        view=view, project=project,
+        project_options=sorted({d["project"] for d in cls_db.get_booking_deals({"view": "all"}) if d["project"]}),
+        deal_states=cls_db.DEAL_STATES, unit_types=cls_db.DEAL_UNIT_TYPES,
+        revenue_start=cls_db.FINANCE_REVENUE_START_DATE,
+    )
+
+
+@app.route("/finance/bookings/<int:deal_id>/edit", methods=["POST"])
+@login_required
+@admin_required
+def finance_booking_edit(deal_id):
+    _finance_admin_guard()
+    user = cls_db.get_user_by_id(session["user_id"])
+    fields = {k: request.form.get(k) for k in
+              ("unit_type", "sale_price", "commission_amount", "booked_on", "state",
+               "invoiced_on", "received_on", "notes") if k in request.form}
+    try:
+        changed = cls_db.update_booking_deal(deal_id, fields, user, session_id=session.get("session_row_id"))
+        flash(f"Deal #{deal_id} saved." if changed else f"Deal #{deal_id}: nothing changed.", "success")
+    except ValueError as e:
+        flash(str(e), "error")
+    return redirect(url_for("finance_bookings", view=request.form.get("view") or "all",
+                            project=request.form.get("project") or ""))
+
+
+@app.route("/finance/rates")
+@login_required
+@admin_required
+def finance_rates():
+    """v0.89 — Finance F3a. Editable commission rates (edit only: no add, no delete)."""
+    _finance_admin_guard()
+    return render_template("finance_rates.html", rates=cls_db.get_commission_rates())
+
+
+@app.route("/finance/rates/edit", methods=["POST"])
+@login_required
+@admin_required
+def finance_rate_edit():
+    _finance_admin_guard()
+    user = cls_db.get_user_by_id(session["user_id"])
+    try:
+        changed = cls_db.update_commission_rate(
+            request.form.get("project", ""), request.form.get("unit_type", ""),
+            {"commission_amount": request.form.get("commission_amount"),
+             "percent_value": request.form.get("percent_value")},
+            user, session_id=session.get("session_row_id"))
+        flash("Rate saved. It applies to NEW deals only." if changed else "Nothing changed.", "success")
+    except ValueError as e:
+        flash(str(e), "error")
+    return redirect(url_for("finance_rates"))
 
 
 # ─────────────────────────────────────────────────────────────
