@@ -1,4 +1,7 @@
-{# finance_marketing.html (v1.5, 2026-09-30) — F3b: "Commission & Marketing ROI" cards (basis A = deals
+{# finance_marketing.html (v1.6, 2026-09-30) — F1.5: funnel Bookings (headline, project/campaign tables,
+   percentages, cost per booking) exclude cancelled, void and under-review deals (cls_db v2.118); a small
+   "N booking(s) excluded" line under the funnel when N > 0; note explains what a Booking is.
+   v1.5 — F3b: "Commission & Marketing ROI" cards (basis A = deals
    booked in the range, basis B = leads created in the range; received beneath; pending-entry count;
    other-sources line), commission + ROI columns on the project table (A and B), commission B + ROI B
    (latest campaign, cohort basis) on the campaign table, and the basis note. ROI is a multiple, "—" when
@@ -90,6 +93,8 @@
   a dash means Meta's count isn't available. Cost per lead uses Meta's count (matches Ads Manager). Cost per qualified / visit / booking and the funnel
   percentages use the CRM's new leads. &#8220;Qualified&#8221; = reached
   Opportunity or later; &#8220;site visit&#8221; = a conducted visit or reached Site Visited.
+  A &#8220;booking&#8221; = a lead that reached Booked and whose deal has not been cancelled, voided or put under review (its lead moved out of
+  Booked); a booked lead with no deal record yet still counts. Cost per booking and the lead/visit &rarr; booking percentages use this count.
   <b>Projects:</b> leads are counted under the project of the ad campaign that brought them in, even if the CRM later moved
   them to another project. <b>Rejected (Unqualified or Lost)</b> counts leads ever marked Unqualified or Lost at any stage.
   In the CRM these two stages hand a Naishka or Grace lead to the other project. A recent month understates the rate because
@@ -129,6 +134,9 @@
     <span>Site visit &rarr; booking: <b>{{ pct(summary.pct_visit_to_booking) }}</b></span>
     <span>Rejected (Unqualified or Lost): <b>{{ pct(summary.rejected_rate) }}</b></span>
   </div>
+  {% if summary.bookings_excluded %}
+  <div class="fin-note">{{ summary.bookings_excluded }} booking{{ '' if summary.bookings_excluded == 1 else 's' }} excluded (cancelled, void or under review).</div>
+  {% endif %}
 </div>
 
 <h3 style="margin:18px 0 0;">Commission &amp; Marketing ROI <span class="fin-tag">not profit</span></h3>
