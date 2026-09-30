@@ -2,11 +2,22 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.109
+Version : 2.110
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.110 (2026-09-30) — Finance F1.1 (lead counts match Meta). ADDITIONS ONLY.
+  ad_spend_daily gains meta_leads INTEGER (self-healing ALTER, PRAGMA-checked;
+  NULL = not synced yet) — Meta's own "Leads (Form)" per ad-day, stored by
+  upsert_ad_spend_rows() (COALESCE keeps an existing value if a caller omits
+  it). get_marketing_summary/by_project/by_campaign now also return
+  meta_leads, repeat_leads (= meta_leads - CRM new leads), repeat_flag
+  (repeat < 0 or > 25% of Meta leads) and cost_per_lead_basis. Cost per lead
+  = spend / meta_leads, falling back to CRM new leads (basis "CRM") when
+  meta_leads is unknown; cost per qualified/visit/booking and funnel % stay on
+  the CRM cohort. Meta counts repeat submissions from the same person as
+  leads; the CRM merges them into one lead (lead_reengaged), hence the gap.
 v2.109 (2026-09-30) — Finance F1 (Meta ad-spend + admin Marketing dashboard).
   ADDITIONS ONLY, nothing existing removed or modified. NEW tables (self-
   healing CREATE TABLE IF NOT EXISTS in init_db()): ad_spend_daily (one row
@@ -5232,6 +5243,10 @@ def init_db():
             PRIMARY KEY (spend_date, ad_id)
         );
     """)
+    # v2.110 — Meta's own "Leads (Form)" count per ad-day (Insights action_type
+    # onsite_conversion.lead_grouped). NULL = not fetched yet (pre-v1.1 sync).
+    if "meta_leads" not in [r["name"] for r in conn.execute("PRAGMA table_info(ad_spend_daily)").fetchall()]:
+        conn.execute("ALTER TABLE ad_spend_daily ADD COLUMN meta_leads INTEGER;")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_spend_campaign ON ad_spend_daily(campaign_id);")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS project_commission_rates (
@@ -16269,20 +16284,22 @@ def upsert_ad_spend_rows(rows):
             conn.execute("""
                 INSERT INTO ad_spend_daily
                     (spend_date, account_id, campaign_id, campaign_name, adset_id, adset_name,
-                     ad_id, ad_name, spend, impressions, clicks, currency, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ad_id, ad_name, spend, impressions, clicks, currency, fetched_at, meta_leads)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(spend_date, ad_id) DO UPDATE SET
                     account_id=excluded.account_id, campaign_id=excluded.campaign_id,
                     campaign_name=excluded.campaign_name, adset_id=excluded.adset_id,
                     adset_name=excluded.adset_name, ad_name=excluded.ad_name,
                     spend=excluded.spend, impressions=excluded.impressions,
                     clicks=excluded.clicks, currency=excluded.currency,
-                    fetched_at=excluded.fetched_at
+                    fetched_at=excluded.fetched_at,
+                    meta_leads=COALESCE(excluded.meta_leads, meta_leads)
             """, (
                 r["spend_date"], r.get("account_id"), r.get("campaign_id"), r.get("campaign_name"),
                 r.get("adset_id"), r.get("adset_name"), r["ad_id"], r.get("ad_name"),
                 float(r.get("spend") or 0), int(r.get("impressions") or 0),
                 int(r.get("clicks") or 0), r.get("currency"), now,
+                None if r.get("meta_leads") is None else int(r["meta_leads"]),
             ))
             written += 1
         conn.commit()
@@ -16338,7 +16355,8 @@ def _fin_spend_rows(conn, date_from, date_to, project=None):
     proj = _fin_resolve_ad_projects(conn)
     rows = conn.execute(
         "SELECT ad_id, ad_name, campaign_id, campaign_name, SUM(spend) spend, "
-        "SUM(impressions) impressions, SUM(clicks) clicks FROM ad_spend_daily "
+        "SUM(impressions) impressions, SUM(clicks) clicks, SUM(meta_leads) meta_leads, "
+        "COUNT(*) - COUNT(meta_leads) null_rows FROM ad_spend_daily "
         "WHERE spend_date >= ? AND spend_date <= ? GROUP BY ad_id, campaign_id", (date_from, date_to)
     ).fetchall()
     out = []
@@ -16399,10 +16417,29 @@ def _fin_ratio(numer, denom):
     return (numer / denom) if denom else None
 
 
-def _fin_metrics(spend, leads, q, sv, bk, junk=0):
+def _fin_meta_total(spend_rows):
+    """(v2.110) Meta's own lead count for a set of spend rows, or None when unknown
+    (no spend rows, or any ad-day not yet synced with meta_leads)."""
+    if not spend_rows or any((r.get("null_rows") or 0) > 0 for r in spend_rows):
+        return None
+    return sum(r.get("meta_leads") or 0 for r in spend_rows)
+
+
+def _fin_metrics(spend, leads, q, sv, bk, junk=0, meta_leads=None):
+    """`leads` = CRM new leads (cohort). meta_leads = Meta's own count (None = unknown).
+    Cost per lead uses Meta's count when known, else falls back to CRM leads
+    (cost_per_lead_basis says which). Every other ratio stays on the CRM cohort."""
+    repeat = None if meta_leads is None else meta_leads - leads
+    if meta_leads is None:
+        cpl, basis = _fin_ratio(spend, leads), "CRM"
+    else:
+        cpl, basis = _fin_ratio(spend, meta_leads), "Meta"
     return {
         "spend": spend, "leads": leads, "qualified": q, "site_visits": sv, "bookings": bk, "junk": junk,
-        "cost_per_lead": _fin_ratio(spend, leads),
+        "meta_leads": meta_leads, "repeat_leads": repeat, "cost_per_lead_basis": basis,
+        # repeat < 0 (Meta counts fewer than the CRM) or > 25% of Meta leads => possible missed leads / data gap
+        "repeat_flag": bool(repeat is not None and (repeat < 0 or (meta_leads and repeat > 0.25 * meta_leads))),
+        "cost_per_lead": cpl,
         "cost_per_qualified": _fin_ratio(spend, q),
         "cost_per_site_visit": _fin_ratio(spend, sv),
         "cost_per_booking": _fin_ratio(spend, bk),
@@ -16424,7 +16461,7 @@ def get_marketing_summary(date_from, date_to, project=None):
     spend = sum(r["spend"] for r in spend_rows)
     out = _fin_metrics(spend, len(leads), sum(l["is_q"] for l in leads),
                        sum(l["is_sv"] for l in leads), sum(l["is_bk"] for l in leads),
-                       sum(l["is_junk"] for l in leads))
+                       sum(l["is_junk"] for l in leads), _fin_meta_total(spend_rows))
     out["unassigned_spend"] = sum(r["spend"] for r in spend_rows if r["project"] == FINANCE_UNASSIGNED_LABEL)
     return out
 
@@ -16441,13 +16478,14 @@ def get_marketing_by_project(date_from, date_to, project=None):
         conn.close()
     agg = {}
     for r in spend_rows:
-        agg.setdefault(r["project"], {"spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0})["spend"] += r["spend"]
+        agg.setdefault(r["project"], {"spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0, "sr": []})["spend"] += r["spend"]
+        agg[r["project"]]["sr"].append(r)
     for l in leads:
-        a = agg.setdefault(l["project"], {"spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0})
+        a = agg.setdefault(l["project"], {"spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0, "sr": []})
         a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_junk"]
     rows = []
     for name, a in agg.items():
-        m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"])
+        m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"], _fin_meta_total(a["sr"]))
         m["project"] = name
         m["is_own_property"] = name in own
         rows.append(m)
@@ -16471,19 +16509,20 @@ def get_marketing_by_campaign(date_from, date_to, project=None):
     proj_spend = {}
     for r in spend_rows:
         cid = r["campaign_id"] or "(none)"
-        a = agg.setdefault(cid, {"name": r["campaign_name"], "spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0})
+        a = agg.setdefault(cid, {"name": r["campaign_name"], "spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0, "sr": []})
         a["spend"] += r["spend"]
+        a["sr"].append(r)
         proj_spend.setdefault(cid, {}).setdefault(r["project"], 0.0)
         proj_spend[cid][r["project"]] += r["spend"]
     for l in leads:
         cid = l["meta_campaign_id"] or "(none)"
         a = agg.setdefault(cid, {"name": l["meta_campaign_name"] or "(no campaign data)",
-                                 "spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0})
+                                 "spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0, "sr": []})
         a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_junk"]
         proj_spend.setdefault(cid, {}).setdefault(l["project"], 0.0)
     rows = []
     for cid, a in agg.items():
-        m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"])
+        m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"], _fin_meta_total(a["sr"]))
         m["campaign_id"] = cid
         m["campaign_name"] = a["name"] or cid
         ps = proj_spend.get(cid) or {}

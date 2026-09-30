@@ -2,11 +2,17 @@
 =============================================================
 cls_meta_spend_sync.py  —  Meta ad-spend sync (Finance F1)
 =============================================================
-Version : 1.0
+Version : 1.1
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v1.1 (2026-09-30) — Finance F1.1. Also fetches Insights `actions` and stores
+  Meta's own lead count per ad-day in ad_spend_daily.meta_leads, taken from the
+  single action_type onsite_conversion.lead_grouped (verified to reproduce
+  Ads Manager's "Leads (Form)" figures on 28/29 Sep 2026; the other *lead*
+  action types are overlapping duplicates and are never summed). An ad-day
+  with no such action is stored as 0.
 v1.0 (2026-09-30) — Initial version, Finance F1.
   Pulls per-ad, per-day spend from Meta's Insights API (level=ad,
   time_increment=1) for every account in cls_db.META_AD_ACCOUNTS and upserts
@@ -49,7 +55,8 @@ REQUEST_TIMEOUT = 45
 MAX_RETRIES = 4
 BACKOFF_BASE_SECONDS = 5
 MAX_PAGES = 200   # hard stop against a runaway paging loop
-INSIGHT_FIELDS = ("spend,impressions,clicks,account_currency,"
+LEADS_ACTION_TYPE = "onsite_conversion.lead_grouped"   # Meta "Leads (Form)"
+INSIGHT_FIELDS = ("spend,impressions,clicks,account_currency,actions,"
                   "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name")
 # Meta error codes worth retrying (rate limit / transient).
 RETRYABLE_ERROR_CODES = {1, 2, 4, 17, 32, 341, 613}
@@ -123,7 +130,15 @@ def fetch_range(account_id, token, since, until):
     while url and pages < MAX_PAGES:
         body = _get_json(url, params)
         for d in body.get("data", []):
+            meta_leads = 0
+            for a in d.get("actions") or []:
+                if a.get("action_type") == LEADS_ACTION_TYPE:
+                    try:
+                        meta_leads = int(float(a.get("value") or 0))
+                    except ValueError:
+                        pass
             rows.append({
+                "meta_leads": meta_leads,
                 "spend_date": d.get("date_start"), "account_id": account_id,
                 "campaign_id": d.get("campaign_id"), "campaign_name": d.get("campaign_name"),
                 "adset_id": d.get("adset_id"), "adset_name": d.get("adset_name"),
