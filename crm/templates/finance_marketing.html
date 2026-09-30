@@ -1,0 +1,183 @@
+{# finance_marketing.html (v1, 2026-09-30) — Finance F1 admin-only Marketing
+   dashboard, reached via app.py's finance_marketing() (GET /finance/marketing).
+   READ-ONLY. All funnel numbers are COHORT basis (note below). No commission
+   or revenue is shown anywhere in F1. A zero denominator renders as an em
+   dash, never 0 or a divide-by-zero. Chart.js is the same CDN build the
+   reports pages already use (report_view_charts.html) — no new library. #}
+{% extends "base.html" %}
+{% block title %}Finance — Marketing{% endblock %}
+
+{% macro inr(v) %}{% if v is none %}&mdash;{% else %}&#8377;{{ "{:,.0f}".format(v) }}{% endif %}{% endmacro %}
+{% macro pct(v) %}{% if v is none %}&mdash;{% else %}{{ "{:.1f}".format(v) }}%{% endif %}{% endmacro %}
+
+{% block content %}
+<style>
+  .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .report-table th, .report-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .report-table th { color: var(--ink-soft); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .report-table td.num, .report-table th.num { text-align: right; white-space: nowrap; }
+  .report-table tbody tr:hover { background: var(--paper); }
+  .report-table-wrap { overflow-x: auto; }
+  .fin-filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .fin-filter-row select, .fin-filter-row input[type="date"] { height: 36px; font-size: 13px; padding: 4px 8px; flex: 1; min-width: 130px; }
+  .fin-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 14px; background: var(--card); }
+  .fin-card h4 { margin: 0 0 4px; font-size: 14px; }
+  .fin-note { font-size: 12px; color: var(--ink-soft); margin-top: 8px; line-height: 1.5; }
+  .fin-banner { margin-top: 14px; padding: 10px 14px; border-radius: 8px; font-size: 13px; border: 1px solid var(--line); background: var(--paper); }
+  .fin-banner.warn { border-color: #d9a400; background: #fff8e1; color: #6b4e00; }
+  .fin-tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--paper); border: 1px solid var(--line); color: var(--ink-soft); margin-left: 6px; }
+  .fin-chart-wrap { position: relative; height: 260px; margin-top: 10px; }
+  .fin-funnel { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 13px; }
+  .fin-funnel b { font-weight: 700; }
+</style>
+
+{% include "_back_button.html" %}
+<h2 style="margin:6px 0 0;">Marketing &mdash; Meta ad spend</h2>
+
+<form method="get" action="{{ url_for('finance_marketing') }}">
+  <div class="fin-filter-row">
+    <select name="preset" id="finPreset" onchange="onFinPresetChange(this)">
+      {% for key in preset_order %}
+      <option value="{{ key }}" {% if filters.preset == key %}selected{% endif %}>{{ preset_labels[key] }}</option>
+      {% endfor %}
+    </select>
+    <select name="project" onchange="this.form.submit()">
+      <option value="">All Projects</option>
+      {% for p in project_options %}
+      <option value="{{ p }}" {% if filters.project == p %}selected{% endif %}>{{ p }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="fin-filter-row" id="finCustom" style="{% if filters.preset != 'custom' %}display:none;{% endif %}">
+    <input type="date" name="from" value="{{ filters.date_from }}" aria-label="From date">
+    <input type="date" name="to" value="{{ filters.date_to }}" aria-label="To date">
+    <button type="submit" class="btn" style="flex:0 0 auto;">Apply</button>
+  </div>
+</form>
+
+<p class="fin-note">
+  Showing {{ filters.date_from }} to {{ filters.date_to }}. <b>Cohort basis:</b> the leads counted here are
+  Meta leads <i>created in this date range</i>, and the qualified / site-visit / booking numbers are what those
+  same leads have become <i>so far</i> &mdash; so a recent month keeps improving as its leads move through the
+  pipeline. Spend is Meta's own reported spend for the same dates. &#8220;Qualified&#8221; = reached
+  Opportunity or later; &#8220;site visit&#8221; = a conducted visit or reached Site Visited; junk = currently Unqualified.
+</p>
+
+{% if unassigned.total and unassigned.total > 0 %}
+<div class="fin-banner warn">
+  <b>&#8377;{{ "{:,.0f}".format(unassigned.total) }} of spend is not assigned to a project</b>
+  (campaign name doesn't match a project alias and no lead links to those ads):
+  {% for c in unassigned.campaigns[:4] %}{{ c.campaign_name }} (&#8377;{{ "{:,.0f}".format(c.spend) }}){% if not loop.last %}, {% endif %}{% endfor %}.
+  Add an alias under Settings &rarr; Projects to fix it.
+</div>
+{% endif %}
+
+<h3 style="margin:18px 0 0;">Headline numbers</h3>
+<div class="stat-card-grid">
+  <div class="stat-card"><div class="stat-card-header">Total spend</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ inr(summary.spend) }}</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Leads</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ summary.leads }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_lead) }} each</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Qualified</div><div class="stat-card-body"><div class="stat-card-number stat-num-blue">{{ summary.qualified }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_qualified) }} each</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Site visits</div><div class="stat-card-body"><div class="stat-card-number stat-num-blue">{{ summary.site_visits }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_site_visit) }} each</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Bookings</div><div class="stat-card-body"><div class="stat-card-number stat-num-green">{{ summary.bookings }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_booking) }} each</div></div></div>
+</div>
+
+<div class="fin-card">
+  <h4>Funnel</h4>
+  <div class="fin-funnel">
+    <span>Lead &rarr; qualified: <b>{{ pct(summary.pct_lead_to_qualified) }}</b></span>
+    <span>Qualified &rarr; site visit: <b>{{ pct(summary.pct_qualified_to_visit) }}</b></span>
+    <span>Site visit &rarr; booking: <b>{{ pct(summary.pct_visit_to_booking) }}</b></span>
+    <span>Junk (Unqualified): <b>{{ pct(summary.junk_rate) }}</b></span>
+  </div>
+</div>
+
+<div class="fin-card">
+  <h4>Daily spend</h4>
+  <div class="fin-chart-wrap"><canvas id="finSpendChart"></canvas></div>
+  {% if not series or (series|sum(attribute='spend')) == 0 %}
+  <div class="fin-note">No spend rows for this range yet.</div>
+  {% endif %}
+</div>
+
+<div class="fin-card">
+  <h4>By project</h4>
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>Project</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Qualified</th><th class="num">Visits</th><th class="num">Bookings</th>
+      <th class="num">Cost/lead</th><th class="num">Cost/qualified</th><th class="num">Cost/visit</th><th class="num">Cost/booking</th></tr></thead>
+    <tbody>
+    {% for r in by_project %}
+      <tr>
+        <td>{{ r.project }}{% if r.is_own_property %}<span class="fin-tag">Own project &mdash; cost only</span>{% endif %}</td>
+        <td class="num">{{ inr(r.spend) }}</td><td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
+        <td class="num">{{ r.site_visits }}</td><td class="num">{{ r.bookings }}</td>
+        <td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
+        <td class="num">{{ inr(r.cost_per_site_visit) }}</td><td class="num">{{ inr(r.cost_per_booking) }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="10" style="color:var(--ink-soft);">No data for this range.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <div class="fin-note">A lead is counted under the project on the lead itself; spend under the project its campaign belongs to, so the two can differ slightly.</div>
+</div>
+
+<div class="fin-card">
+  <h4>By campaign</h4>
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>Campaign</th><th>Project</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Qualified</th>
+      <th class="num">Junk rate</th><th class="num">Cost/lead</th><th class="num">Cost/qualified</th></tr></thead>
+    <tbody>
+    {% for r in by_campaign %}
+      <tr>
+        <td>{{ r.campaign_name }}</td><td>{{ r.project }}</td>
+        <td class="num">{{ inr(r.spend) }}</td><td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
+        <td class="num">{{ pct(r.junk_rate) }}</td><td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8" style="color:var(--ink-soft);">No data for this range.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+<div class="fin-card">
+  <h4>Wasted-spend watch</h4>
+  <div class="fin-note" style="margin-top:0;">
+    Ads that spent at least &#8377;{{ "{:,.0f}".format(wasted.min_spend) }} in the last {{ wasted.days }} days
+    ({{ wasted.date_from }} to {{ wasted.date_to }}) and have produced <b>no qualified lead</b> from leads created in that window.
+  </div>
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>Ad</th><th>Campaign</th><th>Project</th><th class="num">Spend</th><th class="num">Leads</th></tr></thead>
+    <tbody>
+    {% for a in wasted.ads %}
+      <tr><td>{{ a.ad_name or a.ad_id }}</td><td>{{ a.campaign_name }}</td><td>{{ a.project }}</td>
+          <td class="num">{{ inr(a.spend) }}</td><td class="num">{{ a.leads }}</td></tr>
+    {% else %}
+      <tr><td colspan="5" style="color:var(--ink-soft);">No wasted-spend ads in this window.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+function onFinPresetChange(sel){
+  var box = document.getElementById('finCustom');
+  if (sel.value === 'custom') { box.style.display = 'flex'; return; }
+  box.style.display = 'none';
+  sel.form.submit();
+}
+(function(){
+  var series = {{ series|tojson }};
+  var canvas = document.getElementById('finSpendChart');
+  if (!canvas || typeof Chart === 'undefined' || !series.length) return;
+  new Chart(canvas, {
+    type: 'bar',
+    data: { labels: series.map(function(p){ return p.date.slice(5); }),
+            datasets: [{ label: 'Spend (INR)', data: series.map(function(p){ return p.spend; }), backgroundColor: '#3b6fd4' }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+               scales: { y: { beginAtZero: true } } }
+  });
+})();
+</script>
+{% endblock %}

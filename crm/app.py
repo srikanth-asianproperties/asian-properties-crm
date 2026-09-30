@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.87
+Version : 0.88
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,15 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.88 (2026-09-30) — Finance F1: NEW GET /finance/marketing (finance_marketing(),
+  @login_required + @admin_required, plus an explicit 403 while impersonating) —
+  admin-only Marketing dashboard (spend, cohort funnel, cost per lead/qualified/
+  visit/booking, per-project + per-campaign tables, wasted-spend flag, daily
+  spend chart, unassigned-spend banner) from cls_db v2.109's get_marketing_*()
+  functions. Presets: this month (default), last month, this financial year,
+  custom. Template finance_marketing.html; admin-only "Finance" drawer link in
+  base.html v0.28. No commission/revenue shown anywhere. Not reachable from
+  any token_required (Android) API.
 v0.87 (2026-09-29) — AI-2: NEW GET /settings/ai-daily-brief (settings_ai_daily_brief(),
   @login_required + @admin_required): the logged-in admin's own last 10 Daily
   AI Briefs from cls_db.get_daily_brief_history() (cls_db v2.108). Template:
@@ -7841,6 +7850,63 @@ def admin_ads_insights_preview():
             error = str(e)
 
     return render_template("ads_insights_preview.html", campaigns=campaigns, error=error)
+
+
+# ─────────────────────────────────────────────────────────────
+# FINANCE F1  (v0.88) — admin-only Marketing dashboard
+# ─────────────────────────────────────────────────────────────
+FINANCE_PRESET_ORDER = ["this_month", "last_month", "this_fy", "custom"]
+FINANCE_PRESET_LABELS = {"this_month": "This month", "last_month": "Last month",
+                         "this_fy": "This financial year", "custom": "Custom range"}
+
+
+def _resolve_finance_date_range(args):
+    """(date_from, date_to, active_preset). this_month is the default
+    (cls_db.FINANCE_DEFAULT_RANGE); an unusable custom range falls back to it."""
+    preset = args.get("preset") or cls_db.FINANCE_DEFAULT_RANGE
+    if preset == "custom":
+        f, t = args.get("from"), args.get("to")
+        if f and t and re.match(r"^\d{4}-\d{2}-\d{2}$", f) and re.match(r"^\d{4}-\d{2}-\d{2}$", t) and f <= t:
+            return f, t, "custom"
+        preset = cls_db.FINANCE_DEFAULT_RANGE
+    if preset == "this_fy":
+        f, t = cls_db.financial_year_range()
+        return f, t, "this_fy"
+    if preset == "last_month":
+        f, t = cls_reports.REPORT_DATE_PRESETS["last_month"]()
+        return f, t, "last_month"
+    f, t = cls_reports.REPORT_DATE_PRESETS["this_month"]()
+    return f, t, "this_month"
+
+
+@app.route("/finance/marketing")
+@login_required
+@admin_required
+def finance_marketing():
+    """
+    v0.88 — Finance F1. READ-ONLY. Server-side admin check is the
+    @admin_required decorator (a manager or salesperson gets 403). It is
+    also refused mid-"Work As" impersonation, even though the session user
+    is then a non-admin target anyway — belt and braces, since this is
+    company financial data. All numbers are COHORT basis (see template note).
+    """
+    if session.get("impersonator_id"):
+        abort(403, description="Finance is not available while working as another user.")
+    date_from, date_to, active_preset = _resolve_finance_date_range(request.args)
+    project = request.args.get("project") or None
+    # Wasted-spend window is its own (configurable) look-back, not the page range.
+    return render_template(
+        "finance_marketing.html",
+        filters={"preset": active_preset, "date_from": date_from, "date_to": date_to, "project": project or ""},
+        preset_order=FINANCE_PRESET_ORDER, preset_labels=FINANCE_PRESET_LABELS,
+        project_options=cls_db.get_all_bucket_names(),
+        summary=cls_db.get_marketing_summary(date_from, date_to, project),
+        by_project=cls_db.get_marketing_by_project(date_from, date_to, project),
+        by_campaign=cls_db.get_marketing_by_campaign(date_from, date_to, project),
+        unassigned=cls_db.get_unassigned_spend(date_from, date_to),
+        wasted=cls_db.get_wasted_spend_ads(project=project),
+        series=cls_db.get_daily_spend_series(date_from, date_to, project),
+    )
 
 
 # ─────────────────────────────────────────────────────────────

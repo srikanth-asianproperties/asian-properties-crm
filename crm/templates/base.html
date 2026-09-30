@@ -1,4 +1,7 @@
-<!-- base.html v0.27 — AI phase Step 1: NEW admin-only "AI" drawer link
+<!-- base.html v0.28 — Finance F1: NEW admin-only "Finance" drawer link
+     (finance_marketing, app.py v0.88), right after "AI", same admin-only block.
+     Cosmetic only — finance_marketing() enforces admin itself.
+     base.html v0.27 — AI phase Step 1: NEW admin-only "AI" drawer link
      (ai_home, app.py v0.86), right after "Work As", same admin-only
      {% raw %}{% if %}{% endraw %} block. Cosmetic only — ai_home() enforces AI_SECTION_ROLES itself.
      base.html v0.26 — Desk mode D2: NEW "Desk Dashboard" drawer link,
@@ -866,6 +869,8 @@ html.desk .action-bar{
      just newly applied here. #}
   <a href="{{ url_for('settings_work_as') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_work_as', 'settings_work_as_start'] }}">Work As</a>
   <a href="{{ url_for('ai_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['ai_home', 'ai_provider_settings'] }}">AI</a>
+  {# v0.28 — Finance F1: admin-only, cosmetic only — finance_marketing() enforces admin itself. #}
+  <a href="{{ url_for('finance_marketing') }}" class="drawer-link {{ 'active' if request.endpoint == 'finance_marketing' }}">Finance</a>
   {% endif %}
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   <div class="drawer-divider"></div>
