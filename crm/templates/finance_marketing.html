@@ -1,4 +1,8 @@
-{# finance_marketing.html (v1.3, 2026-09-30) — F1.3: leads counted under the project of
+{# finance_marketing.html (v1.4, 2026-09-30) — F1.4: "Rejected at first call (Unqualified)"
+   renamed "Rejected (Unqualified or Lost)" everywhere (cls_db v2.113: ever Unqualified or
+   Lost at any stage); project table gains a Rejected % column; campaign table gains
+   "Unqualified (ever)" and "Lost (ever)" columns (a lead can be in both); note rewritten.
+   v1.3 — F1.3: leads counted under the project of
    the ad campaign that brought them in (cls_db v2.112); "Junk" renamed "Rejected at
    first call (Unqualified)"; campaign table gains "Passed to other project"; the
    Unassigned banner lists every unmatched campaign with its reason; note updated.
@@ -81,9 +85,12 @@
   percentages use the CRM's new leads. &#8220;Qualified&#8221; = reached
   Opportunity or later; &#8220;site visit&#8221; = a conducted visit or reached Site Visited.
   <b>Projects:</b> leads are counted under the project of the ad campaign that brought them in, even if the CRM later moved
-  them to another project. <b>Rejected at first call</b> counts leads ever marked Unqualified; the CRM cannot tell whether
-  it was literally the first call. A lead can be both rejected (for one project) and qualified (for another).
+  them to another project. <b>Rejected (Unqualified or Lost)</b> counts leads ever marked Unqualified or Lost at any stage.
+  In the CRM these two stages hand a Naishka or Grace lead to the other project. A recent month understates the rate because
+  its leads have had less time to drop out. A lead can be both rejected (for one project) and qualified (for another).
   <b>Passed to other project</b> (campaign table) = leads the CRM moved to another project after they were rejected.
+  The campaign table's <b>Unqualified</b> and <b>Lost</b> columns are each &ldquo;ever&rdquo; counts, and one lead can appear in both,
+  so they can add up to more than the rejected total.
 </p>
 
 {% if unassigned.total and unassigned.total > 0 %}
@@ -114,7 +121,7 @@
     <span>Lead &rarr; qualified: <b>{{ pct(summary.pct_lead_to_qualified) }}</b></span>
     <span>Qualified &rarr; site visit: <b>{{ pct(summary.pct_qualified_to_visit) }}</b></span>
     <span>Site visit &rarr; booking: <b>{{ pct(summary.pct_visit_to_booking) }}</b></span>
-    <span>Rejected at first call (Unqualified): <b>{{ pct(summary.rejected_rate) }}</b></span>
+    <span>Rejected (Unqualified or Lost): <b>{{ pct(summary.rejected_rate) }}</b></span>
   </div>
 </div>
 
@@ -129,7 +136,7 @@
 <div class="fin-card">
   <h4>By project</h4>
   <div class="report-table-wrap"><table class="report-table">
-    <thead><tr><th>Project</th><th class="num">Spend</th><th class="num">Meta leads</th><th class="num">Repeat</th><th class="num">New in CRM</th><th class="num">Qualified</th><th class="num">Visits</th><th class="num">Bookings</th>
+    <thead><tr><th>Project</th><th class="num">Spend</th><th class="num">Meta leads</th><th class="num">Repeat</th><th class="num">New in CRM</th><th class="num">Qualified</th><th class="num">Rejected (Unqualified or Lost)</th><th class="num">Visits</th><th class="num">Bookings</th>
       <th class="num">Cost/lead</th><th class="num">Cost/qualified</th><th class="num">Cost/visit</th><th class="num">Cost/booking</th></tr></thead>
     <tbody>
     {% for r in by_project %}
@@ -139,12 +146,13 @@
         <td class="num">{% if r.meta_leads is none %}&mdash;{% else %}{{ r.meta_leads }}{% endif %}</td>
         <td class="num">{{ repeat_cell(r) }}</td>
         <td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
+        <td class="num">{{ pct(r.rejected_rate) }}</td>
         <td class="num">{{ r.site_visits }}</td><td class="num">{{ r.bookings }}</td>
         <td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
         <td class="num">{{ inr(r.cost_per_site_visit) }}</td><td class="num">{{ inr(r.cost_per_booking) }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="10" style="color:var(--ink-soft);">No data for this range.</td></tr>
+      <tr><td colspan="13" style="color:var(--ink-soft);">No data for this range.</td></tr>
     {% endfor %}
     </tbody>
   </table></div>
@@ -155,7 +163,7 @@
   <h4>By campaign</h4>
   <div class="report-table-wrap"><table class="report-table">
     <thead><tr><th>Campaign</th><th>Project</th><th class="num">Spend</th><th class="num">Meta leads</th><th class="num">Repeat</th><th class="num">New in CRM</th><th class="num">Qualified</th>
-      <th class="num">Rejected at first call</th><th class="num">Passed to other project</th><th class="num">Cost/lead</th><th class="num">Cost/qualified</th></tr></thead>
+      <th class="num">Rejected (Unqualified or Lost)</th><th class="num">Unqualified (ever)</th><th class="num">Lost (ever)</th><th class="num">Passed to other project</th><th class="num">Cost/lead</th><th class="num">Cost/qualified</th></tr></thead>
     <tbody>
     {% for r in by_campaign %}
       <tr>
@@ -164,10 +172,10 @@
         <td class="num">{% if r.meta_leads is none %}&mdash;{% else %}{{ r.meta_leads }}{% endif %}</td>
         <td class="num">{{ repeat_cell(r) }}</td>
         <td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
-        <td class="num">{{ pct(r.rejected_rate) }}</td><td class="num">{{ r.passed }}</td><td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
+        <td class="num">{{ pct(r.rejected_rate) }}</td><td class="num">{{ r.unqualified }}</td><td class="num">{{ r.lost }}</td><td class="num">{{ r.passed }}</td><td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="11" style="color:var(--ink-soft);">No data for this range.</td></tr>
+      <tr><td colspan="13" style="color:var(--ink-soft);">No data for this range.</td></tr>
     {% endfor %}
     </tbody>
   </table></div>
