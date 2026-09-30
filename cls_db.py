@@ -2,11 +2,26 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.111
+Version : 2.112
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.112 (2026-09-30) — Finance F1.3. READ FUNCTIONS ONLY, no schema change, no writes.
+  (1) NEW Finance-only campaign->project matcher _fin_project_matcher(): alias found in
+  the alphanumeric-only campaign name, else the campaign's project token as a prefix of
+  an alias; a rule applies only if it resolves to exactly ONE project, otherwise the
+  campaign stays Unassigned (listed by name + reason in the banner). The
+  majority-of-leads rule (_fin_resolve_ad_projects) is REMOVED — the cross-project
+  reassign workflow moves leads between projects, so it could pick the wrong project.
+  project_aliases behaviour, get_project_bucket() and ingestion/routing are untouched.
+  (2) Leads are attributed to the project of the campaign that brought them in:
+  campaign project, else the "from" project of the first cross_project_reassigned row,
+  else current project_bucket. Used by the project table/filter, cost per lead/
+  qualified/visit/booking and bookings. (3) "Junk" replaced by "rejected at first
+  call": FINANCE_REJECT_STAGES (["Unqualified"]), ever-reached via current_stage or any
+  stage_change; keys rejected / rejected_rate. Campaign rows gain "passed" (leads with a
+  cross_project_reassigned row).
 v2.111 (2026-09-30) — Finance F1.2. _fin_metrics() gains repeat_pct (repeat as
   % of Meta leads; None when Meta leads is NULL/0) and repeat_flag now means
   ONLY repeat < 0 — the v2.110 "> 25% of Meta leads" rule is removed (repeat
@@ -4057,6 +4072,9 @@ FINANCE_WASTED_SPEND_DAYS = 14                # "wasted spend" look-back window 
 FINANCE_WASTED_MIN_SPEND  = 500.0             # ignore ads with less spend than this (INR) in that window
 META_AD_ACCOUNTS          = ["act_825098213089084"]
 FINANCE_UNASSIGNED_LABEL  = "Unassigned"
+# v2.112 — a lead is "rejected at first call" if it is, or ever was, in one of these stages
+# (ever-reached, same idiom as qualified). Add "Lost" here later if wanted.
+FINANCE_REJECT_STAGES     = ["Unqualified"]
 # (project bucket, unit_type, commission_amount, is_own_property) — INSERT OR IGNORE only.
 # Project names are the live leads.project_bucket strings ("Naishka Homes" is the
 # bucket that the alias "Naishka" maps to).
@@ -16321,43 +16339,70 @@ def _fin_stage_sets():
     return q, v, f[-1:]
 
 
-def _fin_resolve_ad_projects(conn):
+def _fin_norm(text):
+    """Lowercase alphanumerics only ("Camp1_GraceClassic" -> "camp1graceclassic")."""
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def _fin_project_matcher(conn):
     """
-    (v2.109) {ad_id: project_bucket or None}. Read-time attribution:
-    1) longest project_aliases alias (or bucket name) found in campaign_name,
-    2) else majority project_bucket of leads with that meta_ad_id,
-    3) else None (caller shows "Unassigned").
+    (v2.112) FINANCE-ONLY campaign-name -> project matcher. Does not touch
+    project_aliases behaviour, get_project_bucket() or any ingestion/routing
+    code — it only READS project_aliases. Returns match(name) -> (project, rule):
+      Rule 1  "alias match": an alias (or bucket name), alphanumerics only, found
+              inside the alphanumeric-only campaign name.
+      Rule 2  "campaign token prefix": the campaign's project token (2nd
+              '_'-separated part, e.g. Cmp1_Bhanuresidency_12-09-026 ->
+              "bhanuresidency") is a prefix of an alias.
+    A rule applies ONLY when it resolves to exactly ONE project bucket. More than
+    one -> (None, "ambiguous"); nothing -> (None, "none"). Never guesses; the
+    caller shows those as Unassigned. There is NO majority-of-leads rule: leads
+    get moved between projects by the cross-project reassign workflow, so the
+    project of an ad's leads says nothing reliable about the ad's own project.
     """
-    aliases = {}
+    amap = {}
     for r in conn.execute("SELECT alias, project_bucket FROM project_aliases"):
-        aliases[(r["alias"] or "").strip().lower()] = r["project_bucket"]
-        aliases[(r["project_bucket"] or "").strip().lower()] = r["project_bucket"]
-    aliases.pop("", None)
-    ordered = sorted(aliases, key=len, reverse=True)
+        for key in (r["alias"], r["project_bucket"]):
+            n = _fin_norm(key)
+            if len(n) >= 3:
+                amap.setdefault(n, set()).add(r["project_bucket"])
+    cache = {}
 
-    majority = {}
-    for r in conn.execute(
-        "SELECT meta_ad_id, project_bucket, COUNT(*) c FROM leads "
-        "WHERE meta_ad_id IS NOT NULL AND meta_ad_id != '' AND project_bucket IS NOT NULL "
-        "AND project_bucket NOT IN ('', '(unknown)') GROUP BY meta_ad_id, project_bucket"
-    ):
-        best = majority.get(r["meta_ad_id"])
-        if best is None or r["c"] > best[1]:
-            majority[r["meta_ad_id"]] = (r["project_bucket"], r["c"])
-
-    out = {}
-    for r in conn.execute("SELECT DISTINCT ad_id, campaign_name FROM ad_spend_daily"):
-        name = (r["campaign_name"] or "").lower()
-        hit = next((aliases[a] for a in ordered if a in name), None)
-        if hit is None and r["ad_id"] in majority:
-            hit = majority[r["ad_id"]][0]
-        out[r["ad_id"]] = hit
-    return out
+    def match(name):
+        if name in cache:
+            return cache[name]
+        n = _fin_norm(name)
+        result = (None, "none")
+        if n:
+            hits = set()
+            for alias_n, buckets in amap.items():
+                if alias_n in n:
+                    hits |= buckets
+            if len(hits) == 1:
+                result = (next(iter(hits)), "alias match")
+            elif len(hits) > 1:
+                result = (None, "ambiguous")
+            else:
+                parts = (name or "").split("_")
+                tok = _fin_norm(parts[1]) if len(parts) > 2 else ""
+                if len(tok) >= 5:
+                    hits = set()
+                    for alias_n, buckets in amap.items():
+                        if alias_n.startswith(tok):
+                            hits |= buckets
+                    if len(hits) == 1:
+                        result = (next(iter(hits)), "campaign token prefix")
+                    elif len(hits) > 1:
+                        result = (None, "ambiguous")
+        cache[name] = result
+        return result
+    return match
 
 
 def _fin_spend_rows(conn, date_from, date_to, project=None):
-    """(v2.109) Per-ad spend rows in range with a resolved 'project' key (Unassigned if none)."""
-    proj = _fin_resolve_ad_projects(conn)
+    """(v2.112) Per-ad spend rows in range with a resolved 'project' (Unassigned if none)
+    and the 'rule' that produced it, both from the campaign name (see _fin_project_matcher)."""
+    match = _fin_project_matcher(conn)
     rows = conn.execute(
         "SELECT ad_id, ad_name, campaign_id, campaign_name, SUM(spend) spend, "
         "SUM(impressions) impressions, SUM(clicks) clicks, SUM(meta_leads) meta_leads, "
@@ -16366,27 +16411,42 @@ def _fin_spend_rows(conn, date_from, date_to, project=None):
     ).fetchall()
     out = []
     for r in rows:
-        p = proj.get(r["ad_id"]) or FINANCE_UNASSIGNED_LABEL
+        proj, rule = match(r["campaign_name"])
+        p = proj or FINANCE_UNASSIGNED_LABEL
         if project and p != project:
             continue
         d = dict(r)
         d["project"] = p
+        d["rule"] = rule
         d["spend"] = d["spend"] or 0.0
         out.append(d)
     return out
 
 
+_FIN_REASSIGN_RE = re.compile(r"Auto-reassigned:\s*(.+?)\s*->\s*(.+?)\.\s")
+
+
 def _fin_cohort_leads(conn, date_from, date_to, project=None, extra_where="", extra_params=()):
     """
-    (v2.109) One dict per Meta-sourced lead CREATED in range, with 0/1 flags
-    for what it became so far (ever-reached, so a lead that later went Lost
-    still counts as having been qualified): is_q / is_sv / is_bk / is_junk.
+    (v2.112) One dict per Meta-sourced lead CREATED in range, with 0/1 flags for
+    what it became so far (ever-reached, so a lead that later went Lost still
+    counts as having been qualified): is_q / is_sv / is_bk / is_rej, plus
+    passed (has a cross_project_reassigned row).
+
+    The lead's ATTRIBUTED project (key 'project') is: (1) its campaign's project
+    via _fin_project_matcher; else (2) its ORIGINAL project = the "from" project
+    of its first cross_project_reassigned activity row; else (3) its current
+    project_bucket. So a lead is counted under the project of the campaign that
+    brought it in, even if the CRM later moved it to another project.
     """
     q, v, b = _fin_stage_sets()
+    rej = list(FINANCE_REJECT_STAGES)
     ph = lambda xs: ",".join("?" * len(xs)) or "''"
     sql = f"""
-        SELECT l.cls_id, COALESCE(NULLIF(l.project_bucket,''),'(unknown)') AS project,
+        SELECT l.cls_id, COALESCE(NULLIF(l.project_bucket,''),'(unknown)') AS current_project,
                l.meta_campaign_id, l.meta_campaign_name, l.meta_ad_id, l.current_stage,
+               (SELECT x.description FROM activity_log x WHERE x.cls_id=l.cls_id
+                  AND x.activity_type='cross_project_reassigned' ORDER BY x.activity_id LIMIT 1) AS xr_desc,
                (l.current_stage IN ({ph(q)}) OR EXISTS (SELECT 1 FROM activity_log a
                     WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
                       AND a.new_value IN ({ph(q)}))) AS is_q,
@@ -16398,19 +16458,28 @@ def _fin_cohort_leads(conn, date_from, date_to, project=None, extra_where="", ex
                (l.current_stage IN ({ph(b)}) OR EXISTS (SELECT 1 FROM activity_log a
                     WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
                       AND a.new_value IN ({ph(b)}))) AS is_bk,
-               (l.current_stage = 'Unqualified') AS is_junk
+               (l.current_stage IN ({ph(rej)}) OR EXISTS (SELECT 1 FROM activity_log a
+                    WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
+                      AND a.new_value IN ({ph(rej)}))) AS is_rej
         FROM leads l
         WHERE (l.source='meta' OR l.meta_campaign_id IS NOT NULL)
           AND l.cls_created_at >= ? AND l.cls_created_at <= ? {extra_where}
     """
-    params = [*q, *q, *v, *v, *b, *b, f"{date_from} 00:00:00", f"{date_to} 23:59:59", *extra_params]
+    params = [*q, *q, *v, *v, *b, *b, *rej, *rej, f"{date_from} 00:00:00", f"{date_to} 23:59:59", *extra_params]
+    match = _fin_project_matcher(conn)
     out = []
     for r in conn.execute(sql, params):
         d = dict(r)
-        for k in ("is_q", "is_sv", "is_bk", "is_junk"):
+        for k in ("is_q", "is_sv", "is_bk", "is_rej"):
             d[k] = 1 if d[k] else 0   # NULL current_stage makes "x IN (...)" NULL, not 0
-        if d["project"] == "(unknown)":
-            d["project"] = FINANCE_UNASSIGNED_LABEL
+        d["passed"] = 1 if d["xr_desc"] else 0
+        proj, _rule = match(d["meta_campaign_name"])
+        if not proj and d["xr_desc"]:
+            m = _FIN_REASSIGN_RE.search(d["xr_desc"])
+            proj = m.group(1).strip() if m else None
+        if not proj:
+            proj = d["current_project"]
+        d["project"] = FINANCE_UNASSIGNED_LABEL if proj == "(unknown)" else proj
         if project and d["project"] != project:
             continue
         out.append(d)
@@ -16430,7 +16499,7 @@ def _fin_meta_total(spend_rows):
     return sum(r.get("meta_leads") or 0 for r in spend_rows)
 
 
-def _fin_metrics(spend, leads, q, sv, bk, junk=0, meta_leads=None):
+def _fin_metrics(spend, leads, q, sv, bk, rejected=0, meta_leads=None):
     """`leads` = CRM new leads (cohort). meta_leads = Meta's own count (None = unknown).
     Cost per lead uses Meta's count when known, else falls back to CRM leads
     (cost_per_lead_basis says which). Every other ratio stays on the CRM cohort."""
@@ -16440,7 +16509,7 @@ def _fin_metrics(spend, leads, q, sv, bk, junk=0, meta_leads=None):
     else:
         cpl, basis = _fin_ratio(spend, meta_leads), "Meta"
     return {
-        "spend": spend, "leads": leads, "qualified": q, "site_visits": sv, "bookings": bk, "junk": junk,
+        "spend": spend, "leads": leads, "qualified": q, "site_visits": sv, "bookings": bk, "rejected": rejected,
         "meta_leads": meta_leads, "repeat_leads": repeat, "cost_per_lead_basis": basis,
         # v2.111 — % of Meta leads that were repeats; None when Meta leads is NULL/0 (no divide by zero)
         "repeat_pct": (repeat * 100.0 / meta_leads) if (repeat is not None and meta_leads) else None,
@@ -16453,7 +16522,7 @@ def _fin_metrics(spend, leads, q, sv, bk, junk=0, meta_leads=None):
         "pct_lead_to_qualified": _fin_ratio(q * 100.0, leads),
         "pct_qualified_to_visit": _fin_ratio(sv * 100.0, q),
         "pct_visit_to_booking": _fin_ratio(bk * 100.0, sv),
-        "junk_rate": _fin_ratio(junk * 100.0, leads),
+        "rejected_rate": _fin_ratio(rejected * 100.0, leads),
     }
 
 
@@ -16468,7 +16537,7 @@ def get_marketing_summary(date_from, date_to, project=None):
     spend = sum(r["spend"] for r in spend_rows)
     out = _fin_metrics(spend, len(leads), sum(l["is_q"] for l in leads),
                        sum(l["is_sv"] for l in leads), sum(l["is_bk"] for l in leads),
-                       sum(l["is_junk"] for l in leads), _fin_meta_total(spend_rows))
+                       sum(l["is_rej"] for l in leads), _fin_meta_total(spend_rows))
     out["unassigned_spend"] = sum(r["spend"] for r in spend_rows if r["project"] == FINANCE_UNASSIGNED_LABEL)
     return out
 
@@ -16489,7 +16558,7 @@ def get_marketing_by_project(date_from, date_to, project=None):
         agg[r["project"]]["sr"].append(r)
     for l in leads:
         a = agg.setdefault(l["project"], {"spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0, "sr": []})
-        a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_junk"]
+        a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_rej"]
     rows = []
     for name, a in agg.items():
         m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"], _fin_meta_total(a["sr"]))
@@ -16525,12 +16594,14 @@ def get_marketing_by_campaign(date_from, date_to, project=None):
         cid = l["meta_campaign_id"] or "(none)"
         a = agg.setdefault(cid, {"name": l["meta_campaign_name"] or "(no campaign data)",
                                  "spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0, "sr": []})
-        a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_junk"]
+        a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_rej"]
+        a["passed"] = a.get("passed", 0) + l["passed"]
         proj_spend.setdefault(cid, {}).setdefault(l["project"], 0.0)
     rows = []
     for cid, a in agg.items():
         m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"], _fin_meta_total(a["sr"]))
         m["campaign_id"] = cid
+        m["passed"] = a.get("passed", 0)
         m["campaign_name"] = a["name"] or cid
         ps = proj_spend.get(cid) or {}
         m["project"] = max(ps, key=ps.get) if ps else FINANCE_UNASSIGNED_LABEL
@@ -16548,12 +16619,13 @@ def get_unassigned_spend(date_from, date_to):
                 if r["project"] == FINANCE_UNASSIGNED_LABEL]
     finally:
         conn.close()
-    by_c = {}
+    by_c, why = {}, {}
     for r in rows:
         k = r["campaign_name"] or r["campaign_id"] or "(unknown)"
         by_c[k] = by_c.get(k, 0.0) + r["spend"]
+        why[k] = "matches more than one project" if r["rule"] == "ambiguous" else "no project match"
     return {"total": sum(by_c.values()),
-            "campaigns": [{"campaign_name": k, "spend": v}
+            "campaigns": [{"campaign_name": k, "spend": v, "reason": why[k]}
                           for k, v in sorted(by_c.items(), key=lambda kv: -kv[1])]}
 
 
@@ -16561,15 +16633,15 @@ def get_daily_spend_series(date_from, date_to, project=None):
     """(v2.109) [{date, spend}] for every day in range (zero-filled) for the trend chart."""
     conn = _connect()
     try:
-        proj = _fin_resolve_ad_projects(conn) if project else {}
+        match = _fin_project_matcher(conn) if project else None
         rows = conn.execute(
-            "SELECT spend_date, ad_id, spend FROM ad_spend_daily WHERE spend_date >= ? AND spend_date <= ?",
+            "SELECT spend_date, campaign_name, spend FROM ad_spend_daily WHERE spend_date >= ? AND spend_date <= ?",
             (date_from, date_to)).fetchall()
     finally:
         conn.close()
     by_day = {}
     for r in rows:
-        if project and (proj.get(r["ad_id"]) or FINANCE_UNASSIGNED_LABEL) != project:
+        if project and (match(r["campaign_name"])[0] or FINANCE_UNASSIGNED_LABEL) != project:
             continue
         by_day[r["spend_date"]] = by_day.get(r["spend_date"], 0.0) + (r["spend"] or 0.0)
     out = []
