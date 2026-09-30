@@ -2,11 +2,22 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.116
+Version : 2.117
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.117 (2026-09-30) — Finance F2. ADDITIONS ONLY (self-healing). NEW table finance_costs (month, scope,
+  category PK; scope = an exact project_bucket from project_commission_rates or 'Overhead'). NEW config
+  FINANCE_COST_CATEGORIES (4), FINANCE_MARKETING_CATEGORIES (first 3), FINANCE_OVERHEAD_SCOPE,
+  FINANCE_AD_SPEND_GST_PCT (0.0; P&L page only). NEW functions: get_salary_for_month() (totals only,
+  admin excluded; "actual" only when payroll ran on/after the month's last day — a mid-month snapshot is
+  partial, so the estimate from salary_slabs is used and labelled), get_finance_costs(),
+  save_finance_costs(), copy_previous_month() (fills only empty cells), get_pnl_by_month(), get_pnl().
+  P&L covers ALL lead sources on a booked and a received basis, starts at FINANCE_REVENUE_START_DATE,
+  and charges whole-month costs/salaries for any month that overlaps the range. Every cell change is
+  audited old -> new via user_action_log (refused without an audit session). Payroll computation,
+  booking_deals logic and the Marketing/ROI numbers are untouched.
 v2.116 (2026-09-30) — Finance F3b. READ FUNCTIONS ONLY: no schema change, no writes; booking_deals
   logic, leads, stage logic, Job A untouched. NEW get_marketing_roi(date_from, date_to, project):
   commission + "Marketing ROI, not profit" on TWO bases — A = deals booked in the range, B = deals
@@ -4139,6 +4150,13 @@ DEAL_STATES = DEAL_ACTIVE_STATES + DEAL_CLOSED_STATES
 FINANCE_STALE_DEAL_DAYS = 45
 DEAL_UNIT_TYPES = ["any", "2BHK", "3BHK"]
 
+# v2.117 — Finance F2: monthly cost ledger + P&L (config-not-code)
+FINANCE_COST_CATEGORIES = ["Creative & design", "Portals & other lead sources",
+                           "Site visits & events", "Tools & running costs"]
+FINANCE_MARKETING_CATEGORIES = FINANCE_COST_CATEGORIES[:3]   # the rest are overheads
+FINANCE_OVERHEAD_SCOPE = "Overhead"                          # company-level scope in finance_costs
+FINANCE_AD_SPEND_GST_PCT = 0.0                               # applies to the P&L page ONLY (0 until confirmed)
+
 
 # ─────────────────────────────────────────────────────────────
 # SCHEMA  —  the CLS 'leads' table
@@ -5372,6 +5390,20 @@ def init_db():
         );
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_booking_deals_booked_on ON booking_deals(booked_on);")
+    # v2.117 — Finance F2: one row per (month, scope, category). scope = an exact project_bucket
+    # from project_commission_rates, or FINANCE_OVERHEAD_SCOPE.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS finance_costs (
+            month      TEXT,
+            scope      TEXT,
+            category   TEXT,
+            amount     REAL NOT NULL DEFAULT 0,
+            notes      TEXT,
+            updated_at TEXT,
+            updated_by TEXT,
+            PRIMARY KEY (month, scope, category)
+        );
+    """)
     # v2.115 — cancelled/void bookkeeping, PRAGMA-checked additive columns.
     _bd_cols = [r["name"] for r in conn.execute("PRAGMA table_info(booking_deals)").fetchall()]
     if "cancelled_on" not in _bd_cols:
@@ -16933,6 +16965,299 @@ def get_marketing_roi(date_from, date_to, project=None):
             row[f"roi_{b}"] = None if row["is_own"] else _fin_ratio(row[f"{b}_booked"], row["spend"])
             row[f"net_{b}"] = None if row["is_own"] else row[f"{b}_booked"] - row["spend"]
     return out
+
+
+# ─────────────────────────────────────────────────────────────
+# FINANCE F2 — monthly cost ledger + P&L  (v2.117)
+# ─────────────────────────────────────────────────────────────
+# Totals only: no per-person salary figure is ever returned. Commission is what is due or
+# received, NOT profit; P&L here is an operating view. Admin pages only.
+
+def _fin_month_bounds(month):
+    """('YYYY-MM-01', last-day) for a 'YYYY-MM' string; ValueError on a bad month."""
+    try:
+        d = datetime.strptime(month or "", "%Y-%m").date()
+    except ValueError:
+        raise ValueError("Month must look like 2026-09.")
+    nxt = (d.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return d.strftime("%Y-%m-%d"), (nxt - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _fin_prev_month(month):
+    first, _last = _fin_month_bounds(month)
+    prev = datetime.strptime(first, "%Y-%m-%d").date() - timedelta(days=1)
+    return prev.strftime("%Y-%m")
+
+
+def _fin_months_in_range(date_from, date_to):
+    """Months overlapping [date_from, date_to], never earlier than FINANCE_REVENUE_START_DATE's month."""
+    lo = max(date_from, FINANCE_REVENUE_START_DATE)
+    if lo > date_to:
+        return []
+    out, cur = [], datetime.strptime(lo[:7] + "-01", "%Y-%m-%d").date()
+    end = datetime.strptime(date_to, "%Y-%m-%d").date()
+    while cur <= end:
+        out.append(cur.strftime("%Y-%m"))
+        cur = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return out
+
+
+def _fin_cost_scopes(conn):
+    """Allowed scopes: every project in project_commission_rates, then the company-level scope."""
+    projects = [r["project"] for r in conn.execute(
+        "SELECT DISTINCT project FROM project_commission_rates ORDER BY project COLLATE NOCASE")]
+    return projects + [FINANCE_OVERHEAD_SCOPE]
+
+
+def get_salary_for_month(month):
+    """
+    (v2.117) Salary TOTAL for a month (never per person), admin excluded.
+      "actual"   : salary_snapshots exist AND the latest was calculated on/after the month's last
+                   day (a complete run) -> sum of net_salary.
+      "estimate" : otherwise -> sum of salary_slabs.monthly_salary for current active non-admin
+                   users. A snapshot calculated BEFORE the month ended is partial (payroll run
+                   mid-month), so it is not used — it would understate the cost.
+    Returns {"amount", "kind", "source"}.
+    """
+    first, last = _fin_month_bounds(month)
+    y, m = int(month[:4]), int(month[5:7])
+    conn = _connect()
+    try:
+        snap = conn.execute(
+            "SELECT COUNT(*) n, COALESCE(SUM(s.net_salary),0) t, MAX(s.calculated_at) c FROM salary_snapshots s "
+            "JOIN users u ON u.user_id = s.user_id WHERE s.year=? AND s.month=? AND u.role != 'admin'", (y, m)).fetchone()
+        if snap["n"] and (snap["c"] or "")[:10] >= last:
+            return {"amount": float(snap["t"]), "kind": "actual", "source": "actual - payroll run"}
+        est = conn.execute(
+            "SELECT COALESCE(SUM(sl.monthly_salary),0) t FROM salary_slabs sl JOIN users u ON u.user_id = sl.user_id "
+            "WHERE u.active=1 AND u.role != 'admin'").fetchone()["t"]
+        why = ("estimate - payroll snapshot is partial (calculated %s)" % snap["c"][:10]) if snap["n"] else "estimate - payroll not run"
+        return {"amount": float(est), "kind": "estimate", "source": why}
+    finally:
+        conn.close()
+
+
+def _fin_meta_spend(conn, date_from, date_to):
+    """Meta ad spend in range, as reported and with FINANCE_AD_SPEND_GST_PCT applied (P&L only)."""
+    raw = conn.execute("SELECT COALESCE(SUM(spend),0) t FROM ad_spend_daily WHERE spend_date>=? AND spend_date<=?",
+                       (date_from, date_to)).fetchone()["t"]
+    return float(raw), float(raw) * (1 + FINANCE_AD_SPEND_GST_PCT / 100.0)
+
+
+def get_finance_costs(month):
+    """
+    (v2.117) The cost grid for one month: {"month", "scopes", "categories", "cells": {(scope, cat):
+    amount}, "salary": {...}, "meta_spend": {"reported", "with_gst", "gst_pct"}}. Salary and Meta
+    spend are read-only lines with their source labels.
+    """
+    first, last = _fin_month_bounds(month)
+    conn = _connect()
+    try:
+        scopes = _fin_cost_scopes(conn)
+        cells = {(r["scope"], r["category"]): r["amount"] for r in conn.execute(
+            "SELECT scope, category, amount FROM finance_costs WHERE month=?", (month,))}
+        reported, with_gst = _fin_meta_spend(conn, first, last)
+    finally:
+        conn.close()
+    return {"month": month, "scopes": scopes, "categories": list(FINANCE_COST_CATEGORIES), "cells": cells,
+            "salary": get_salary_for_month(month),
+            "meta_spend": {"reported": reported, "with_gst": with_gst, "gst_pct": FINANCE_AD_SPEND_GST_PCT}}
+
+
+def _fin_cost_amount(value, label):
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return 0.0
+    try:
+        v = float(str(value).replace(",", "").strip())
+    except ValueError:
+        raise ValueError(f"{label} must be a number.")
+    if v < 0 or v != v or v == float("inf"):
+        raise ValueError(f"{label} must be zero or more.")
+    return round(v, 2)
+
+
+def save_finance_costs(month, cells, user, session_id=None):
+    """
+    (v2.117) Save grid cells: cells = [{"scope", "category", "amount"[, "notes"]}, ...]. Validates the
+    month format, scope (project from project_commission_rates or 'Overhead'), category
+    (FINANCE_COST_CATEGORIES) and amount >= 0 BEFORE writing anything. Only cells whose amount
+    differs from the stored one (missing = 0) are written, and EACH change is audited old -> new
+    through user_action_log. Refused without an audit session. Returns {(scope, cat): (old, new)}.
+    """
+    if session_id is None:
+        raise ValueError("Audit session missing - please log out and log in again before editing.")
+    _fin_month_bounds(month)
+    conn = _connect()
+    try:
+        scopes = set(_fin_cost_scopes(conn))
+        parsed = []
+        for c in cells or []:
+            if c.get("scope") not in scopes:
+                raise ValueError("Unknown project/scope: %r" % c.get("scope"))
+            if c.get("category") not in FINANCE_COST_CATEGORIES:
+                raise ValueError("Unknown cost category: %r" % c.get("category"))
+            parsed.append((c["scope"], c["category"], _fin_cost_amount(c.get("amount"), "Amount"), (c.get("notes") or "").strip() or None))
+        existing = {(r["scope"], r["category"]): r["amount"] for r in conn.execute(
+            "SELECT scope, category, amount FROM finance_costs WHERE month=?", (month,))}
+        changes, now = {}, _now()
+        for scope, cat, amt, notes in parsed:
+            old = existing.get((scope, cat))
+            if (old or 0.0) == amt and not (old is None and amt):
+                continue
+            if old is None and amt == 0.0:
+                continue
+            conn.execute(
+                "INSERT INTO finance_costs (month, scope, category, amount, notes, updated_at, updated_by) VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(month, scope, category) DO UPDATE SET amount=excluded.amount, "
+                "notes=COALESCE(excluded.notes, notes), updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (month, scope, cat, amt, notes, now, (user or {}).get("email")))
+            changes[(scope, cat)] = (old if old is not None else 0.0, amt)
+        conn.commit()
+    finally:
+        conn.close()
+    for (scope, cat), (old, new) in changes.items():
+        _audit_finance(session_id, user, f"Finance cost {month} / {scope} / {cat}: {old!r} -> {new!r}")
+    return changes
+
+
+def copy_previous_month(month, user, session_id=None):
+    """
+    (v2.117) Fill ONLY the empty cells (no row, or amount 0) of `month` from the month before it.
+    Never overwrites a non-zero cell. Audited per cell. Returns the number of cells filled.
+    """
+    if session_id is None:
+        raise ValueError("Audit session missing - please log out and log in again before editing.")
+    prev = _fin_prev_month(month)
+    conn = _connect()
+    try:
+        src = conn.execute("SELECT scope, category, amount FROM finance_costs WHERE month=? AND amount>0", (prev,)).fetchall()
+        have = {(r["scope"], r["category"]): r["amount"] for r in conn.execute(
+            "SELECT scope, category, amount FROM finance_costs WHERE month=?", (month,))}
+        scopes = set(_fin_cost_scopes(conn))
+        now, filled = _now(), []
+        for r in src:
+            if r["scope"] not in scopes or r["category"] not in FINANCE_COST_CATEGORIES:
+                continue
+            if (have.get((r["scope"], r["category"])) or 0.0) > 0:
+                continue
+            conn.execute(
+                "INSERT INTO finance_costs (month, scope, category, amount, notes, updated_at, updated_by) VALUES (?,?,?,?,NULL,?,?) "
+                "ON CONFLICT(month, scope, category) DO UPDATE SET amount=excluded.amount, updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (month, r["scope"], r["category"], r["amount"], now, (user or {}).get("email")))
+            filled.append((r["scope"], r["category"], have.get((r["scope"], r["category"])) or 0.0, r["amount"]))
+        conn.commit()
+    finally:
+        conn.close()
+    for scope, cat, old, new in filled:
+        _audit_finance(session_id, user, f"Finance cost {month} / {scope} / {cat}: {old!r} -> {new!r} (copied from {prev})")
+    return len(filled)
+
+
+def _pnl_commission(deals, d_from, d_to):
+    """Commission booked / received on COUNTED, non-under-review, non-NULL deals booked in [d_from, d_to], by deal project."""
+    booked = received = 0.0
+    by_proj = {}
+    for d in deals:
+        if not d["booked_on"] or d["booked_on"] < d_from or d["booked_on"] > d_to:
+            continue
+        if d["state"] not in DEAL_ACTIVE_STATES or d["under_review"] or d["commission_amount"] is None:
+            continue
+        amt = d["commission_amount"]
+        p = by_proj.setdefault(d["snapshot_project"] or FINANCE_UNASSIGNED_LABEL, [0.0, 0.0])
+        booked += amt; p[0] += amt
+        if d["state"] == "received":
+            received += amt; p[1] += amt
+    return booked, received, by_proj
+
+
+def get_pnl_by_month(date_from, date_to):
+    """
+    (v2.117) One dict per month overlapping the range (never before FINANCE_REVENUE_START_DATE),
+    ALL lead sources, BOOKED and RECEIVED side by side:
+      commission_*    commission on counted deals (see _pnl_commission) booked in the month's slice
+      meta_spend      ad_spend_daily x (1 + FINANCE_AD_SPEND_GST_PCT/100) in the slice
+      other_marketing finance_costs in FINANCE_MARKETING_CATEGORIES (whole month)
+      contribution_*  commission - meta_spend - other_marketing
+      overheads       salaries (actual or estimate) + non-marketing finance_costs (whole month)
+      operating_*     contribution - overheads
+    A month only partly inside the range is marked partial; its costs/salaries are whole-month.
+    """
+    conn = _connect()
+    try:
+        deals = _fin_deal_rows(conn)
+        costs = [dict(r) for r in conn.execute("SELECT month, scope, category, amount FROM finance_costs")]
+        rows = []
+        for month in _fin_months_in_range(date_from, date_to):
+            first, last = _fin_month_bounds(month)
+            s_from, s_to = max(first, date_from), min(last, date_to)
+            booked, received, _bp = _pnl_commission(deals, s_from, s_to)
+            _reported, spend = _fin_meta_spend(conn, s_from, s_to)
+            mkt = sum(c["amount"] for c in costs if c["month"] == month and c["category"] in FINANCE_MARKETING_CATEGORIES)
+            non_mkt = sum(c["amount"] for c in costs if c["month"] == month and c["category"] not in FINANCE_MARKETING_CATEGORIES)
+            sal = get_salary_for_month(month)
+            overheads = sal["amount"] + non_mkt
+            row = {"month": month, "from": s_from, "to": s_to, "partial": (s_from != first or s_to != last),
+                   "commission_booked": booked, "commission_received": received, "meta_spend": spend,
+                   "other_marketing": mkt, "salaries": sal["amount"], "salary_source": sal["source"],
+                   "non_marketing_costs": non_mkt, "overheads": overheads}
+            for basis, comm in (("booked", booked), ("received", received)):
+                row[f"contribution_{basis}"] = comm - spend - mkt
+                row[f"operating_{basis}"] = comm - spend - mkt - overheads
+            rows.append(row)
+        return rows
+    finally:
+        conn.close()
+
+
+def get_pnl(date_from, date_to):
+    """
+    (v2.117) Range P&L: {"months": [...], "total": {...same keys summed...}, "by_project": [...],
+    "company_marketing": float, "undated_not_counted": int, "gst_pct", "range_from"/"range_to"
+    (clamped to the tracking start), "reconciles"}. The per-project table is commission by the
+    deal's project, Meta spend by campaign project (F1.3 matcher) and PROJECT-scoped marketing
+    costs; company-level marketing costs and all overheads are company-level only.
+    """
+    months = get_pnl_by_month(date_from, date_to)
+    keys = ["commission_booked", "commission_received", "meta_spend", "other_marketing", "salaries",
+            "non_marketing_costs", "overheads", "contribution_booked", "contribution_received",
+            "operating_booked", "operating_received"]
+    total = {k: sum(m[k] for m in months) for k in keys}
+    conn = _connect()
+    try:
+        deals = _fin_deal_rows(conn)
+        eff_from, eff_to = max(date_from, FINANCE_REVENUE_START_DATE), date_to
+        month_set = {m["month"] for m in months}
+        own = {r["project"] for r in conn.execute("SELECT project FROM project_commission_rates WHERE is_own_property=1")}
+        mult = 1 + FINANCE_AD_SPEND_GST_PCT / 100.0
+        spend_by = {}
+        for r in _fin_spend_rows(conn, eff_from, eff_to):
+            spend_by[r["project"]] = spend_by.get(r["project"], 0.0) + r["spend"] * mult
+        mkt_by, company_mkt = {}, 0.0
+        for r in conn.execute("SELECT month, scope, category, amount FROM finance_costs"):
+            if r["month"] in month_set and r["category"] in FINANCE_MARKETING_CATEGORIES:
+                if r["scope"] == FINANCE_OVERHEAD_SCOPE:
+                    company_mkt += r["amount"]
+                else:
+                    mkt_by[r["scope"]] = mkt_by.get(r["scope"], 0.0) + r["amount"]
+        undated = conn.execute("SELECT COUNT(*) n FROM booking_deals WHERE booked_on IS NULL").fetchone()["n"]
+        before = conn.execute("SELECT COUNT(*) n FROM booking_deals WHERE booked_on IS NOT NULL AND booked_on < ?",
+                              (FINANCE_REVENUE_START_DATE,)).fetchone()["n"]
+    finally:
+        conn.close()
+    _b, _r, by_proj_comm = _pnl_commission(deals, eff_from, eff_to)
+    names = set(by_proj_comm) | set(spend_by) | set(mkt_by)
+    projects = []
+    for name in sorted(names, key=lambda n: (-(spend_by.get(n, 0.0)), n)):
+        cb, cr = by_proj_comm.get(name, [0.0, 0.0])
+        sp, mk = spend_by.get(name, 0.0), mkt_by.get(name, 0.0)
+        projects.append({"project": name, "is_own": name in own, "commission_booked": cb, "commission_received": cr,
+                         "meta_spend": sp, "marketing_costs": mk,
+                         "contribution_booked": cb - sp - mk, "contribution_received": cr - sp - mk})
+    proj_sum_b = sum(p["contribution_booked"] for p in projects) - company_mkt
+    return {"months": months, "total": total, "by_project": projects, "company_marketing": company_mkt,
+            "undated_not_counted": undated, "before_tracking_not_counted": before,
+            "gst_pct": FINANCE_AD_SPEND_GST_PCT, "range_from": eff_from, "range_to": eff_to,
+            "reconciles": abs(proj_sum_b - total["contribution_booked"]) < 0.01}
 
 
 # ─────────────────────────────────────────────────────────────
