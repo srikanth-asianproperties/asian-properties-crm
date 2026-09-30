@@ -1,4 +1,9 @@
-{# finance_marketing.html (v1.4, 2026-09-30) — F1.4: "Rejected at first call (Unqualified)"
+{# finance_marketing.html (v1.5, 2026-09-30) — F3b: "Commission & Marketing ROI" cards (basis A = deals
+   booked in the range, basis B = leads created in the range; received beneath; pending-entry count;
+   other-sources line), commission + ROI columns on the project table (A and B), commission B + ROI B
+   (latest campaign, cohort basis) on the campaign table, and the basis note. ROI is a multiple, "—" when
+   spend is 0 or the project is an own property. Commission is not profit.
+   v1.4 — F1.4: "Rejected at first call (Unqualified)"
    renamed "Rejected (Unqualified or Lost)" everywhere (cls_db v2.113: ever Unqualified or
    Lost at any stage); project table gains a Rejected % column; campaign table gains
    "Unqualified (ever)" and "Lost (ever)" columns (a lead can be in both); note rewritten.
@@ -25,6 +30,7 @@
 
 {% macro inr(v) %}{% if v is none %}&mdash;{% else %}&#8377;{{ "{:,.0f}".format(v) }}{% endif %}{% endmacro %}
 {% macro repeat_cell(r) %}{% if r.repeat_leads is none %}&mdash;{% else %}{{ r.repeat_leads }}{% if r.repeat_pct is not none %} ({{ "{:.1f}".format(r.repeat_pct) }}%){% endif %}{% if r.repeat_flag %} <span class="fin-tag" style="border-color:#d9a400;color:#6b4e00;" title="Meta counted fewer leads than the CRM created">possible missed leads &mdash; check Job A</span>{% endif %}{% endif %}{% endmacro %}
+{% macro roi_x(v) %}{% if v is none %}&mdash;{% else %}{{ "{:.1f}".format(v) }}x{% endif %}{% endmacro %}
 {% macro pct(v) %}{% if v is none %}&mdash;{% else %}{{ "{:.1f}".format(v) }}%{% endif %}{% endmacro %}
 
 {% block content %}
@@ -125,6 +131,24 @@
   </div>
 </div>
 
+<h3 style="margin:18px 0 0;">Commission &amp; Marketing ROI <span class="fin-tag">not profit</span></h3>
+<div class="stat-card-grid">
+  <div class="stat-card"><div class="stat-card-header">Commission booked (A: booked in range)</div><div class="stat-card-body"><div class="stat-card-number stat-num-green">{{ inr(roi.a.booked) }}</div><div class="stat-card-caption">Received {{ inr(roi.a.received) }} &middot; {{ roi.a.deals }} deal{{ '' if roi.a.deals == 1 else 's' }}</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Commission from these leads (B: created in range)</div><div class="stat-card-body"><div class="stat-card-number stat-num-green">{{ inr(roi.b.booked) }}</div><div class="stat-card-caption">Received {{ inr(roi.b.received) }} &middot; {{ roi.b.deals }} deal{{ '' if roi.b.deals == 1 else 's' }}</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Marketing ROI, A (not profit)</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ roi_x(roi.a.roi) }}</div><div class="stat-card-caption">Commission &minus; spend: {% if roi.spend %}{{ inr(roi.a.net) }}{% else %}&mdash;{% endif %}</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Marketing ROI, B (not profit)</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ roi_x(roi.b.roi) }}</div><div class="stat-card-caption">Commission &minus; spend: {% if roi.spend %}{{ inr(roi.b.net) }}{% else %}&mdash;{% endif %}</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Commission pending entry</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ roi.a.pending }}</div><div class="stat-card-caption">deals (basis B: {{ roi.b.pending }}) need a sale price or unit type</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Commission from other sources (not in ROI)</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ inr(roi.a.other.booked) }}</div><div class="stat-card-caption">A &middot; {{ roi.a.other.deals }} deal{{ '' if roi.a.other.deals == 1 else 's' }} (B: {{ inr(roi.b.other.booked) }})</div></div></div>
+</div>
+<div class="fin-note">
+  <b>Basis A</b> counts commission on deals booked in the range. <b>Basis B</b> counts commission from leads created in the range,
+  so a recent month looks low until its leads mature. Commission is what you are due or have received, not profit. Salaries and
+  overheads are not included yet. ROI = commission &divide; Meta ad spend (&mdash; when spend is zero); only deals from Meta-sourced leads
+  enter it, and only counted deals (booked on or after {{ revenue_start }}) that are expected, invoiced or received and not under review.
+  Deals with no commission figure yet are excluded and shown as &ldquo;pending entry&rdquo;. Cancelled, void and under-review deals are excluded
+  ({{ roi.a.closed.deals }} cancelled/void and {{ roi.a.review.deals }} under review in basis A).
+</div>
+
 <div class="fin-card">
   <h4>Daily spend</h4>
   <div class="fin-chart-wrap"><canvas id="finSpendChart"></canvas></div>
@@ -137,7 +161,8 @@
   <h4>By project</h4>
   <div class="report-table-wrap"><table class="report-table">
     <thead><tr><th>Project</th><th class="num">Spend</th><th class="num">Meta leads</th><th class="num">Repeat</th><th class="num">New in CRM</th><th class="num">Qualified</th><th class="num">Rejected (Unqualified or Lost)</th><th class="num">Visits</th><th class="num">Bookings</th>
-      <th class="num">Cost/lead</th><th class="num">Cost/qualified</th><th class="num">Cost/visit</th><th class="num">Cost/booking</th></tr></thead>
+      <th class="num">Cost/lead</th><th class="num">Cost/qualified</th><th class="num">Cost/visit</th><th class="num">Cost/booking</th>
+      <th class="num">Commission A</th><th class="num">ROI A</th><th class="num">Commission B</th><th class="num">ROI B</th></tr></thead>
     <tbody>
     {% for r in by_project %}
       <tr>
@@ -150,20 +175,26 @@
         <td class="num">{{ r.site_visits }}</td><td class="num">{{ r.bookings }}</td>
         <td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
         <td class="num">{{ inr(r.cost_per_site_visit) }}</td><td class="num">{{ inr(r.cost_per_booking) }}</td>
+        <td class="num">{{ inr(r.a_booked) }}{% if r.a_pending %} <span class="fin-tag" title="Deals with no commission figure yet">+{{ r.a_pending }} pending</span>{% endif %}</td>
+        <td class="num">{{ roi_x(r.roi_a) }}</td>
+        <td class="num">{{ inr(r.b_booked) }}{% if r.b_pending %} <span class="fin-tag" title="Deals with no commission figure yet">+{{ r.b_pending }} pending</span>{% endif %}</td>
+        <td class="num">{{ roi_x(r.roi_b) }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="13" style="color:var(--ink-soft);">No data for this range.</td></tr>
+      <tr><td colspan="17" style="color:var(--ink-soft);">No data for this range.</td></tr>
     {% endfor %}
     </tbody>
   </table></div>
-  <div class="fin-note">Spend, Meta leads and CRM leads all follow the project of the ad campaign, so each row describes the same people.</div>
+  <div class="fin-note">Spend, Meta leads and CRM leads all follow the project of the ad campaign, so each row describes the same people.
+    Commission and ROI are for Meta-sourced deals under the same project; an own project shows cost only (ROI &mdash;). Commission A = deals booked in the range, B = leads created in the range.</div>
 </div>
 
 <div class="fin-card">
   <h4>By campaign</h4>
   <div class="report-table-wrap"><table class="report-table">
     <thead><tr><th>Campaign</th><th>Project</th><th class="num">Spend</th><th class="num">Meta leads</th><th class="num">Repeat</th><th class="num">New in CRM</th><th class="num">Qualified</th>
-      <th class="num">Rejected (Unqualified or Lost)</th><th class="num">Unqualified (ever)</th><th class="num">Lost (ever)</th><th class="num">Passed to other project</th><th class="num">Cost/lead</th><th class="num">Cost/qualified</th></tr></thead>
+      <th class="num">Rejected (Unqualified or Lost)</th><th class="num">Unqualified (ever)</th><th class="num">Lost (ever)</th><th class="num">Passed to other project</th><th class="num">Cost/lead</th><th class="num">Cost/qualified</th>
+      <th class="num" title="By latest campaign, cohort basis">Commission B</th><th class="num" title="By latest campaign, cohort basis">ROI B</th></tr></thead>
     <tbody>
     {% for r in by_campaign %}
       <tr>
@@ -173,12 +204,14 @@
         <td class="num">{{ repeat_cell(r) }}</td>
         <td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
         <td class="num">{{ pct(r.rejected_rate) }}</td><td class="num">{{ r.unqualified }}</td><td class="num">{{ r.lost }}</td><td class="num">{{ r.passed }}</td><td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
+        <td class="num">{{ inr(r.b_booked) }}</td><td class="num">{{ roi_x(r.roi_b) }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="13" style="color:var(--ink-soft);">No data for this range.</td></tr>
+      <tr><td colspan="15" style="color:var(--ink-soft);">No data for this range.</td></tr>
     {% endfor %}
     </tbody>
   </table></div>
+  <div class="fin-note">Commission B and ROI B here are <b>by latest campaign, cohort basis</b>: commission from leads created in the range whose latest Meta campaign is this one. A lead that came in through more than one campaign is counted under the most recent.</div>
 </div>
 
 <div class="fin-card">

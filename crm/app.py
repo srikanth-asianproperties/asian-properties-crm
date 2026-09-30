@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.90
+Version : 0.91
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,8 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.91 (2026-09-30) — Finance F3b: finance_marketing() also passes roi (cls_db.get_marketing_roi(),
+  read-only) and revenue_start to finance_marketing.html v1.5. Guards unchanged.
 v0.90 (2026-09-30) — Finance F3a.1: finance_bookings() accepts the new views (review, stale,
   cancelled, void) and passes stale_days; finance_booking_edit() also takes cancel_reason.
   Guards, audit and routes otherwise unchanged.
@@ -7911,6 +7913,8 @@ def finance_marketing():
         filters={"preset": active_preset, "date_from": date_from, "date_to": date_to, "project": project or ""},
         preset_order=FINANCE_PRESET_ORDER, preset_labels=FINANCE_PRESET_LABELS,
         project_options=cls_db.get_all_bucket_names(),
+        roi=cls_db.get_marketing_roi(date_from, date_to, project),
+        revenue_start=cls_db.FINANCE_REVENUE_START_DATE,
         summary=cls_db.get_marketing_summary(date_from, date_to, project),
         by_project=cls_db.get_marketing_by_project(date_from, date_to, project),
         by_campaign=cls_db.get_marketing_by_campaign(date_from, date_to, project),
