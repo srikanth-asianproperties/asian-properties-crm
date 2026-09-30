@@ -2,11 +2,19 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.117
+Version : 2.118
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.118 (2026-09-30) — Finance F1.5. READ FUNCTIONS ONLY (no schema change, no writes). In the Marketing
+  cohort funnel a lead counts as a Booking only if it reached Booked AND (it has no booking_deals row OR
+  its deal is expected/invoiced/received and NOT under review). Cancelled, void and under-review deals are
+  excluded; a lead with no deal row counts as before, so the count never depends on the Bookings page
+  having been opened. Done once in _fin_cohort_leads() (new keys reached_booked, is_bk_excluded), so it
+  flows into the headline, project and campaign tables, the lead->booking / visit->booking percentages and
+  every cost-per-booking figure. get_marketing_summary() gains bookings_excluded. Commission, ROI and P&L
+  (which read booking_deals directly) are unchanged.
 v2.117 (2026-09-30) — Finance F2. ADDITIONS ONLY (self-healing). NEW table finance_costs (month, scope,
   category PK; scope = an exact project_bucket from project_commission_rates or 'Overhead'). NEW config
   FINANCE_COST_CATEGORIES (4), FINANCE_MARKETING_CATEGORIES (first 3), FINANCE_OVERHEAD_SCOPE,
@@ -16594,6 +16602,7 @@ def _fin_cohort_leads(conn, date_from, date_to, project=None, extra_where="", ex
                (l.current_stage IN ({ph(b)}) OR EXISTS (SELECT 1 FROM activity_log a
                     WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
                       AND a.new_value IN ({ph(b)}))) AS is_bk,
+               (SELECT bd.state FROM booking_deals bd WHERE bd.cls_id=l.cls_id) AS deal_state,
                (l.current_stage IN ({ph(rej)}) OR EXISTS (SELECT 1 FROM activity_log a
                     WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
                       AND a.new_value IN ({ph(rej)}))) AS is_rej,
@@ -16614,6 +16623,14 @@ def _fin_cohort_leads(conn, date_from, date_to, project=None, extra_where="", ex
         d = dict(r)
         for k in ("is_q", "is_sv", "is_bk", "is_rej", "is_unq", "is_lost"):
             d[k] = 1 if d[k] else 0   # NULL current_stage makes "x IN (...)" NULL, not 0
+        # v2.118 — a Booking = reached Booked AND (no deal row OR a live deal: expected/invoiced/
+        # received and not under review). Cancelled, void and under-review deals are excluded. A lead
+        # with no deal row counts as before, so this never depends on the Bookings page being opened.
+        d["reached_booked"] = d["is_bk"]
+        ds = d["deal_state"]
+        d["is_bk_excluded"] = 1 if (d["is_bk"] and ds is not None and (
+            ds in DEAL_CLOSED_STATES or (ds in DEAL_ACTIVE_STATES and d["current_stage"] != "Booked"))) else 0
+        d["is_bk"] = 1 if (d["is_bk"] and not d["is_bk_excluded"]) else 0
         d["passed"] = 1 if d["xr_desc"] else 0
         d["project"] = _fin_attributed_project(match, d["meta_campaign_name"], d["xr_desc"], d["current_project"])
         if project and d["project"] != project:
@@ -16675,6 +16692,7 @@ def get_marketing_summary(date_from, date_to, project=None):
                        sum(l["is_sv"] for l in leads), sum(l["is_bk"] for l in leads),
                        sum(l["is_rej"] for l in leads), _fin_meta_total(spend_rows))
     out["unassigned_spend"] = sum(r["spend"] for r in spend_rows if r["project"] == FINANCE_UNASSIGNED_LABEL)
+    out["bookings_excluded"] = sum(l["is_bk_excluded"] for l in leads)   # v2.118
     return out
 
 
