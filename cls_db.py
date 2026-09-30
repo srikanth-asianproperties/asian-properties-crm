@@ -2,11 +2,16 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.110
+Version : 2.111
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.111 (2026-09-30) — Finance F1.2. _fin_metrics() gains repeat_pct (repeat as
+  % of Meta leads; None when Meta leads is NULL/0) and repeat_flag now means
+  ONLY repeat < 0 — the v2.110 "> 25% of Meta leads" rule is removed (repeat
+  submissions are normal, so a high percentage is not a warning). No schema
+  change; additions/one rule change inside a Finance-only helper.
 v2.110 (2026-09-30) — Finance F1.1 (lead counts match Meta). ADDITIONS ONLY.
   ad_spend_daily gains meta_leads INTEGER (self-healing ALTER, PRAGMA-checked;
   NULL = not synced yet) — Meta's own "Leads (Form)" per ad-day, stored by
@@ -16437,8 +16442,10 @@ def _fin_metrics(spend, leads, q, sv, bk, junk=0, meta_leads=None):
     return {
         "spend": spend, "leads": leads, "qualified": q, "site_visits": sv, "bookings": bk, "junk": junk,
         "meta_leads": meta_leads, "repeat_leads": repeat, "cost_per_lead_basis": basis,
-        # repeat < 0 (Meta counts fewer than the CRM) or > 25% of Meta leads => possible missed leads / data gap
-        "repeat_flag": bool(repeat is not None and (repeat < 0 or (meta_leads and repeat > 0.25 * meta_leads))),
+        # v2.111 — % of Meta leads that were repeats; None when Meta leads is NULL/0 (no divide by zero)
+        "repeat_pct": (repeat * 100.0 / meta_leads) if (repeat is not None and meta_leads) else None,
+        # v2.111 — warn ONLY when Meta counts fewer leads than the CRM created (possible missed leads / data gap)
+        "repeat_flag": bool(repeat is not None and repeat < 0),
         "cost_per_lead": cpl,
         "cost_per_qualified": _fin_ratio(spend, q),
         "cost_per_site_visit": _fin_ratio(spend, sv),
