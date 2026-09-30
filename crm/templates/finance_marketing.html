@@ -1,4 +1,8 @@
-{# finance_marketing.html (v1, 2026-09-30) — Finance F1 admin-only Marketing
+{# finance_marketing.html (v1.1, 2026-09-30) — F1.1: Leads card shows Meta leads
+   "of which N new in CRM"; project + campaign tables gain Meta leads / Repeat
+   columns (flagged "possible missed leads" when repeat < 0 or > 25% of Meta
+   leads); explanatory note. NULL meta_leads renders as an em dash / CRM fallback.
+   v1 (2026-09-30) — Finance F1 admin-only Marketing
    dashboard, reached via app.py's finance_marketing() (GET /finance/marketing).
    READ-ONLY. All funnel numbers are COHORT basis (note below). No commission
    or revenue is shown anywhere in F1. A zero denominator renders as an em
@@ -8,6 +12,7 @@
 {% block title %}Finance — Marketing{% endblock %}
 
 {% macro inr(v) %}{% if v is none %}&mdash;{% else %}&#8377;{{ "{:,.0f}".format(v) }}{% endif %}{% endmacro %}
+{% macro repeat_cell(r) %}{% if r.repeat_leads is none %}&mdash;{% else %}{{ r.repeat_leads }}{% if r.repeat_flag %} <span class="fin-tag" style="border-color:#d9a400;color:#6b4e00;" title="Repeat is negative or over 25% of Meta leads">possible missed leads &mdash; check Job A</span>{% endif %}{% endif %}{% endmacro %}
 {% macro pct(v) %}{% if v is none %}&mdash;{% else %}{{ "{:.1f}".format(v) }}%{% endif %}{% endmacro %}
 
 {% block content %}
@@ -59,7 +64,11 @@
   Showing {{ filters.date_from }} to {{ filters.date_to }}. <b>Cohort basis:</b> the leads counted here are
   Meta leads <i>created in this date range</i>, and the qualified / site-visit / booking numbers are what those
   same leads have become <i>so far</i> &mdash; so a recent month keeps improving as its leads move through the
-  pipeline. Spend is Meta's own reported spend for the same dates. &#8220;Qualified&#8221; = reached
+  pipeline. Spend is Meta's own reported spend for the same dates.
+  <b>Meta leads vs. new in CRM:</b> Meta counts every form submission, including the same person submitting again;
+  the CRM keeps one lead per person and marks the repeat as re-engaged. So <i>Repeat = Meta leads &minus; new in CRM</i>,
+  and cost per lead uses Meta's count (matches Ads Manager). Cost per qualified / visit / booking and the funnel
+  percentages use the CRM's new leads. Project-level rows can show odd repeat numbers when a lead's own project differs from its ad's project. &#8220;Qualified&#8221; = reached
   Opportunity or later; &#8220;site visit&#8221; = a conducted visit or reached Site Visited; junk = currently Unqualified.
 </p>
 
@@ -75,7 +84,11 @@
 <h3 style="margin:18px 0 0;">Headline numbers</h3>
 <div class="stat-card-grid">
   <div class="stat-card"><div class="stat-card-header">Total spend</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ inr(summary.spend) }}</div></div></div>
-  <div class="stat-card"><div class="stat-card-header">Leads</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ summary.leads }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_lead) }} each</div></div></div>
+  {% if summary.meta_leads is not none %}
+  <div class="stat-card"><div class="stat-card-header">Leads (Meta)</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ summary.meta_leads }}</div><div class="stat-card-caption">of which {{ summary.leads }} new in CRM &middot; {{ inr(summary.cost_per_lead) }} each</div></div></div>
+  {% else %}
+  <div class="stat-card"><div class="stat-card-header">Leads (CRM new)</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ summary.leads }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_lead) }} each (CRM count &mdash; Meta count not synced yet)</div></div></div>
+  {% endif %}
   <div class="stat-card"><div class="stat-card-header">Qualified</div><div class="stat-card-body"><div class="stat-card-number stat-num-blue">{{ summary.qualified }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_qualified) }} each</div></div></div>
   <div class="stat-card"><div class="stat-card-header">Site visits</div><div class="stat-card-body"><div class="stat-card-number stat-num-blue">{{ summary.site_visits }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_site_visit) }} each</div></div></div>
   <div class="stat-card"><div class="stat-card-header">Bookings</div><div class="stat-card-body"><div class="stat-card-number stat-num-green">{{ summary.bookings }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_booking) }} each</div></div></div>
@@ -102,13 +115,16 @@
 <div class="fin-card">
   <h4>By project</h4>
   <div class="report-table-wrap"><table class="report-table">
-    <thead><tr><th>Project</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Qualified</th><th class="num">Visits</th><th class="num">Bookings</th>
+    <thead><tr><th>Project</th><th class="num">Spend</th><th class="num">Meta leads</th><th class="num">Repeat</th><th class="num">New in CRM</th><th class="num">Qualified</th><th class="num">Visits</th><th class="num">Bookings</th>
       <th class="num">Cost/lead</th><th class="num">Cost/qualified</th><th class="num">Cost/visit</th><th class="num">Cost/booking</th></tr></thead>
     <tbody>
     {% for r in by_project %}
       <tr>
         <td>{{ r.project }}{% if r.is_own_property %}<span class="fin-tag">Own project &mdash; cost only</span>{% endif %}</td>
-        <td class="num">{{ inr(r.spend) }}</td><td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
+        <td class="num">{{ inr(r.spend) }}</td>
+        <td class="num">{% if r.meta_leads is none %}&mdash;{% else %}{{ r.meta_leads }}{% endif %}</td>
+        <td class="num">{{ repeat_cell(r) }}</td>
+        <td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
         <td class="num">{{ r.site_visits }}</td><td class="num">{{ r.bookings }}</td>
         <td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
         <td class="num">{{ inr(r.cost_per_site_visit) }}</td><td class="num">{{ inr(r.cost_per_booking) }}</td>
@@ -124,13 +140,16 @@
 <div class="fin-card">
   <h4>By campaign</h4>
   <div class="report-table-wrap"><table class="report-table">
-    <thead><tr><th>Campaign</th><th>Project</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Qualified</th>
+    <thead><tr><th>Campaign</th><th>Project</th><th class="num">Spend</th><th class="num">Meta leads</th><th class="num">Repeat</th><th class="num">New in CRM</th><th class="num">Qualified</th>
       <th class="num">Junk rate</th><th class="num">Cost/lead</th><th class="num">Cost/qualified</th></tr></thead>
     <tbody>
     {% for r in by_campaign %}
       <tr>
         <td>{{ r.campaign_name }}</td><td>{{ r.project }}</td>
-        <td class="num">{{ inr(r.spend) }}</td><td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
+        <td class="num">{{ inr(r.spend) }}</td>
+        <td class="num">{% if r.meta_leads is none %}&mdash;{% else %}{{ r.meta_leads }}{% endif %}</td>
+        <td class="num">{{ repeat_cell(r) }}</td>
+        <td class="num">{{ r.leads }}</td><td class="num">{{ r.qualified }}</td>
         <td class="num">{{ pct(r.junk_rate) }}</td><td class="num">{{ inr(r.cost_per_lead) }}</td><td class="num">{{ inr(r.cost_per_qualified) }}</td>
       </tr>
     {% else %}
