@@ -2,11 +2,29 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.108
+Version : 2.109
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.109 (2026-09-30) — Finance F1 (Meta ad-spend + admin Marketing dashboard).
+  ADDITIONS ONLY, nothing existing removed or modified. NEW tables (self-
+  healing CREATE TABLE IF NOT EXISTS in init_db()): ad_spend_daily (one row
+  per ad per day, PK (spend_date, ad_id) so upsert is idempotent) and
+  project_commission_rates (F2 groundwork; seeded INSERT OR IGNORE, never
+  clobbers edits; NOT displayed anywhere in F1). NEW config constants
+  FINANCE_QUALIFIED_STAGE / FINANCE_FUNNEL_STAGES / FINANCE_DEFAULT_RANGE /
+  FINANCE_FY_START_MONTH / FINANCE_WASTED_SPEND_DAYS / FINANCE_WASTED_MIN_SPEND
+  / META_AD_ACCOUNTS. NEW functions: upsert_ad_spend_rows(),
+  get_marketing_summary(), get_marketing_by_campaign(),
+  get_marketing_by_project(), get_unassigned_spend(),
+  get_daily_spend_series(), get_wasted_spend_ads(), financial_year_range().
+  Project attribution of spend is resolved at READ time (raw campaign/ad
+  kept as fetched): 1) project_aliases match on campaign_name, 2) majority
+  project_bucket of leads sharing the ad_id, 3) "Unassigned" (always shown).
+  All funnel numbers are COHORT basis: Meta-sourced leads created in the
+  range, and what they became so far (ever-reached, from activity_log +
+  current_stage).
 v2.108 (2026-09-29) — AI phase Step 2 (admin Daily AI Brief). NEW
   get_daily_brief_stats(conn, date_str=None) (pure read, defaults to
   yesterday), notify_daily_brief(message) (per-admin cls_id, notify_
@@ -4013,6 +4031,28 @@ def _insert_lead_with_lead_no_retry(conn, do_insert, max_attempts=5):
 
 
 # ─────────────────────────────────────────────────────────────
+# FINANCE F1 CONFIG  (v2.109) — config-not-code
+# ─────────────────────────────────────────────────────────────
+FINANCE_QUALIFIED_STAGE   = "Opportunity"     # a lead is "qualified" once it reaches this stage or any later funnel stage
+FINANCE_FUNNEL_STAGES     = ["Opportunity", "Site Visited", "Booked"]   # ordered; slice from FINANCE_QUALIFIED_STAGE
+FINANCE_DEFAULT_RANGE     = "this_month"      # default date preset on /finance/marketing
+FINANCE_FY_START_MONTH    = 4                 # Indian financial year starts 1 April
+FINANCE_WASTED_SPEND_DAYS = 14                # "wasted spend" look-back window (days)
+FINANCE_WASTED_MIN_SPEND  = 500.0             # ignore ads with less spend than this (INR) in that window
+META_AD_ACCOUNTS          = ["act_825098213089084"]
+FINANCE_UNASSIGNED_LABEL  = "Unassigned"
+# (project bucket, unit_type, commission_amount, is_own_property) — INSERT OR IGNORE only.
+# Project names are the live leads.project_bucket strings ("Naishka Homes" is the
+# bucket that the alias "Naishka" maps to).
+FINANCE_COMMISSION_SEED = [
+    ("Naishka Homes",                 "any",  125000, 0),
+    ("Grace Classic",                 "2BHK", 125000, 0),
+    ("Grace Classic",                 "3BHK", 150000, 0),
+    ("Bhanu Residency Balaji Nagar",  "any",  0,      1),
+]
+
+
+# ─────────────────────────────────────────────────────────────
 # SCHEMA  —  the CLS 'leads' table
 # ─────────────────────────────────────────────────────────────
 
@@ -5172,6 +5212,46 @@ def init_db():
                 "VALUES (?, ?, ?, ?)",
                 (_seed_user["user_id"], _seed_salary, _payroll_seed_ts, "system:init_db seed")
             )
+
+    # ── v2.109 — Finance F1: ad_spend_daily + project_commission_rates ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ad_spend_daily (
+            spend_date    TEXT,
+            account_id    TEXT,
+            campaign_id   TEXT,
+            campaign_name TEXT,
+            adset_id      TEXT,
+            adset_name    TEXT,
+            ad_id         TEXT,
+            ad_name       TEXT,
+            spend         REAL,
+            impressions   INTEGER,
+            clicks        INTEGER,
+            currency      TEXT,
+            fetched_at    TEXT,
+            PRIMARY KEY (spend_date, ad_id)
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_spend_campaign ON ad_spend_daily(campaign_id);")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS project_commission_rates (
+            project           TEXT,
+            unit_type         TEXT,
+            commission_amount REAL,
+            is_own_property   INTEGER DEFAULT 0,
+            updated_at        TEXT,
+            updated_by        TEXT,
+            PRIMARY KEY (project, unit_type)
+        );
+    """)
+    _pcr_ts = _now()
+    for _p, _u, _amt, _own in FINANCE_COMMISSION_SEED:
+        conn.execute(
+            "INSERT OR IGNORE INTO project_commission_rates "
+            "(project, unit_type, commission_amount, is_own_property, updated_at, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (_p, _u, _amt, _own, _pcr_ts, "system:init_db seed")
+        )
 
     conn.commit()
     conn.close()
@@ -16154,6 +16234,338 @@ def get_daily_brief_history(admin_user_id, limit=10):
 # Usage:  python cls_db.py
 # It creates the DB, runs a tiny end-to-end scenario, prints results,
 # then leaves a clean real DB behind (the test rows are isolated).
+
+# ─────────────────────────────────────────────────────────────
+# FINANCE F1 — Meta ad spend + marketing funnel  (v2.109)
+# ─────────────────────────────────────────────────────────────
+# Read-only except upsert_ad_spend_rows(). No revenue / commission /
+# P&L anywhere here — project_commission_rates is only read for its
+# is_own_property flag (the "Own project — cost only" label).
+
+def financial_year_range(today=None):
+    """(v2.109) ('YYYY-MM-DD','YYYY-MM-DD') = start of the current Indian
+    financial year (FINANCE_FY_START_MONTH) through today."""
+    today = today or datetime.now().date()
+    year = today.year if today.month >= FINANCE_FY_START_MONTH else today.year - 1
+    start = today.replace(year=year, month=FINANCE_FY_START_MONTH, day=1)
+    return start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
+
+
+def upsert_ad_spend_rows(rows):
+    """
+    (v2.109) Idempotent upsert into ad_spend_daily, keyed (spend_date, ad_id).
+    rows: list of dicts with spend_date, ad_id (required) and account_id,
+    campaign_id/name, adset_id/name, ad_name, spend, impressions, clicks,
+    currency. Meta revises recent days, so a re-pull overwrites. Rows lacking
+    spend_date/ad_id are skipped. Returns the number of rows written.
+    """
+    now = _now()
+    written = 0
+    conn = _connect()
+    try:
+        for r in rows or []:
+            if not r.get("spend_date") or not r.get("ad_id"):
+                continue
+            conn.execute("""
+                INSERT INTO ad_spend_daily
+                    (spend_date, account_id, campaign_id, campaign_name, adset_id, adset_name,
+                     ad_id, ad_name, spend, impressions, clicks, currency, fetched_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(spend_date, ad_id) DO UPDATE SET
+                    account_id=excluded.account_id, campaign_id=excluded.campaign_id,
+                    campaign_name=excluded.campaign_name, adset_id=excluded.adset_id,
+                    adset_name=excluded.adset_name, ad_name=excluded.ad_name,
+                    spend=excluded.spend, impressions=excluded.impressions,
+                    clicks=excluded.clicks, currency=excluded.currency,
+                    fetched_at=excluded.fetched_at
+            """, (
+                r["spend_date"], r.get("account_id"), r.get("campaign_id"), r.get("campaign_name"),
+                r.get("adset_id"), r.get("adset_name"), r["ad_id"], r.get("ad_name"),
+                float(r.get("spend") or 0), int(r.get("impressions") or 0),
+                int(r.get("clicks") or 0), r.get("currency"), now,
+            ))
+            written += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return written
+
+
+def _fin_stage_sets():
+    """(qualified_stages, visit_stages, booked_stages) derived from FINANCE_FUNNEL_STAGES."""
+    f = FINANCE_FUNNEL_STAGES
+    q = f[f.index(FINANCE_QUALIFIED_STAGE):] if FINANCE_QUALIFIED_STAGE in f else list(f)
+    v = f[f.index("Site Visited"):] if "Site Visited" in f else []
+    return q, v, f[-1:]
+
+
+def _fin_resolve_ad_projects(conn):
+    """
+    (v2.109) {ad_id: project_bucket or None}. Read-time attribution:
+    1) longest project_aliases alias (or bucket name) found in campaign_name,
+    2) else majority project_bucket of leads with that meta_ad_id,
+    3) else None (caller shows "Unassigned").
+    """
+    aliases = {}
+    for r in conn.execute("SELECT alias, project_bucket FROM project_aliases"):
+        aliases[(r["alias"] or "").strip().lower()] = r["project_bucket"]
+        aliases[(r["project_bucket"] or "").strip().lower()] = r["project_bucket"]
+    aliases.pop("", None)
+    ordered = sorted(aliases, key=len, reverse=True)
+
+    majority = {}
+    for r in conn.execute(
+        "SELECT meta_ad_id, project_bucket, COUNT(*) c FROM leads "
+        "WHERE meta_ad_id IS NOT NULL AND meta_ad_id != '' AND project_bucket IS NOT NULL "
+        "AND project_bucket NOT IN ('', '(unknown)') GROUP BY meta_ad_id, project_bucket"
+    ):
+        best = majority.get(r["meta_ad_id"])
+        if best is None or r["c"] > best[1]:
+            majority[r["meta_ad_id"]] = (r["project_bucket"], r["c"])
+
+    out = {}
+    for r in conn.execute("SELECT DISTINCT ad_id, campaign_name FROM ad_spend_daily"):
+        name = (r["campaign_name"] or "").lower()
+        hit = next((aliases[a] for a in ordered if a in name), None)
+        if hit is None and r["ad_id"] in majority:
+            hit = majority[r["ad_id"]][0]
+        out[r["ad_id"]] = hit
+    return out
+
+
+def _fin_spend_rows(conn, date_from, date_to, project=None):
+    """(v2.109) Per-ad spend rows in range with a resolved 'project' key (Unassigned if none)."""
+    proj = _fin_resolve_ad_projects(conn)
+    rows = conn.execute(
+        "SELECT ad_id, ad_name, campaign_id, campaign_name, SUM(spend) spend, "
+        "SUM(impressions) impressions, SUM(clicks) clicks FROM ad_spend_daily "
+        "WHERE spend_date >= ? AND spend_date <= ? GROUP BY ad_id, campaign_id", (date_from, date_to)
+    ).fetchall()
+    out = []
+    for r in rows:
+        p = proj.get(r["ad_id"]) or FINANCE_UNASSIGNED_LABEL
+        if project and p != project:
+            continue
+        d = dict(r)
+        d["project"] = p
+        d["spend"] = d["spend"] or 0.0
+        out.append(d)
+    return out
+
+
+def _fin_cohort_leads(conn, date_from, date_to, project=None, extra_where="", extra_params=()):
+    """
+    (v2.109) One dict per Meta-sourced lead CREATED in range, with 0/1 flags
+    for what it became so far (ever-reached, so a lead that later went Lost
+    still counts as having been qualified): is_q / is_sv / is_bk / is_junk.
+    """
+    q, v, b = _fin_stage_sets()
+    ph = lambda xs: ",".join("?" * len(xs)) or "''"
+    sql = f"""
+        SELECT l.cls_id, COALESCE(NULLIF(l.project_bucket,''),'(unknown)') AS project,
+               l.meta_campaign_id, l.meta_campaign_name, l.meta_ad_id, l.current_stage,
+               (l.current_stage IN ({ph(q)}) OR EXISTS (SELECT 1 FROM activity_log a
+                    WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
+                      AND a.new_value IN ({ph(q)}))) AS is_q,
+               (l.current_stage IN ({ph(v)}) OR EXISTS (SELECT 1 FROM activity_log a
+                    WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
+                      AND a.new_value IN ({ph(v)}))
+                 OR EXISTS (SELECT 1 FROM site_visits s
+                    WHERE s.cls_id=l.cls_id AND s.status='conducted')) AS is_sv,
+               (l.current_stage IN ({ph(b)}) OR EXISTS (SELECT 1 FROM activity_log a
+                    WHERE a.cls_id=l.cls_id AND a.activity_type='stage_change'
+                      AND a.new_value IN ({ph(b)}))) AS is_bk,
+               (l.current_stage = 'Unqualified') AS is_junk
+        FROM leads l
+        WHERE (l.source='meta' OR l.meta_campaign_id IS NOT NULL)
+          AND l.cls_created_at >= ? AND l.cls_created_at <= ? {extra_where}
+    """
+    params = [*q, *q, *v, *v, *b, *b, f"{date_from} 00:00:00", f"{date_to} 23:59:59", *extra_params]
+    out = []
+    for r in conn.execute(sql, params):
+        d = dict(r)
+        for k in ("is_q", "is_sv", "is_bk", "is_junk"):
+            d[k] = 1 if d[k] else 0   # NULL current_stage makes "x IN (...)" NULL, not 0
+        if d["project"] == "(unknown)":
+            d["project"] = FINANCE_UNASSIGNED_LABEL
+        if project and d["project"] != project:
+            continue
+        out.append(d)
+    return out
+
+
+def _fin_ratio(numer, denom):
+    """None (rendered as an em dash) when the denominator is zero."""
+    return (numer / denom) if denom else None
+
+
+def _fin_metrics(spend, leads, q, sv, bk, junk=0):
+    return {
+        "spend": spend, "leads": leads, "qualified": q, "site_visits": sv, "bookings": bk, "junk": junk,
+        "cost_per_lead": _fin_ratio(spend, leads),
+        "cost_per_qualified": _fin_ratio(spend, q),
+        "cost_per_site_visit": _fin_ratio(spend, sv),
+        "cost_per_booking": _fin_ratio(spend, bk),
+        "pct_lead_to_qualified": _fin_ratio(q * 100.0, leads),
+        "pct_qualified_to_visit": _fin_ratio(sv * 100.0, q),
+        "pct_visit_to_booking": _fin_ratio(bk * 100.0, sv),
+        "junk_rate": _fin_ratio(junk * 100.0, leads),
+    }
+
+
+def get_marketing_summary(date_from, date_to, project=None):
+    """(v2.109) Headline totals for the range, COHORT basis. See _fin_metrics()."""
+    conn = _connect()
+    try:
+        spend_rows = _fin_spend_rows(conn, date_from, date_to, project)
+        leads = _fin_cohort_leads(conn, date_from, date_to, project)
+    finally:
+        conn.close()
+    spend = sum(r["spend"] for r in spend_rows)
+    out = _fin_metrics(spend, len(leads), sum(l["is_q"] for l in leads),
+                       sum(l["is_sv"] for l in leads), sum(l["is_bk"] for l in leads),
+                       sum(l["is_junk"] for l in leads))
+    out["unassigned_spend"] = sum(r["spend"] for r in spend_rows if r["project"] == FINANCE_UNASSIGNED_LABEL)
+    return out
+
+
+def get_marketing_by_project(date_from, date_to, project=None):
+    """(v2.109) One row per project (union of spend + cohort projects), highest spend first."""
+    conn = _connect()
+    try:
+        spend_rows = _fin_spend_rows(conn, date_from, date_to, project)
+        leads = _fin_cohort_leads(conn, date_from, date_to, project)
+        own = {r["project"] for r in conn.execute(
+            "SELECT project FROM project_commission_rates WHERE is_own_property=1")}
+    finally:
+        conn.close()
+    agg = {}
+    for r in spend_rows:
+        agg.setdefault(r["project"], {"spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0})["spend"] += r["spend"]
+    for l in leads:
+        a = agg.setdefault(l["project"], {"spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0})
+        a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_junk"]
+    rows = []
+    for name, a in agg.items():
+        m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"])
+        m["project"] = name
+        m["is_own_property"] = name in own
+        rows.append(m)
+    rows.sort(key=lambda r: (-r["spend"], -r["leads"]))
+    return rows
+
+
+def get_marketing_by_campaign(date_from, date_to, project=None):
+    """
+    (v2.109) One row per Meta campaign: spend (ad_spend_daily) joined to the
+    cohort's leads by meta_campaign_id. Leads with no campaign id are grouped
+    under a single "(no campaign data)" row so totals reconcile.
+    """
+    conn = _connect()
+    try:
+        spend_rows = _fin_spend_rows(conn, date_from, date_to, project)
+        leads = _fin_cohort_leads(conn, date_from, date_to, project)
+    finally:
+        conn.close()
+    agg = {}
+    proj_spend = {}
+    for r in spend_rows:
+        cid = r["campaign_id"] or "(none)"
+        a = agg.setdefault(cid, {"name": r["campaign_name"], "spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0})
+        a["spend"] += r["spend"]
+        proj_spend.setdefault(cid, {}).setdefault(r["project"], 0.0)
+        proj_spend[cid][r["project"]] += r["spend"]
+    for l in leads:
+        cid = l["meta_campaign_id"] or "(none)"
+        a = agg.setdefault(cid, {"name": l["meta_campaign_name"] or "(no campaign data)",
+                                 "spend": 0.0, "l": 0, "q": 0, "sv": 0, "bk": 0, "j": 0})
+        a["l"] += 1; a["q"] += l["is_q"]; a["sv"] += l["is_sv"]; a["bk"] += l["is_bk"]; a["j"] += l["is_junk"]
+        proj_spend.setdefault(cid, {}).setdefault(l["project"], 0.0)
+    rows = []
+    for cid, a in agg.items():
+        m = _fin_metrics(a["spend"], a["l"], a["q"], a["sv"], a["bk"], a["j"])
+        m["campaign_id"] = cid
+        m["campaign_name"] = a["name"] or cid
+        ps = proj_spend.get(cid) or {}
+        m["project"] = max(ps, key=ps.get) if ps else FINANCE_UNASSIGNED_LABEL
+        rows.append(m)
+    rows.sort(key=lambda r: (-r["spend"], -r["leads"]))
+    return rows
+
+
+def get_unassigned_spend(date_from, date_to):
+    """(v2.109) {'total': float, 'campaigns': [{campaign_name, spend}]} for spend that could not be
+    attributed to a project. Always reported, never dropped."""
+    conn = _connect()
+    try:
+        rows = [r for r in _fin_spend_rows(conn, date_from, date_to)
+                if r["project"] == FINANCE_UNASSIGNED_LABEL]
+    finally:
+        conn.close()
+    by_c = {}
+    for r in rows:
+        k = r["campaign_name"] or r["campaign_id"] or "(unknown)"
+        by_c[k] = by_c.get(k, 0.0) + r["spend"]
+    return {"total": sum(by_c.values()),
+            "campaigns": [{"campaign_name": k, "spend": v}
+                          for k, v in sorted(by_c.items(), key=lambda kv: -kv[1])]}
+
+
+def get_daily_spend_series(date_from, date_to, project=None):
+    """(v2.109) [{date, spend}] for every day in range (zero-filled) for the trend chart."""
+    conn = _connect()
+    try:
+        proj = _fin_resolve_ad_projects(conn) if project else {}
+        rows = conn.execute(
+            "SELECT spend_date, ad_id, spend FROM ad_spend_daily WHERE spend_date >= ? AND spend_date <= ?",
+            (date_from, date_to)).fetchall()
+    finally:
+        conn.close()
+    by_day = {}
+    for r in rows:
+        if project and (proj.get(r["ad_id"]) or FINANCE_UNASSIGNED_LABEL) != project:
+            continue
+        by_day[r["spend_date"]] = by_day.get(r["spend_date"], 0.0) + (r["spend"] or 0.0)
+    out = []
+    d = datetime.strptime(date_from, "%Y-%m-%d").date()
+    end = datetime.strptime(date_to, "%Y-%m-%d").date()
+    while d <= end:
+        k = d.strftime("%Y-%m-%d")
+        out.append({"date": k, "spend": round(by_day.get(k, 0.0), 2)})
+        d = d.fromordinal(d.toordinal() + 1)
+    return out
+
+
+def get_wasted_spend_ads(days=None, min_spend=None, project=None, today=None):
+    """
+    (v2.109) Ads with spend >= min_spend over the last `days` days and ZERO
+    qualified leads from leads created in that same window (so far).
+    Defaults come from FINANCE_WASTED_SPEND_DAYS / FINANCE_WASTED_MIN_SPEND.
+    """
+    days = days or FINANCE_WASTED_SPEND_DAYS
+    min_spend = FINANCE_WASTED_MIN_SPEND if min_spend is None else min_spend
+    end = today or datetime.now().date()
+    start = end.fromordinal(end.toordinal() - (days - 1))
+    d_from, d_to = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+    conn = _connect()
+    try:
+        spend_rows = _fin_spend_rows(conn, d_from, d_to, project)
+        leads = _fin_cohort_leads(conn, d_from, d_to)
+    finally:
+        conn.close()
+    by_ad = {}
+    for l in leads:
+        a = by_ad.setdefault(l["meta_ad_id"], [0, 0])
+        a[0] += 1; a[1] += l["is_q"]
+    out = []
+    for r in spend_rows:
+        n_leads, n_q = by_ad.get(r["ad_id"], (0, 0))
+        if r["spend"] >= min_spend and n_q == 0:
+            out.append({"ad_id": r["ad_id"], "ad_name": r["ad_name"], "campaign_name": r["campaign_name"],
+                        "project": r["project"], "spend": r["spend"], "leads": n_leads})
+    out.sort(key=lambda x: -x["spend"])
+    return {"days": days, "date_from": d_from, "date_to": d_to, "min_spend": min_spend, "ads": out}
+
 
 if __name__ == "__main__":
     # v2.78 — one-off admin invocation for backfill_capi_event_snapshots(),

@@ -4,6 +4,12 @@ setup_task_scheduler.py  —  Register CLS Job D in Windows Task Scheduler
 Creates 5 daily triggers: 10:00, 12:00, 14:00, 16:00, 18:00
 Matches the exact schedule of Jobs A, B, C.
 
+v4 (2026-09-30) — NEW `--meta-spend` mode: registers the Finance F1 "CLS Meta
+Spend Sync" task (hourly 07:00-19:00 daily via Repetition Interval PT1H +
+explicit Duration PT12H, Job C's pattern; runs run_cls_meta_spend_sync.bat).
+`python setup_task_scheduler.py --meta-spend` (run as Admin, ONCE — standing
+OS-level change, so NOT run automatically). Other modes untouched.
+
 v3 (2026-09-29) — NEW `--daily-brief` mode: registers the AI-2 "CLS Daily AI
 Brief" task (07:00 daily, runs run_cls_ai_daily_brief.bat from D:/CLS, single
 run-and-exit, StartWhenAvailable so a missed 07:00 fires on next wake).
@@ -270,8 +276,91 @@ def register_daily_brief():
     print(f'  Manual test: schtasks /run /tn "{BRIEF_TASK_NAME}"  (log: D:/CLS/cls_ai_daily_brief_log.txt)')
 
 
+# ─────────────────────────────────────────────────────────────
+# v4 — Meta Spend Sync (Finance F1): hourly, Job C-style repetition
+# ─────────────────────────────────────────────────────────────
+SPEND_TASK_NAME = "CLS Meta Spend Sync"
+SPEND_WRAPPER   = r"D:\CLS\run_cls_meta_spend_sync.bat"   # sets CLS_DB_PATH=CLS1.db, then pythonw
+SPEND_START_DIR = r"D:\CLS"
+SPEND_START_TIME = "07:00"     # first run each day; repeats hourly for PT12H (07:00-19:00)
+
+
+def build_meta_spend_xml():
+    """Daily trigger at 07:00 with an hourly Repetition and an EXPLICIT Duration
+    (Job C's pattern: Interval + Duration PT12H — a Repetition without a Duration
+    can silently stop repeating). Program = the .bat wrapper, never python.exe."""
+    today = date.today().strftime("%Y-%m-%d")
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>CLS Meta Spend Sync — hourly pull of Meta ad spend into ad_spend_daily (Finance F1)</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>{today}T{SPEND_START_TIME}:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1H</Interval>
+        <Duration>PT12H</Duration>
+      </Repetition>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{SPEND_WRAPPER}</Command>
+      <WorkingDirectory>{SPEND_START_DIR}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>"""
+
+
+def register_meta_spend():
+    print("=" * 60)
+    print(" CLS Meta Spend Sync — Task Scheduler Setup")
+    print("=" * 60)
+    print(f"  Task name : {SPEND_TASK_NAME}")
+    print(f"  Runs      : {SPEND_WRAPPER}  hourly from {SPEND_START_TIME} for 12h, daily")
+    xml_path = os.path.join(tempfile.gettempdir(), "cls_meta_spend_sync_task.xml")
+    with open(xml_path, "w", encoding="utf-16") as f:
+        f.write(build_meta_spend_xml())
+    result = subprocess.run(
+        f'schtasks /create /tn "{SPEND_TASK_NAME}" /xml "{xml_path}" /f',
+        capture_output=True, text=True, shell=True)
+    if result.returncode != 0:
+        print("  FAILED:", result.stdout.strip(), result.stderr.strip())
+        print("  FIX: run this from an elevated (Administrator) prompt.")
+        return
+    print("  OK — task registered.")
+    q = subprocess.run(f'schtasks /query /tn "{SPEND_TASK_NAME}" /fo LIST /v',
+                       capture_output=True, text=True, shell=True)
+    for line in q.stdout.splitlines():
+        if any(k in line for k in ("TaskName", "Next Run", "Task To Run", "Start In", "Scheduled Task State")):
+            print("  " + line.strip())
+    print(f'  Manual test: schtasks /run /tn "{SPEND_TASK_NAME}"  (log: D:/CLS/cls_meta_spend_sync_log.txt)')
+
+
 if __name__ == "__main__":
-    if "--daily-brief" in sys.argv:
+    if "--meta-spend" in sys.argv:
+        register_meta_spend()
+    elif "--daily-brief" in sys.argv:
         register_daily_brief()
     else:
         main()
