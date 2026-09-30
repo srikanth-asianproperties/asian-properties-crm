@@ -1,4 +1,6 @@
-<!-- base.html v0.29 — Finance F3a: the single admin-only "Finance" drawer link became three
+<!-- base.html v0.30 — Finance F2: two more admin-only drawer links, "Finance — Costs" and
+     "Finance — P&L", beside Marketing / Bookings / Rates. Each route enforces admin itself.
+     base.html v0.29 — Finance F3a: the single admin-only "Finance" drawer link became three
      ("Finance — Marketing / Bookings / Rates"), same admin-only block; each route enforces admin itself.
      base.html v0.28 — Finance F1: NEW admin-only "Finance" drawer link
      (finance_marketing, app.py v0.88), right after "AI", same admin-only block.
@@ -875,6 +877,8 @@ html.desk .action-bar{
   <a href="{{ url_for('finance_marketing') }}" class="drawer-link {{ 'active' if request.endpoint == 'finance_marketing' }}">Finance &mdash; Marketing</a>
   <a href="{{ url_for('finance_bookings') }}" class="drawer-link {{ 'active' if request.endpoint in ['finance_bookings', 'finance_booking_edit'] }}">Finance &mdash; Bookings</a>
   <a href="{{ url_for('finance_rates') }}" class="drawer-link {{ 'active' if request.endpoint in ['finance_rates', 'finance_rate_edit'] }}">Finance &mdash; Rates</a>
+  <a href="{{ url_for('finance_costs') }}" class="drawer-link {{ 'active' if request.endpoint in ['finance_costs', 'finance_costs_save', 'finance_costs_copy'] }}">Finance &mdash; Costs</a>
+  <a href="{{ url_for('finance_pnl') }}" class="drawer-link {{ 'active' if request.endpoint == 'finance_pnl' }}">Finance &mdash; P&amp;L</a>
   {% endif %}
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   <div class="drawer-divider"></div>

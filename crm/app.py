@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.91
+Version : 0.92
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,13 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.92 (2026-09-30) — Finance F2: NEW GET /finance/costs, POST /finance/costs/save, POST
+  /finance/costs/copy (monthly cost grid; copy-previous-month fills only empty cells) and GET
+  /finance/pnl (operating P&L, booked and received side by side). All @login_required +
+  @admin_required, refused mid-"Work As" (_finance_admin_guard()), session-cookie routes only (no
+  token_required). Cell edits are audited old -> new via user_action_log (refused without an audit
+  session); no per-person salary figure is ever rendered. Templates finance_costs.html v1,
+  finance_pnl.html v1; base.html v0.30 menu.
 v0.91 (2026-09-30) — Finance F3b: finance_marketing() also passes roi (cls_db.get_marketing_roi(),
   read-only) and revenue_start to finance_marketing.html v1.5. Guards unchanged.
 v0.90 (2026-09-30) — Finance F3a.1: finance_bookings() accepts the new views (review, stale,
@@ -7994,6 +8001,82 @@ def finance_booking_edit(deal_id):
         flash(str(e), "error")
     return redirect(url_for("finance_bookings", view=request.form.get("view") or "all",
                             project=request.form.get("project") or ""))
+
+
+def _finance_month_arg():
+    """?month=YYYY-MM (default: this month); a bad value falls back to this month."""
+    m = request.values.get("month") or datetime.now().strftime("%Y-%m")
+    try:
+        datetime.strptime(m, "%Y-%m")
+    except ValueError:
+        m = datetime.now().strftime("%Y-%m")
+    return m
+
+
+@app.route("/finance/costs")
+@login_required
+@admin_required
+def finance_costs():
+    """v0.92 — Finance F2. Monthly cost grid (rows = project/overhead scopes, columns = categories).
+    Salary and Meta spend are read-only lines with source labels; totals only, no per-person figures."""
+    _finance_admin_guard()
+    month = _finance_month_arg()
+    data = cls_db.get_finance_costs(month)
+    return render_template("finance_costs.html", d=data, month=month,
+                           prev_month=cls_db._fin_prev_month(month),
+                           marketing_categories=cls_db.FINANCE_MARKETING_CATEGORIES,
+                           overhead_scope=cls_db.FINANCE_OVERHEAD_SCOPE,
+                           own_projects={r["project"] for r in cls_db.get_commission_rates() if r["is_own_property"]})
+
+
+@app.route("/finance/costs/save", methods=["POST"])
+@login_required
+@admin_required
+def finance_costs_save():
+    _finance_admin_guard()
+    user = cls_db.get_user_by_id(session["user_id"])
+    month = _finance_month_arg()
+    scopes = cls_db.get_finance_costs(month)["scopes"]
+    cats = cls_db.FINANCE_COST_CATEGORIES
+    cells = [{"scope": sc, "category": cat, "amount": request.form.get(f"cell_{i}_{j}")}
+             for i, sc in enumerate(scopes) for j, cat in enumerate(cats) if f"cell_{i}_{j}" in request.form]
+    try:
+        changed = cls_db.save_finance_costs(month, cells, user, session_id=session.get("session_row_id"))
+        flash(f"Costs for {month} saved ({len(changed)} change{'' if len(changed) == 1 else 's'})." if changed
+              else f"Costs for {month}: nothing changed.", "success")
+    except ValueError as e:
+        flash(str(e), "error")
+    return redirect(url_for("finance_costs", month=month))
+
+
+@app.route("/finance/costs/copy", methods=["POST"])
+@login_required
+@admin_required
+def finance_costs_copy():
+    _finance_admin_guard()
+    user = cls_db.get_user_by_id(session["user_id"])
+    month = _finance_month_arg()
+    try:
+        n = cls_db.copy_previous_month(month, user, session_id=session.get("session_row_id"))
+        flash(f"Copied {n} empty cell{'' if n == 1 else 's'} from {cls_db._fin_prev_month(month)}. Existing amounts were not changed.", "success")
+    except ValueError as e:
+        flash(str(e), "error")
+    return redirect(url_for("finance_costs", month=month))
+
+
+@app.route("/finance/pnl")
+@login_required
+@admin_required
+def finance_pnl():
+    """v0.92 — Finance F2. Operating P&L (all lead sources), booked and received bases side by side."""
+    _finance_admin_guard()
+    date_from, date_to, active_preset = _resolve_finance_date_range(request.args)
+    return render_template(
+        "finance_pnl.html",
+        filters={"preset": active_preset, "date_from": date_from, "date_to": date_to},
+        preset_order=FINANCE_PRESET_ORDER, preset_labels=FINANCE_PRESET_LABELS,
+        pnl=cls_db.get_pnl(date_from, date_to), revenue_start=cls_db.FINANCE_REVENUE_START_DATE,
+    )
 
 
 @app.route("/finance/rates")

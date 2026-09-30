@@ -1,0 +1,123 @@
+{# finance_pnl.html (v1, 2026-09-30) — Finance F2 admin-only operating P&L (app.py finance_pnl()).
+   ALL lead sources. Every line is shown on a BOOKED and a RECEIVED basis side by side. Commission is what
+   is due or received, not profit. Totals only — no per-person salary. Wide tables scroll inside their
+   own container. #}
+{% extends "base.html" %}
+{% block title %}Finance — P&L{% endblock %}
+
+{% block content %}
+<style>
+  .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .report-table th, .report-table td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .report-table th { color: var(--ink-soft); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .report-table td.num, .report-table th.num { text-align: right; white-space: nowrap; }
+  .report-table tr.total td { font-weight: 700; border-top: 2px solid var(--line); }
+  .report-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .fin-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 14px; background: var(--card); }
+  .fin-card h4 { margin: 0 0 4px; font-size: 14px; }
+  .fin-note { font-size: 12px; color: var(--ink-soft); margin-top: 8px; line-height: 1.5; }
+  .fin-tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--paper); border: 1px solid var(--line); color: var(--ink-soft); margin-left: 6px; }
+  .fin-tag.warn { border-color: #d9a400; color: #6b4e00; background: #fff8e1; }
+  .fin-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 13px; }
+  .fin-filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .fin-filter-row select, .fin-filter-row input[type="date"] { height: 36px; font-size: 13px; padding: 4px 8px; flex: 1; min-width: 130px; }
+  .neg { color: #b3261e; }
+</style>
+{% macro m(v) %}<span class="{{ 'neg' if v is not none and v < 0 }}">{{ v|inr }}</span>{% endmacro %}
+
+{% include "_back_button.html" %}
+<h2 style="margin:6px 0 0;">Finance &mdash; Profit &amp; loss (operating view)</h2>
+<div class="fin-nav"><a href="{{ url_for('finance_marketing') }}">Marketing</a> &middot; <a href="{{ url_for('finance_bookings') }}">Bookings</a> &middot; <a href="{{ url_for('finance_rates') }}">Rates</a> &middot; <a href="{{ url_for('finance_costs') }}">Costs</a> &middot; <b>P&amp;L</b></div>
+
+<form method="get" action="{{ url_for('finance_pnl') }}">
+  <div class="fin-filter-row">
+    <select name="preset" onchange="onPnlPreset(this)">
+      {% for key in preset_order %}<option value="{{ key }}" {% if filters.preset == key %}selected{% endif %}>{{ preset_labels[key] }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="fin-filter-row" id="pnlCustom" style="{% if filters.preset != 'custom' %}display:none;{% endif %}">
+    <input type="date" name="from" value="{{ filters.date_from }}" aria-label="From date">
+    <input type="date" name="to" value="{{ filters.date_to }}" aria-label="To date">
+    <button type="submit" class="btn" style="flex:0 0 auto;">Apply</button>
+  </div>
+</form>
+
+<p class="fin-note">
+  Showing {{ pnl.range_from }} to {{ pnl.range_to }} (tracking starts {{ revenue_start }}). <b>Commission is what you are due or have received.</b>
+  Your own pay and the freelance designer are not in payroll (enter the designer under Creative &amp; design). The current month's salaries
+  are an estimate until payroll is run. Ad spend is as Meta reports it plus the GST percentage set in config ({{ pnl.gst_pct }}%, 0 until confirmed).
+  <b>{{ pnl.undated_not_counted }}</b> undated deal{{ '' if pnl.undated_not_counted == 1 else 's' }} and {{ pnl.before_tracking_not_counted }} booked before tracking began are <b>not counted</b>.
+  Monthly costs and salaries are whole-month figures: a month only partly inside the range is included in full.
+</p>
+
+<div class="fin-card">
+  <h4>Range total &mdash; booked vs received</h4>
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>Line</th><th class="num">Booked basis</th><th class="num">Received basis</th></tr></thead>
+    <tbody>
+      <tr><td>Commission</td><td class="num">{{ pnl.total.commission_booked|inr }}</td><td class="num">{{ pnl.total.commission_received|inr }}</td></tr>
+      <tr><td>&minus; Meta ad spend</td><td class="num">{{ pnl.total.meta_spend|inr }}</td><td class="num">{{ pnl.total.meta_spend|inr }}</td></tr>
+      <tr><td>&minus; Other marketing costs</td><td class="num">{{ pnl.total.other_marketing|inr }}</td><td class="num">{{ pnl.total.other_marketing|inr }}</td></tr>
+      <tr class="total"><td>Marketing contribution</td><td class="num">{{ m(pnl.total.contribution_booked) }}</td><td class="num">{{ m(pnl.total.contribution_received) }}</td></tr>
+      <tr><td>&minus; Salaries (actual or estimate)</td><td class="num">{{ pnl.total.salaries|inr }}</td><td class="num">{{ pnl.total.salaries|inr }}</td></tr>
+      <tr><td>&minus; Other overheads</td><td class="num">{{ pnl.total.non_marketing_costs|inr }}</td><td class="num">{{ pnl.total.non_marketing_costs|inr }}</td></tr>
+      <tr><td>= Overheads</td><td class="num">{{ pnl.total.overheads|inr }}</td><td class="num">{{ pnl.total.overheads|inr }}</td></tr>
+      <tr class="total"><td>Operating result</td><td class="num">{{ m(pnl.total.operating_booked) }}</td><td class="num">{{ m(pnl.total.operating_received) }}</td></tr>
+    </tbody>
+  </table></div>
+  <div class="fin-note">Booked basis = commission on deals booked in the range (expected, invoiced or received, not under review). Received basis = only deals already received.
+    Marketing contribution = commission &minus; Meta spend &minus; other marketing costs. Operating result = contribution &minus; overheads. An operating view, not audited accounts.</div>
+</div>
+
+<div class="fin-card">
+  <h4>By month</h4>
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>Month</th><th class="num">Commission booked</th><th class="num">Commission received</th><th class="num">Meta spend</th><th class="num">Other marketing</th>
+      <th class="num">Contribution (booked)</th><th class="num">Contribution (received)</th><th class="num">Overheads</th><th class="num">Operating (booked)</th><th class="num">Operating (received)</th><th>Salary source</th></tr></thead>
+    <tbody>
+    {% for r in pnl.months %}
+      <tr><td>{{ r.month }}{% if r.partial %}<span class="fin-tag warn">part month</span>{% endif %}</td>
+        <td class="num">{{ r.commission_booked|inr }}</td><td class="num">{{ r.commission_received|inr }}</td>
+        <td class="num">{{ r.meta_spend|inr }}</td><td class="num">{{ r.other_marketing|inr }}</td>
+        <td class="num">{{ m(r.contribution_booked) }}</td><td class="num">{{ m(r.contribution_received) }}</td>
+        <td class="num">{{ r.overheads|inr }}</td>
+        <td class="num">{{ m(r.operating_booked) }}</td><td class="num">{{ m(r.operating_received) }}</td>
+        <td style="font-size:12px;color:var(--ink-soft);">{{ r.salary_source }}</td></tr>
+    {% else %}
+      <tr><td colspan="11" style="color:var(--ink-soft);">No months in this range (tracking starts {{ revenue_start }}).</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+<div class="fin-card">
+  <h4>By project</h4>
+  <div class="report-table-wrap"><table class="report-table">
+    <thead><tr><th>Project</th><th class="num">Commission booked</th><th class="num">Commission received</th><th class="num">Meta spend</th><th class="num">Project marketing costs</th>
+      <th class="num">Contribution (booked)</th><th class="num">Contribution (received)</th></tr></thead>
+    <tbody>
+    {% for p in pnl.by_project %}
+      <tr><td>{{ p.project }}{% if p.is_own %}<span class="fin-tag">Own project - cost only</span>{% endif %}</td>
+        <td class="num">{{ p.commission_booked|inr }}</td><td class="num">{{ p.commission_received|inr }}</td>
+        <td class="num">{{ p.meta_spend|inr }}</td><td class="num">{{ p.marketing_costs|inr }}</td>
+        <td class="num">{{ m(p.contribution_booked) }}</td><td class="num">{{ m(p.contribution_received) }}</td></tr>
+    {% else %}
+      <tr><td colspan="7" style="color:var(--ink-soft);">No project figures for this range.</td></tr>
+    {% endfor %}
+      <tr><td>Company-level marketing costs</td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num">{{ pnl.company_marketing|inr }}</td><td class="num"></td><td class="num"></td></tr>
+    </tbody>
+  </table></div>
+  <div class="fin-note">Commission is by the deal's project; Meta spend by the ad campaign's project; project marketing costs are those entered against the project.
+    Company-level marketing costs and all overheads (salaries and overhead categories) are company-wide and are not split across projects.
+    The project contributions less company-level marketing costs add up to the total marketing contribution above{% if not pnl.reconciles %} <b>&mdash; they do NOT match, please check</b>{% endif %}.</div>
+</div>
+
+<script>
+function onPnlPreset(sel){
+  var box = document.getElementById('pnlCustom');
+  if (sel.value === 'custom') { box.style.display = 'flex'; return; }
+  box.style.display = 'none';
+  sel.form.submit();
+}
+</script>
+{% endblock %}

@@ -1,0 +1,71 @@
+{# finance_costs.html (v1, 2026-09-30) — Finance F2 admin-only monthly cost grid (app.py finance_costs()).
+   Rows = projects + company overheads, columns = cost categories. Salaries and Meta ad spend are shown
+   read-only with their source labels — TOTALS ONLY, no per-person figure anywhere. Wide table scrolls
+   inside its own container for phones. #}
+{% extends "base.html" %}
+{% block title %}Finance — Costs{% endblock %}
+
+{% block content %}
+<style>
+  .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .report-table th, .report-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: middle; }
+  .report-table th { color: var(--ink-soft); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .report-table td.num, .report-table th.num { text-align: right; white-space: nowrap; }
+  .report-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .fin-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 14px; background: var(--card); }
+  .fin-note { font-size: 12px; color: var(--ink-soft); margin-top: 8px; line-height: 1.5; }
+  .fin-tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--paper); border: 1px solid var(--line); color: var(--ink-soft); margin-left: 6px; }
+  .fin-tag.warn { border-color: #d9a400; color: #6b4e00; background: #fff8e1; }
+  .fin-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 13px; }
+  .cost-input { font-size: 13px; padding: 4px 6px; height: 32px; width: 120px; box-sizing: border-box; text-align: right; }
+  .fin-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  tr.ro td { background: var(--paper); color: var(--ink-soft); }
+</style>
+
+{% include "_back_button.html" %}
+<h2 style="margin:6px 0 0;">Finance &mdash; Monthly costs</h2>
+<div class="fin-nav"><a href="{{ url_for('finance_marketing') }}">Marketing</a> &middot; <a href="{{ url_for('finance_bookings') }}">Bookings</a> &middot; <a href="{{ url_for('finance_rates') }}">Rates</a> &middot; <b>Costs</b> &middot; <a href="{{ url_for('finance_pnl') }}">P&amp;L</a></div>
+
+<div class="fin-row">
+  <form method="get" action="{{ url_for('finance_costs') }}" class="fin-row" style="margin:0;">
+    <label for="finMonth" style="font-size:13px;">Month</label>
+    <input type="month" id="finMonth" name="month" value="{{ month }}" onchange="this.form.submit()" style="height:36px;font-size:13px;padding:4px 8px;">
+  </form>
+  <form method="post" action="{{ url_for('finance_costs_copy') }}" style="margin:0;">
+    <input type="hidden" name="month" value="{{ month }}">
+    <button type="submit" class="btn" title="Fills only the empty cells of {{ month }} with last month's amounts; nothing already entered is changed.">Copy previous month ({{ prev_month }})</button>
+  </form>
+</div>
+
+<div class="fin-card">
+  <div class="report-table-wrap">
+  <form method="post" action="{{ url_for('finance_costs_save') }}" id="costForm">
+    <input type="hidden" name="month" value="{{ month }}">
+    <table class="report-table">
+      <thead><tr><th>Project / scope</th>
+        {% for cat in d.categories %}<th class="num">{{ cat }}{% if cat in marketing_categories %}<span class="fin-tag">marketing</span>{% else %}<span class="fin-tag">overhead</span>{% endif %}</th>{% endfor %}</tr></thead>
+      <tbody>
+      {% for sc in d.scopes %}
+        {% set i = loop.index0 %}
+        <tr>
+          <td>{% if sc == overhead_scope %}<b>Company overheads</b>{% else %}{{ sc }}{% if sc in own_projects %}<span class="fin-tag">Own project - cost only</span>{% endif %}{% endif %}</td>
+          {% for cat in d.categories %}
+          <td class="num"><input class="cost-input" type="number" step="any" min="0" name="cell_{{ i }}_{{ loop.index0 }}"
+              value="{% set v = d.cells.get((sc, cat)) %}{% if v %}{{ v|int if v == v|int else v }}{% endif %}" placeholder="0" aria-label="{{ sc }} {{ cat }}"></td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+        <tr class="ro"><td><b>Salaries</b> <span class="fin-tag {{ 'warn' if d.salary.kind == 'estimate' else '' }}">{{ d.salary.source }}</span></td>
+          <td class="num" colspan="{{ d.categories|length }}">{{ d.salary.amount|inr }} <span style="font-size:11px;">(total, read-only &mdash; company overhead)</span></td></tr>
+        <tr class="ro"><td><b>Meta ad spend</b> <span class="fin-tag">from Meta, read-only</span></td>
+          <td class="num" colspan="{{ d.categories|length }}">{{ d.meta_spend.reported|inr }} as reported{% if d.meta_spend.gst_pct %} &middot; {{ d.meta_spend.with_gst|inr }} with {{ d.meta_spend.gst_pct }}% GST (P&amp;L only){% endif %}</td></tr>
+      </tbody>
+    </table>
+    <div class="fin-row"><button type="submit" class="btn">Save costs for {{ month }}</button></div>
+  </form>
+  </div>
+  <div class="fin-note">Enter each month's costs in rupees. <b>Marketing</b> categories count against the ad projects (and company-level marketing on the &ldquo;Company overheads&rdquo; row); <b>overhead</b> categories go with salaries.
+    Your own pay and the freelance designer are not in payroll &mdash; enter the designer under Creative &amp; design. The salary line is a total only (no individual figures), and it is an estimate from base salaries until payroll has been run for the month.
+    Empty boxes count as zero; every change is recorded with its old and new value.</div>
+</div>
+{% endblock %}
