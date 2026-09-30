@@ -2,11 +2,22 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.113
+Version : 2.114
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.114 (2026-09-30) — Finance F3a. ADDITIONS ONLY (self-healing). project_commission_rates gains
+  commission_type ('fixed'/'percent', default 'fixed') and percent_value (PRAGMA-checked
+  ALTERs); seed extended (INSERT OR IGNORE, never clobbers edits) with Prima Paradiso
+  1% percent, Vempati's 100000, SRI Marvel 150000, Twin Diamond 140000, Blue Moon Heights
+  150000, Bhanu = own property. NEW table booking_deals (one row per booked lead; project,
+  unit_type, commission are snapshots — a later rate change never alters an existing deal).
+  NEW constants FINANCE_REVENUE_START_DATE ("2026-06-01"), DEAL_STATES, DEAL_UNIT_TYPES.
+  NEW functions: normalize_unit_type(), sync_booking_deals() (idempotent), get_booking_deals(),
+  get_booking_deal_totals(), update_booking_deal(), get_commission_rates(),
+  update_commission_rate(). Every deal/rate edit is audited old -> new through the existing
+  user_action_log (edit refused if there is no audit session). No lead/stage code touched.
 v2.113 (2026-09-30) — Finance F1.4. READ FUNCTIONS ONLY, no schema change, no writes.
   FINANCE_REJECT_STAGES = ["Unqualified", "Lost"]: "rejected" = ever Unqualified OR Lost
   at any stage (current_stage or any stage_change new_value). Campaign rows gain
@@ -4081,15 +4092,25 @@ FINANCE_UNASSIGNED_LABEL  = "Unassigned"
 # new_value), in one of these stages — ever-reached, same idiom as qualified. In the CRM
 # both stages hand a Naishka or Grace lead to the other project.
 FINANCE_REJECT_STAGES     = ["Unqualified", "Lost"]
-# (project bucket, unit_type, commission_amount, is_own_property) — INSERT OR IGNORE only.
-# Project names are the live leads.project_bucket strings ("Naishka Homes" is the
-# bucket that the alias "Naishka" maps to).
+# (project bucket, unit_type, commission_amount, is_own_property, commission_type, percent_value)
+# INSERT OR IGNORE only — never clobbers an edited rate. Project names are the exact live
+# leads.project_bucket strings (verified against CLS1.db). unit_type "any" = one rate for
+# every unit type. v2.114 extended the v2.109 4-tuples with type/percent and more projects.
 FINANCE_COMMISSION_SEED = [
-    ("Naishka Homes",                 "any",  125000, 0),
-    ("Grace Classic",                 "2BHK", 125000, 0),
-    ("Grace Classic",                 "3BHK", 150000, 0),
-    ("Bhanu Residency Balaji Nagar",  "any",  0,      1),
+    ("Naishka Homes",                 "any",  125000, 0, "fixed",   None),
+    ("Grace Classic",                 "2BHK", 125000, 0, "fixed",   None),
+    ("Grace Classic",                 "3BHK", 150000, 0, "fixed",   None),
+    ("Prima Paradiso",                "any",  None,   0, "percent", 1.0),
+    ("Vempati's Residency",           "any",  100000, 0, "fixed",   None),
+    ("SRI Marvel",                    "any",  150000, 0, "fixed",   None),
+    ("Twin Diamond",                  "any",  140000, 0, "fixed",   None),
+    ("Blue Moon Heights",             "any",  150000, 0, "fixed",   None),
+    ("Bhanu Residency Balaji Nagar",  "any",  0,      1, "fixed",   None),   # own property — no commission
 ]
+# v2.114 — Finance F3a: deals booked on/after this date count; earlier/undated ones do not.
+FINANCE_REVENUE_START_DATE = "2026-06-01"
+DEAL_STATES = ["expected", "invoiced", "received"]
+DEAL_UNIT_TYPES = ["any", "2BHK", "3BHK"]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -5288,14 +5309,42 @@ def init_db():
             PRIMARY KEY (project, unit_type)
         );
     """)
+    # v2.114 — percent-type rates (Prima Paradiso) + rate type, PRAGMA-checked ALTERs.
+    _pcr_cols = [r["name"] for r in conn.execute("PRAGMA table_info(project_commission_rates)").fetchall()]
+    if "commission_type" not in _pcr_cols:
+        conn.execute("ALTER TABLE project_commission_rates ADD COLUMN commission_type TEXT DEFAULT 'fixed';")
+    if "percent_value" not in _pcr_cols:
+        conn.execute("ALTER TABLE project_commission_rates ADD COLUMN percent_value REAL;")
     _pcr_ts = _now()
-    for _p, _u, _amt, _own in FINANCE_COMMISSION_SEED:
+    for _p, _u, _amt, _own, _ctype, _pct in FINANCE_COMMISSION_SEED:
         conn.execute(
             "INSERT OR IGNORE INTO project_commission_rates "
-            "(project, unit_type, commission_amount, is_own_property, updated_at, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (_p, _u, _amt, _own, _pcr_ts, "system:init_db seed")
+            "(project, unit_type, commission_amount, is_own_property, updated_at, updated_by, "
+            " commission_type, percent_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (_p, _u, _amt, _own, _pcr_ts, "system:init_db seed", _ctype, _pct)
         )
+    # v2.114 — one row per booked lead. project/unit_type/commission are SNAPSHOTS: a later
+    # change to project_commission_rates never alters an existing deal.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS booking_deals (
+            deal_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            cls_id            TEXT UNIQUE,
+            project           TEXT,
+            unit_type         TEXT,
+            sale_price        REAL,
+            commission_amount REAL,
+            commission_source TEXT,
+            booked_on         TEXT,
+            state             TEXT DEFAULT 'expected',
+            invoiced_on       TEXT,
+            received_on       TEXT,
+            notes             TEXT,
+            created_at        TEXT,
+            updated_at        TEXT,
+            updated_by        TEXT
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_booking_deals_booked_on ON booking_deals(booked_on);")
 
     conn.commit()
     conn.close()
@@ -16699,6 +16748,312 @@ def get_wasted_spend_ads(days=None, min_spend=None, project=None, today=None):
                         "project": r["project"], "spend": r["spend"], "leads": n_leads})
     out.sort(key=lambda x: -x["spend"])
     return {"days": days, "date_from": d_from, "date_to": d_to, "min_spend": min_spend, "ads": out}
+
+
+# ─────────────────────────────────────────────────────────────
+# FINANCE F3a — booking deals + commission rates  (v2.114)
+# ─────────────────────────────────────────────────────────────
+# Commission is a SNAPSHOT set once (see _deal_commission / update_booking_deal); it is
+# money owed to Asian Properties by the builder, NOT profit. Every deal/rate edit is
+# audited through the existing user_action_log (old -> new in the label).
+
+def normalize_unit_type(configuration):
+    """'2 BHK' -> '2BHK', '3 BHK' -> '3BHK'; anything else (incl. '2 BHK, 3 BHK') -> None."""
+    m = re.match(r"^\s*([23])\s*bhk\s*$", configuration or "", re.I)
+    return f"{m.group(1)}BHK" if m else None
+
+
+def _deal_commission(conn, project, unit_type, sale_price):
+    """
+    (v2.114) Returns (amount_or_None, note_or_None) from the CURRENT rates for
+    (project, unit_type), falling back to the project's 'any' rate.
+      own property         -> (0.0, "Own project - no commission")
+      fixed                -> (commission_amount, None)
+      percent              -> sale_price x percent / 100, or (None, "needs sale price")
+      no matching unit row -> (None, "needs unit type"); no rate rows -> (None, "no rate set")
+    """
+    rates = conn.execute(
+        "SELECT unit_type, commission_amount, is_own_property, commission_type, percent_value "
+        "FROM project_commission_rates WHERE project = ? COLLATE NOCASE", (project,)).fetchall()
+    if not rates:
+        return None, "no rate set"
+    if any(r["is_own_property"] for r in rates):
+        return 0.0, "Own project - no commission"
+    by_unit = {r["unit_type"]: r for r in rates}
+    row = by_unit.get(unit_type) or by_unit.get("any")
+    if row is None:
+        return None, "needs unit type"
+    if (row["commission_type"] or "fixed") == "percent":
+        if sale_price is None or row["percent_value"] is None:
+            return None, "needs sale price"
+        return round(float(sale_price) * float(row["percent_value"]) / 100.0, 2), None
+    if row["commission_amount"] is None:
+        return None, "no rate set"
+    return float(row["commission_amount"]), None
+
+
+def sync_booking_deals():
+    """
+    (v2.114) Idempotent: one booking_deals row for every lead with current_stage='Booked' OR a
+    stage_change to Booked (INSERT OR IGNORE on the UNIQUE cls_id). booked_on = date of the
+    EARLIEST Booked event (NULL if none). Grace Classic pre-fills unit_type from
+    leads.configuration only when it cleanly normalizes; everything else is 'any'. A deal
+    whose booked_on is still NULL gets it filled if a Booked event has since appeared (an
+    admin-edited date is never overwritten). Existing deals' commission is never touched.
+    Returns the number of NEW deals created.
+    """
+    conn = _connect()
+    created = 0
+    try:
+        now = _now()
+        leads = conn.execute("""
+            SELECT l.cls_id, l.project_bucket, l.project, l.configuration,
+                   (SELECT MIN(a.created_at) FROM activity_log a WHERE a.cls_id=l.cls_id
+                      AND a.activity_type='stage_change' AND a.new_value='Booked') AS first_booked
+            FROM leads l
+            WHERE l.current_stage='Booked'
+               OR EXISTS (SELECT 1 FROM activity_log a WHERE a.cls_id=l.cls_id
+                            AND a.activity_type='stage_change' AND a.new_value='Booked')
+        """).fetchall()
+        for l in leads:
+            project = l["project_bucket"] or l["project"] or "(unknown)"
+            booked_on = (l["first_booked"] or "")[:10] or None
+            existing = conn.execute("SELECT deal_id, booked_on FROM booking_deals WHERE cls_id=?", (l["cls_id"],)).fetchone()
+            if existing:
+                if existing["booked_on"] is None and booked_on:
+                    conn.execute("UPDATE booking_deals SET booked_on=?, updated_at=?, updated_by=? WHERE deal_id=?",
+                                 (booked_on, now, "system:sync", existing["deal_id"]))
+                continue
+            unit = "any"
+            if project.lower() == "grace classic":
+                unit = normalize_unit_type(l["configuration"]) or "any"
+            amount, _note = _deal_commission(conn, project, unit, None)
+            cur = conn.execute("""
+                INSERT OR IGNORE INTO booking_deals
+                    (cls_id, project, unit_type, sale_price, commission_amount, commission_source,
+                     booked_on, state, created_at, updated_at, updated_by)
+                VALUES (?, ?, ?, NULL, ?, 'rate', ?, 'expected', ?, ?, 'system:sync')
+            """, (l["cls_id"], project, unit, amount, booked_on, now, now))
+            created += cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return created
+
+
+def _deal_count_status(booked_on):
+    if not booked_on:
+        return "undated"
+    return "counted" if booked_on >= FINANCE_REVENUE_START_DATE else "before"
+
+
+def get_booking_deals(filters=None):
+    """
+    (v2.114) One dict per deal. filters: {"view": all|counted|undated|before|attention,
+    "project": str}. Adds: name, phone_last4, count_status (counted/undated/before),
+    review_flag ("review: moved out of Booked" if the lead is no longer Booked),
+    commission_note ("needs unit type" / "needs sale price" / "Own project - no commission"),
+    needs_attention (commission missing, or no booked date).
+    """
+    filters = filters or {}
+    view = filters.get("view") or "all"
+    project = filters.get("project") or None
+    conn = _connect()
+    try:
+        own = {r["project"].lower() for r in conn.execute(
+            "SELECT project FROM project_commission_rates WHERE is_own_property=1")}
+        rows = conn.execute("""
+            SELECT d.*, l.full_name, l.phone_norm, l.phone_raw, l.current_stage
+            FROM booking_deals d LEFT JOIN leads l ON l.cls_id = d.cls_id
+            ORDER BY (d.booked_on IS NULL), d.booked_on DESC, d.deal_id DESC
+        """).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            if project and d["project"] != project:
+                continue
+            _pn, _pr = d.pop("phone_norm"), d.pop("phone_raw")   # never leave a full number in the dict
+            digits = "".join(ch for ch in (_pn or _pr or "") if ch.isdigit())
+            d["phone_last4"] = digits[-4:] if digits else ""
+            d["name"] = d.pop("full_name") or ""
+            d["count_status"] = _deal_count_status(d["booked_on"])
+            d["review_flag"] = ("review: moved out of Booked"
+                                if d.get("current_stage") != "Booked" else "")
+            d["is_own"] = (d["project"] or "").lower() in own
+            note = None
+            if d["is_own"]:
+                note = "Own project - no commission"
+            elif d["commission_amount"] is None:
+                _amt, note = _deal_commission(conn, d["project"], d["unit_type"], d["sale_price"])
+                note = note or "needs unit type or sale price"
+            d["commission_note"] = note
+            d["needs_attention"] = bool(d["booked_on"] is None or (d["commission_amount"] is None and not d["is_own"]))
+            if view == "counted" and d["count_status"] != "counted": continue
+            if view == "undated" and d["count_status"] != "undated": continue
+            if view == "before" and d["count_status"] != "before": continue
+            if view == "attention" and not d["needs_attention"]: continue
+            out.append(d)
+        return out
+    finally:
+        conn.close()
+
+
+def get_booking_deal_totals():
+    """(v2.114) Counters + COUNTED-deal commission by state. Commission, not profit."""
+    deals = get_booking_deals({"view": "all"})
+    t = {"total": len(deals),
+         "counted": sum(d["count_status"] == "counted" for d in deals),
+         "undated": sum(d["count_status"] == "undated" for d in deals),
+         "before": sum(d["count_status"] == "before" for d in deals),
+         "review": sum(bool(d["review_flag"]) for d in deals),
+         "by_state": {st: {"deals": 0, "commission": 0.0} for st in DEAL_STATES}}
+    for d in deals:
+        if d["count_status"] == "counted" and d["state"] in t["by_state"]:
+            t["by_state"][d["state"]]["deals"] += 1
+            t["by_state"][d["state"]]["commission"] += d["commission_amount"] or 0.0
+    return t
+
+
+def _parse_money(value, label):
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        v = float(str(value).replace(",", "").strip())
+    except ValueError:
+        raise ValueError(f"{label} must be a number.")
+    if v < 0 or v != v or v == float("inf"):
+        raise ValueError(f"{label} must be zero or more.")
+    return v
+
+
+def _parse_date(value, label):
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"{label} must be a real date (YYYY-MM-DD).")
+
+
+def _audit_finance(session_id, user, label, cls_id=None):
+    log_user_action(session_id, (user or {}).get("email") or "unknown", "POST", label, cls_id=cls_id)
+
+
+def update_booking_deal(deal_id, fields, user, session_id=None):
+    """
+    (v2.114) Edit a deal. fields may hold unit_type, sale_price, commission_amount, booked_on,
+    state, invoiced_on, received_on, notes. Only values that DIFFER from the stored ones are
+    applied. Commission rules: a differing commission_amount is a manual entry
+    (commission_source='manual'); otherwise a changed unit_type/sale_price recomputes it from
+    the CURRENT rates ONLY while commission_source='rate'. Validation: state in DEAL_STATES,
+    amounts >= 0, dates real. EVERY changed field is audited (old -> new) through
+    user_action_log; without an audit session_id the edit is refused (money edits must be
+    traceable). Returns {field: (old, new)} for what changed.
+    """
+    if session_id is None:
+        raise ValueError("Audit session missing - please log out and log in again before editing.")
+    conn = _connect()
+    try:
+        deal = conn.execute("SELECT * FROM booking_deals WHERE deal_id=?", (deal_id,)).fetchone()
+        if not deal:
+            raise ValueError("Deal not found.")
+        deal = dict(deal)
+        new = {}
+        if "unit_type" in fields and (fields["unit_type"] or "").strip():
+            ut = fields["unit_type"].strip()
+            if ut not in DEAL_UNIT_TYPES:
+                raise ValueError("Unit type must be one of: " + ", ".join(DEAL_UNIT_TYPES))
+            new["unit_type"] = ut
+        if "sale_price" in fields:
+            new["sale_price"] = _parse_money(fields["sale_price"], "Sale price")
+        if "commission_amount" in fields and str(fields["commission_amount"] or "").strip():
+            new["commission_amount"] = _parse_money(fields["commission_amount"], "Commission")
+        for k, lbl in (("booked_on", "Booked date"), ("invoiced_on", "Invoiced date"), ("received_on", "Received date")):
+            if k in fields:
+                new[k] = _parse_date(fields[k], lbl)
+        if "state" in fields and (fields["state"] or "").strip():
+            if fields["state"] not in DEAL_STATES:
+                raise ValueError("State must be one of: " + ", ".join(DEAL_STATES))
+            new["state"] = fields["state"]
+        if "notes" in fields:
+            new["notes"] = (fields["notes"] or "").strip() or None
+
+        changes = {k: v for k, v in new.items() if deal.get(k) != v and not (
+            isinstance(v, float) and isinstance(deal.get(k), (int, float)) and abs(v - deal[k]) < 1e-9)}
+        if not changes:
+            return {}
+        merged = {**deal, **changes}
+        if "commission_amount" in changes:
+            changes["commission_source"] = "manual"
+        elif ("unit_type" in changes or "sale_price" in changes) and deal["commission_source"] == "rate":
+            amount, _n = _deal_commission(conn, deal["project"], merged["unit_type"], merged["sale_price"])
+            if amount != deal["commission_amount"]:
+                changes["commission_amount"] = amount
+        today = datetime.now().strftime("%Y-%m-%d")
+        if changes.get("state") == "invoiced" and not merged.get("invoiced_on"):
+            changes["invoiced_on"] = today
+        if changes.get("state") == "received" and not merged.get("received_on"):
+            changes["received_on"] = today
+
+        now = _now()
+        sets = ", ".join(f"{k}=?" for k in changes)
+        conn.execute(f"UPDATE booking_deals SET {sets}, updated_at=?, updated_by=? WHERE deal_id=?",
+                     (*changes.values(), now, (user or {}).get("email"), deal_id))
+        conn.commit()
+    finally:
+        conn.close()
+    result = {k: (deal.get(k), v) for k, v in changes.items()}
+    for k, (old, newv) in result.items():
+        _audit_finance(session_id, user, f"Finance deal #{deal_id} {k}: {old!r} -> {newv!r}", cls_id=deal["cls_id"])
+    return result
+
+
+def get_commission_rates():
+    """(v2.114) All rate rows, project then unit type. No delete exists by design."""
+    conn = _connect()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT project, unit_type, commission_amount, commission_type, percent_value, is_own_property, "
+            "updated_at, updated_by FROM project_commission_rates ORDER BY project COLLATE NOCASE, unit_type")]
+    finally:
+        conn.close()
+
+
+def update_commission_rate(project, unit_type, fields, user, session_id=None):
+    """
+    (v2.114) Edit one existing rate (never creates or deletes). Fixed rows take
+    commission_amount (>= 0); percent rows take percent_value (0-100); own-property rows are not
+    editable. Applies to NEW deals only — existing deals keep their snapshot. Audited old -> new.
+    """
+    if session_id is None:
+        raise ValueError("Audit session missing - please log out and log in again before editing.")
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT * FROM project_commission_rates WHERE project=? AND unit_type=?",
+                           (project, unit_type)).fetchone()
+        if not row:
+            raise ValueError("Rate not found.")
+        row = dict(row)
+        if row["is_own_property"]:
+            raise ValueError("Own-property projects have no commission to edit.")
+        if (row["commission_type"] or "fixed") == "percent":
+            key, val = "percent_value", _parse_money(fields.get("percent_value"), "Percent")
+            if val is not None and val > 100:
+                raise ValueError("Percent must be between 0 and 100.")
+        else:
+            key, val = "commission_amount", _parse_money(fields.get("commission_amount"), "Commission")
+        if val is None:
+            raise ValueError("A value is required.")
+        old = row[key]
+        if old is not None and abs(float(old) - val) < 1e-9:
+            return {}
+        conn.execute(f"UPDATE project_commission_rates SET {key}=?, updated_at=?, updated_by=? WHERE project=? AND unit_type=?",
+                     (val, _now(), (user or {}).get("email"), project, unit_type))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit_finance(session_id, user, f"Finance rate {project} / {unit_type} {key}: {old!r} -> {val!r}")
+    return {key: (old, val)}
 
 
 if __name__ == "__main__":
