@@ -1,4 +1,8 @@
-{# finance_marketing.html (v1.1, 2026-09-30) — F1.1: Leads card shows Meta leads
+{# finance_marketing.html (v1.2, 2026-09-30) — F1.2: Repeat shown as count AND % of
+   Meta leads (also on the Leads card); the "> 25%" warning rule is removed —
+   the "possible missed leads" tag now shows ONLY when Repeat is negative;
+   dash when Meta leads is NULL/zero; note updated.
+   v1.1 — F1.1: Leads card shows Meta leads
    "of which N new in CRM"; project + campaign tables gain Meta leads / Repeat
    columns (flagged "possible missed leads" when repeat < 0 or > 25% of Meta
    leads); explanatory note. NULL meta_leads renders as an em dash / CRM fallback.
@@ -12,7 +16,7 @@
 {% block title %}Finance — Marketing{% endblock %}
 
 {% macro inr(v) %}{% if v is none %}&mdash;{% else %}&#8377;{{ "{:,.0f}".format(v) }}{% endif %}{% endmacro %}
-{% macro repeat_cell(r) %}{% if r.repeat_leads is none %}&mdash;{% else %}{{ r.repeat_leads }}{% if r.repeat_flag %} <span class="fin-tag" style="border-color:#d9a400;color:#6b4e00;" title="Repeat is negative or over 25% of Meta leads">possible missed leads &mdash; check Job A</span>{% endif %}{% endif %}{% endmacro %}
+{% macro repeat_cell(r) %}{% if r.repeat_leads is none %}&mdash;{% else %}{{ r.repeat_leads }}{% if r.repeat_pct is not none %} ({{ "{:.1f}".format(r.repeat_pct) }}%){% endif %}{% if r.repeat_flag %} <span class="fin-tag" style="border-color:#d9a400;color:#6b4e00;" title="Meta counted fewer leads than the CRM created">possible missed leads &mdash; check Job A</span>{% endif %}{% endif %}{% endmacro %}
 {% macro pct(v) %}{% if v is none %}&mdash;{% else %}{{ "{:.1f}".format(v) }}%{% endif %}{% endmacro %}
 
 {% block content %}
@@ -67,7 +71,9 @@
   pipeline. Spend is Meta's own reported spend for the same dates.
   <b>Meta leads vs. new in CRM:</b> Meta counts every form submission, including the same person submitting again;
   the CRM keeps one lead per person and marks the repeat as re-engaged. So <i>Repeat = Meta leads &minus; new in CRM</i>,
-  and cost per lead uses Meta's count (matches Ads Manager). Cost per qualified / visit / booking and the funnel
+  shown as a count and as a % of Meta leads (a high % is normal and is not a warning). Only a <b>negative</b> Repeat
+  (Meta counted fewer leads than the CRM created) is flagged &ldquo;possible missed leads &mdash; check Job A&rdquo;;
+  a dash means Meta's count isn't available. Cost per lead uses Meta's count (matches Ads Manager). Cost per qualified / visit / booking and the funnel
   percentages use the CRM's new leads. Project-level rows can show odd repeat numbers when a lead's own project differs from its ad's project. &#8220;Qualified&#8221; = reached
   Opportunity or later; &#8220;site visit&#8221; = a conducted visit or reached Site Visited; junk = currently Unqualified.
 </p>
@@ -85,7 +91,7 @@
 <div class="stat-card-grid">
   <div class="stat-card"><div class="stat-card-header">Total spend</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ inr(summary.spend) }}</div></div></div>
   {% if summary.meta_leads is not none %}
-  <div class="stat-card"><div class="stat-card-header">Leads (Meta)</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ summary.meta_leads }}</div><div class="stat-card-caption">of which {{ summary.leads }} new in CRM &middot; {{ inr(summary.cost_per_lead) }} each</div></div></div>
+  <div class="stat-card"><div class="stat-card-header">Leads (Meta)</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ summary.meta_leads }}</div><div class="stat-card-caption">of which {{ summary.leads }} new in CRM &middot; {{ repeat_cell(summary) }} repeat &middot; {{ inr(summary.cost_per_lead) }} each</div></div></div>
   {% else %}
   <div class="stat-card"><div class="stat-card-header">Leads (CRM new)</div><div class="stat-card-body"><div class="stat-card-number stat-num-ink">{{ summary.leads }}</div><div class="stat-card-caption">{{ inr(summary.cost_per_lead) }} each (CRM count &mdash; Meta count not synced yet)</div></div></div>
   {% endif %}
