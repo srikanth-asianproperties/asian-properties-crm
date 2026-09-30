@@ -1,5 +1,8 @@
 """
-cls_pk_bundle.py  -- v1.6
+cls_pk_bundle.py  -- v1.7
+  v1.7 (2026-09-30) -- Added cls_meta_spend_sync.py (Finance F1) to
+  INCLUDE_FILES by manual edit. --lock-in deliberately NOT used, so the
+  deliberately untracked files stay un-bundled.
   v1.6 (2026-09-15) -- Bundle housekeeping. Locked in 5 active utility
   files (check_page_subscription.py, debug_token.py,
   cls_monday_weekly_report.py, cls_weekend_visits_report.py,
@@ -161,6 +164,7 @@ INCLUDE_FILES = [
     "cls_telecaller_report.py",
     "cls_notifications_poller.py",
     "cls_ai_daily_brief.py",   # AI-2 Daily AI Brief (added 2026-09-29)
+    "cls_meta_spend_sync.py",  # Finance F1 Meta spend sync (added 2026-09-30)
     "migrate_db.py",
     "setup_task_scheduler.py",
 
