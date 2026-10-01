@@ -1,4 +1,7 @@
-<!-- base.html v0.30 — Finance F2: two more admin-only drawer links, "Finance — Costs" and
+<!-- base.html v0.31 — Finance drawer links (Marketing / Bookings / Rates / Costs / P&L) consolidated
+     into ONE collapsible admin-only "Finances" group (native <details>, no JS; open + highlighted on any
+     finance page). Cosmetic only — every finance route still enforces admin itself.
+     base.html v0.30 — Finance F2: two more admin-only drawer links, "Finance — Costs" and
      "Finance — P&L", beside Marketing / Bookings / Rates. Each route enforces admin itself.
      base.html v0.29 — Finance F3a: the single admin-only "Finance" drawer link became three
      ("Finance — Marketing / Bookings / Rates"), same admin-only block; each route enforces admin itself.
@@ -349,6 +352,17 @@
   .drawer-link:hover{ background: var(--paper); text-decoration: none; }
   .drawer-link.active{ background: #EAF0FC; color: var(--blue); font-weight: 600; border-right: 3px solid var(--blue); }
   .drawer-divider{ height: 1px; background: var(--line); margin: 8px 0; }
+  .drawer-group > summary{
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; color: var(--ink); font-size: 15px;
+    cursor: pointer; list-style: none;
+  }
+  .drawer-group > summary::-webkit-details-marker{ display: none; }
+  .drawer-group > summary::after{ content: "B8"; transition: transform .15s; }
+  .drawer-group[open] > summary::after{ transform: rotate(90deg); }
+  .drawer-group > summary:hover{ background: var(--paper); }
+  .drawer-group.active > summary{ color: var(--blue); font-weight: 600; }
+  .drawer-sublink{ padding-left: 36px; font-size: 14px; }
   .drawer-footer{ margin-top: auto; padding: 16px 20px; font-size: 12px; color: var(--ink-soft); }
 
   /* Sell.do-style bottom action bar — used on lead detail, and now also
@@ -873,12 +887,21 @@ html.desk .action-bar{
      just newly applied here. #}
   <a href="{{ url_for('settings_work_as') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_work_as', 'settings_work_as_start'] }}">Work As</a>
   <a href="{{ url_for('ai_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['ai_home', 'ai_provider_settings'] }}">AI</a>
-  {# v0.28 — Finance F1: admin-only, cosmetic only — finance_marketing() enforces admin itself. #}
-  <a href="{{ url_for('finance_marketing') }}" class="drawer-link {{ 'active' if request.endpoint == 'finance_marketing' }}">Finance &mdash; Marketing</a>
-  <a href="{{ url_for('finance_bookings') }}" class="drawer-link {{ 'active' if request.endpoint in ['finance_bookings', 'finance_booking_edit'] }}">Finance &mdash; Bookings</a>
-  <a href="{{ url_for('finance_rates') }}" class="drawer-link {{ 'active' if request.endpoint in ['finance_rates', 'finance_rate_edit'] }}">Finance &mdash; Rates</a>
-  <a href="{{ url_for('finance_costs') }}" class="drawer-link {{ 'active' if request.endpoint in ['finance_costs', 'finance_costs_save', 'finance_costs_copy'] }}">Finance &mdash; Costs</a>
-  <a href="{{ url_for('finance_pnl') }}" class="drawer-link {{ 'active' if request.endpoint == 'finance_pnl' }}">Finance &mdash; P&amp;L</a>
+  {# v0.31 — Finances: one collapsible admin-only group; cosmetic only — every finance route enforces admin itself. #}
+  {% set fin_marketing = ['finance_marketing'] %}
+  {% set fin_bookings = ['finance_bookings', 'finance_booking_edit'] %}
+  {% set fin_rates = ['finance_rates', 'finance_rate_edit'] %}
+  {% set fin_costs = ['finance_costs', 'finance_costs_save', 'finance_costs_copy'] %}
+  {% set fin_pnl = ['finance_pnl'] %}
+  {% set fin_all = fin_marketing + fin_bookings + fin_rates + fin_costs + fin_pnl %}
+  <details class="drawer-group {{ 'active' if request.endpoint in fin_all }}"{{ ' open' if request.endpoint in fin_all }}>
+    <summary>Finances</summary>
+    <a href="{{ url_for('finance_marketing') }}" class="drawer-link drawer-sublink {{ 'active' if request.endpoint in fin_marketing }}">Marketing</a>
+    <a href="{{ url_for('finance_bookings') }}" class="drawer-link drawer-sublink {{ 'active' if request.endpoint in fin_bookings }}">Bookings</a>
+    <a href="{{ url_for('finance_rates') }}" class="drawer-link drawer-sublink {{ 'active' if request.endpoint in fin_rates }}">Rates</a>
+    <a href="{{ url_for('finance_costs') }}" class="drawer-link drawer-sublink {{ 'active' if request.endpoint in fin_costs }}">Costs</a>
+    <a href="{{ url_for('finance_pnl') }}" class="drawer-link drawer-sublink {{ 'active' if request.endpoint in fin_pnl }}">P&amp;L</a>
+  </details>
   {% endif %}
   <a href="{{ url_for('settings_home') }}" class="drawer-link {{ 'active' if request.endpoint in ['settings_home', 'whatsapp_templates_admin', 'whatsapp_reminder_templates_admin'] }}">Settings</a>
   <div class="drawer-divider"></div>
