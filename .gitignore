@@ -57,3 +57,7 @@ parallel_export_*.txt
 *.db.*
 *.py.bak_*
 debug_token.py
+
+# Local-only items
+android_pilot/
+New Text Document.txt
