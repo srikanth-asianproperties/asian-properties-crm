@@ -1,4 +1,8 @@
-<!-- base.html v0.33 — Stat cards no longer square on wide screens. Root cause: .stat-card has a fixed
+<!-- base.html v0.34 — Desk layout keeps its bottom padding. Root cause: the v0.25 html.desk main.wrap rule
+     overrode the reserved space with 20px, so the position:fixed .action-bar hid the last ~60px of content
+     on wide screens. New :root setting --action-bar-reserve (78px + safe-area inset) is now used by the desk
+     rule. Phone rules unchanged.
+     base.html v0.33 — Stat cards no longer square on wide screens. Root cause: .stat-card has a fixed
      aspect-ratio sized for a 2-per-row phone grid, so on a laptop each card was ~575px wide and ~600px tall.
      Added two :root settings (--stat-card-min-w 300px, --stat-card-min-h 130px) and one @media (min-width:700px)
      block after the base rules (aspect-ratio auto, min-height, auto-fill columns). Phones (<700px) unchanged;
@@ -236,6 +240,7 @@
 
 <style>
   :root{
+    --action-bar-reserve: calc(78px + env(safe-area-inset-bottom));   /* space kept under content for the fixed bottom bar */
     --stat-card-min-w: 300px;   /* narrowest a stat card may get on a wide screen */
     --stat-card-min-h: 130px;   /* shortest stat card height on a wide screen */
     --navy: #1F2A44;
@@ -795,7 +800,7 @@ html.desk .nav-drawer{
 html.desk main.wrap{
   margin-left: var(--desk-sidebar-w);
   max-width: 1280px;
-  padding-bottom: 20px;
+  padding-bottom: var(--action-bar-reserve);
 }
 html.desk main.wrap.wrap-wide{ max-width: 1400px; }
 html.desk .action-bar{
