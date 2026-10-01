@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.94
+Version : 0.95
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,11 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.95 (2026-10-01) — Leads list: desk-aware default columns. The head script (base.html v0.37) sets cookie
+  apx_view = desk|mobile; leads_list() uses DEFAULT_TABLE_FIELDS when it equals "desk" (equality check only,
+  never echoed, never affects which leads are visible), else DEFAULT_LIST_FIELDS. Explicit ?fields= wins.
+  _build_list_lines() refactored (same output) around new _list_field_values(); NEW _build_list_cells()
+  feeds the desk table (aligned cells, date/time split); render gets table_columns. No new routes/queries.
 v0.94 (2026-10-01) — DEFAULT_LIST_FIELDS (leads list, no explicit Fields choice) = Project, Owner, Age.
   Nothing else changed; explicit ?fields=... choices work as before.
 v0.93 (2026-10-01) — Leads list fields catalog. NO new routes, no role/scoping change. phone REMOVED from
@@ -4267,13 +4272,15 @@ ALL_LIST_FIELDS = [k for _, keys in LIST_FIELD_GROUPS for k in keys]
 DEFAULT_LIST_FIELDS = ["project", "owner", "updated"]
 LIST_EXTRA_FIELDS = {"next_followup", "next_visit", "last_activity", "last_note"}
 SCORE_RING_MAX = 100
+LIST_VIEW_COOKIE = "apx_view"
+DEFAULT_TABLE_FIELDS = ["received", "project", "owner", "source", "updated", "next_followup", "last_activity"]
+DATE_SPLIT_KEYS = {"received", "stage_changed", "next_followup", "next_visit"}
 
 
-def _build_list_lines(row, active_fields, extras):
-    """(v0.93) Ordered [(label, value, False)] lines for one /leads card:
-    ALL_LIST_FIELDS order, only ticked keys, empty values skipped."""
+def _list_field_values(row, extras):
+    """(v0.95) {field_key: display value (or None)} for one /leads row."""
     ex = extras or {}
-    stored = {
+    return {
         "received": ampm_filter(row.get("cls_created_at")),
         "project": row.get("project_bucket"),
         "owner": row.get("lead_owner") or "Unassigned",
@@ -4296,6 +4303,12 @@ def _build_list_lines(row, active_fields, extras):
         "ad": row.get("meta_ad_name"),
         "email": row.get("email_raw"),
     }
+
+
+def _build_list_lines(row, active_fields, extras):
+    """(v0.93) Ordered [(label, value, False)] lines for one /leads card:
+    ALL_LIST_FIELDS order, only ticked keys, empty values skipped."""
+    stored = _list_field_values(row, extras)
     active = set(active_fields)
     lines = []
     for key in ALL_LIST_FIELDS:
@@ -4304,6 +4317,27 @@ def _build_list_lines(row, active_fields, extras):
             if val not in (None, ""):
                 lines.append((LIST_FIELD_LABELS[key], val, False))
     return lines
+
+
+def _build_list_cells(row, active_fields, extras):
+    """(v0.95) Ordered [{"key","value","sub"}] table cells for the desk /leads
+    table: ALL_LIST_FIELDS order, active keys except "owner" (shown under the
+    name). Empty values stay as "" so columns line up. Date/time values like
+    "Aug 12, 2026 10:13 AM" split into value (date) and sub (time)."""
+    stored = _list_field_values(row, extras)
+    active = set(active_fields)
+    cells = []
+    for key in ALL_LIST_FIELDS:
+        if key in active and key != "owner":
+            val = stored.get(key)
+            val = "" if val is None else str(val)
+            sub = ""
+            if key in DATE_SPLIT_KEYS and val.endswith(("AM", "PM")):
+                parts = val.rsplit(" ", 2)
+                if len(parts) == 3:
+                    val, sub = parts[0], parts[1] + " " + parts[2]
+            cells.append({"key": key, "value": val, "sub": sub})
+    return cells
 
 
 # ─────────────────────────────────────────────────────────────
@@ -4700,7 +4734,9 @@ def leads_list():
     if request.args.get("fields_submitted"):
         active_fields = [f2 for f2 in request.args.getlist("fields") if f2 in ALL_LIST_FIELDS]
     else:
-        active_fields = DEFAULT_LIST_FIELDS
+        active_fields = (DEFAULT_TABLE_FIELDS
+                         if request.cookies.get(LIST_VIEW_COOKIE) == "desk"
+                         else DEFAULT_LIST_FIELDS)
 
     # v0.93 — extras only for THIS page's (already role-filtered) ids, and only
     # when an extra field is ticked.
@@ -4709,6 +4745,8 @@ def leads_list():
               if wanted_extras else {})
     for r in result["rows"]:
         r["list_lines"] = _build_list_lines(r, active_fields, extras.get(r["cls_id"]))
+        r["list_cells"] = _build_list_cells(r, active_fields, extras.get(r["cls_id"]))
+        r["owner_sub"] = (r.get("lead_owner") or "Unassigned") if "owner" in active_fields else ""
 
     return render_template(
         "leads_list.html",
@@ -4721,6 +4759,8 @@ def leads_list():
         field_groups=LIST_FIELD_GROUPS,
         field_labels=LIST_FIELD_LABELS,
         score_ring_max=SCORE_RING_MAX,
+        table_columns=[(k, LIST_FIELD_LABELS[k]) for k in ALL_LIST_FIELDS
+                       if k in active_fields and k != "owner"],
     )
 
 
