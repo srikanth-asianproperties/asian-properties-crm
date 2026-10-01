@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.92
+Version : 0.93
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,11 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.93 (2026-10-01) — Leads list fields catalog. NO new routes, no role/scoping change. phone REMOVED from
+  the Fields options (old ?fields=phone bookmarks are silently ignored by the existing whitelist). New
+  config LIST_FIELD_GROUPS / LIST_FIELD_LABELS / LIST_EXTRA_FIELDS / SCORE_RING_MAX; ALL_LIST_FIELDS is
+  now derived from the groups. leads_list() batches cls_db.get_list_extras() for the current page's ids
+  only (only when an extra field is ticked) and builds row["list_lines"] via _build_list_lines().
 v0.92 (2026-09-30) — Finance F2: NEW GET /finance/costs, POST /finance/costs/save, POST
   /finance/costs/copy (monthly cost grid; copy-previous-month fills only empty cells) and GET
   /finance/pnl (operating P&L, booked and received side by side). All @login_required +
@@ -4241,8 +4246,62 @@ def settings_export_capi_events_email():
 # All optional columns the "Fields" picker can toggle. "Name" isn't
 # here — it's the mandatory anchor, always shown, always the link into
 # the lead's detail page.
-ALL_LIST_FIELDS = ["phone", "project", "owner", "source", "updated"]
-DEFAULT_LIST_FIELDS = ["phone", "project", "updated"]  # today's existing look
+LIST_FIELD_GROUPS = [
+    ("Basics",               ["received", "project", "owner", "source", "updated"]),
+    ("Pipeline",             ["stage_changed", "temperature", "reason"]),
+    ("Follow-up & activity", ["next_followup", "next_visit", "last_activity", "last_note"]),
+    ("Requirement",          ["budget", "configuration", "property_type", "facing", "funding"]),
+    ("Marketing & contact",  ["campaign", "ad", "email"]),
+]
+LIST_FIELD_LABELS = {
+    "received": "Received On", "project": "Project", "owner": "Owner", "source": "Source",
+    "updated": "Age", "stage_changed": "Stage changed", "temperature": "Temperature",
+    "reason": "Reason", "next_followup": "Next follow-up", "next_visit": "Next site visit",
+    "last_activity": "Last activity", "last_note": "Last note", "budget": "Budget",
+    "configuration": "Configuration", "property_type": "Property type", "facing": "Facing",
+    "funding": "Funding", "campaign": "Campaign", "ad": "Ad", "email": "Email",
+}
+ALL_LIST_FIELDS = [k for _, keys in LIST_FIELD_GROUPS for k in keys]
+DEFAULT_LIST_FIELDS = ["received", "project", "owner", "source", "updated"]
+LIST_EXTRA_FIELDS = {"next_followup", "next_visit", "last_activity", "last_note"}
+SCORE_RING_MAX = 100
+
+
+def _build_list_lines(row, active_fields, extras):
+    """(v0.93) Ordered [(label, value, False)] lines for one /leads card:
+    ALL_LIST_FIELDS order, only ticked keys, empty values skipped."""
+    ex = extras or {}
+    stored = {
+        "received": ampm_filter(row.get("cls_created_at")),
+        "project": row.get("project_bucket"),
+        "owner": row.get("lead_owner") or "Unassigned",
+        "source": cls_db.lead_origin_for(row),
+        "updated": ("%sd" % row["age_days"]) if row.get("age_days") is not None else None,
+        "stage_changed": ampm_filter(row.get("stage_updated_at")),
+        "temperature": (row.get("opportunity_temperature")
+                        if row.get("current_stage") == "Opportunity" else None),
+        "reason": row.get("stage_reason"),
+        "next_followup": ampm_filter(ex.get("next_followup")),
+        "next_visit": ampm_filter(ex.get("next_visit")),
+        "last_activity": ex.get("last_activity"),
+        "last_note": ex.get("last_note"),
+        "budget": row.get("budget"),
+        "configuration": row.get("configuration"),
+        "property_type": row.get("property_type"),
+        "facing": row.get("facing"),
+        "funding": row.get("funding_source"),
+        "campaign": row.get("campaign"),
+        "ad": row.get("meta_ad_name"),
+        "email": row.get("email_raw"),
+    }
+    active = set(active_fields)
+    lines = []
+    for key in ALL_LIST_FIELDS:
+        if key in active:
+            val = stored.get(key)
+            if val not in (None, ""):
+                lines.append((LIST_FIELD_LABELS[key], val, False))
+    return lines
 
 
 # ─────────────────────────────────────────────────────────────
@@ -4641,6 +4700,14 @@ def leads_list():
     else:
         active_fields = DEFAULT_LIST_FIELDS
 
+    # v0.93 — extras only for THIS page's (already role-filtered) ids, and only
+    # when an extra field is ticked.
+    wanted_extras = LIST_EXTRA_FIELDS & set(active_fields)
+    extras = (cls_db.get_list_extras([r["cls_id"] for r in result["rows"]], wanted_extras)
+              if wanted_extras else {})
+    for r in result["rows"]:
+        r["list_lines"] = _build_list_lines(r, active_fields, extras.get(r["cls_id"]))
+
     return render_template(
         "leads_list.html",
         result=result,
@@ -4649,6 +4716,9 @@ def leads_list():
         filters=f,
         all_fields=ALL_LIST_FIELDS,
         active_fields=active_fields,
+        field_groups=LIST_FIELD_GROUPS,
+        field_labels=LIST_FIELD_LABELS,
+        score_ring_max=SCORE_RING_MAX,
     )
 
 

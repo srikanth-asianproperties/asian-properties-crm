@@ -2,11 +2,17 @@
 =============================================================
 cls_db.py  —  Centralised Leads System (CLS) | Database Layer
 =============================================================
-Version : 2.118
+Version : 2.119
 Author  : Built for Asian Properties / Srikanth
 
 CHANGELOG
 ---------
+v2.119 (2026-10-01) — Leads list fields catalog. ADDITIONS ONLY (no schema change, no writes).
+  get_leads_page() SELECT gains 10 existing leads columns (lead_source_detail, budget, configuration,
+  property_type, facing, funding_source, stage_reason, opportunity_temperature, campaign, meta_ad_name);
+  nothing else in the query changed. NEW get_list_extras(cls_ids, wanted) (read-only, batched, chunked by
+  LIST_EXTRAS_CHUNK): next_followup / next_visit (earliest 'scheduled' row), last_activity / last_note
+  (from activity_log). Returns {} at once when nothing is wanted. NEW ACTIVITY_TYPE_LABELS dict.
 v2.118 (2026-09-30) — Finance F1.5. READ FUNCTIONS ONLY (no schema change, no writes). In the Marketing
   cohort funnel a lead counts as a Booking only if it reached Booked AND (it has no booking_deals row OR
   its deal is expected/invoiced/received and NOT under review). Cancelled, void and under-review deals are
@@ -6025,7 +6031,10 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
         all_rows = conn.execute(f"""
             SELECT cls_id, full_name, phone_raw, phone_norm, email_raw,
                    project, project_bucket, current_stage, lead_owner, source,
-                   stage_updated_at, cls_updated_at, cls_created_at, crm_lead_no
+                   stage_updated_at, cls_updated_at, cls_created_at, crm_lead_no,
+                   lead_source_detail, budget, configuration, property_type,
+                   facing, funding_source, stage_reason, opportunity_temperature,
+                   campaign, meta_ad_name
             FROM leads
             WHERE {where_sql}
             ORDER BY {order_sql}
@@ -6071,6 +6080,64 @@ def get_leads_page(stage=None, project=None, search=None, owner=None,
             "per_page": per_page,
             "total_pages": total_pages,
         }
+    finally:
+        conn.close()
+
+
+LIST_EXTRAS_CHUNK = 500   # max ids per IN (...) list in get_list_extras()
+LIST_NOTE_MAX_CHARS = 80
+ACTIVITY_TYPE_LABELS = {
+    "note": "Note",
+    "stage_change": "Stage change",
+    "assignment_change": "Reassigned",
+    "site_visit_scheduled": "Visit scheduled",
+    "site_visit_conducted": "Visit done",
+    "follow_up_scheduled": "Follow-up set",
+    "follow_up_completed": "Follow-up done",
+}
+
+
+def get_list_extras(cls_ids, wanted):
+    """
+    (v2.119) READ-ONLY extras for the /leads card fields. `wanted` is a set
+    from {"next_followup","next_visit","last_activity","last_note"}. Returns
+    {cls_id: {key: value}} (only leads/keys that have a value); {} at once
+    when cls_ids or wanted is empty. Callers must pass ids from an already
+    role-filtered page — this function does no scoping of its own.
+    """
+    wanted = set(wanted or ())
+    cls_ids = list(cls_ids or ())
+    if not wanted or not cls_ids:
+        return {}
+    out = {}
+    conn = _connect()
+    try:
+        for i in range(0, len(cls_ids), LIST_EXTRAS_CHUNK):
+            chunk = cls_ids[i:i + LIST_EXTRAS_CHUNK]
+            ph = ",".join("?" * len(chunk))
+            for key, table in (("next_followup", "follow_ups"), ("next_visit", "site_visits")):
+                if key in wanted:
+                    for r in conn.execute(
+                        f"SELECT cls_id, MIN(scheduled_at) FROM {table} "
+                        f"WHERE status='scheduled' AND cls_id IN ({ph}) GROUP BY cls_id",
+                        chunk).fetchall():
+                        if r[1]:
+                            out.setdefault(r[0], {})[key] = r[1]
+            if wanted & {"last_activity", "last_note"}:
+                for r in conn.execute(
+                    f"SELECT cls_id, activity_type, description, created_at FROM activity_log "
+                    f"WHERE cls_id IN ({ph}) ORDER BY created_at ASC, activity_id ASC",
+                    chunk).fetchall():
+                    e = out.setdefault(r[0], {})
+                    if "last_activity" in wanted:
+                        e["last_activity"] = "%s · %s" % (
+                            ACTIVITY_TYPE_LABELS.get(r[1], r[1]), r[3])
+                    if "last_note" in wanted and r[1] == "note" and (r[2] or "").strip():
+                        txt = r[2].strip()
+                        if len(txt) > LIST_NOTE_MAX_CHARS:
+                            txt = txt[:LIST_NOTE_MAX_CHARS] + "…"
+                        e["last_note"] = txt
+        return {k: v for k, v in out.items() if v}
     finally:
         conn.close()
 
