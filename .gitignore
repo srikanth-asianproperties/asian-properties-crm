@@ -44,3 +44,16 @@ _backup_staging/
 *.db-shm
 *.sqlite*
 backups/
+
+# Personal data, exports and old DB copies - never commit
+attendance_photos/
+call_recordings/
+selldo_archive/
+selldo_check.csv
+meta_field_dump_*.json
+job_results.txt
+parallel_diff_report.txt
+parallel_export_*.txt
+*.db.*
+*.py.bak_*
+debug_token.py
