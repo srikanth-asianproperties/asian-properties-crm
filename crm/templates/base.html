@@ -1,4 +1,5 @@
-<!-- base.html v0.34 — Desk layout keeps its bottom padding. Root cause: the v0.25 html.desk main.wrap rule
+<!-- base.html v0.35 — --stat-card-min-w 300px -> 350px so dashboard stat cards sit 3 across on laptops.
+     base.html v0.34 — Desk layout keeps its bottom padding. Root cause: the v0.25 html.desk main.wrap rule
      overrode the reserved space with 20px, so the position:fixed .action-bar hid the last ~60px of content
      on wide screens. New :root setting --action-bar-reserve (78px + safe-area inset) is now used by the desk
      rule. Phone rules unchanged.
@@ -241,7 +242,7 @@
 <style>
   :root{
     --action-bar-reserve: calc(78px + env(safe-area-inset-bottom));   /* space kept under content for the fixed bottom bar */
-    --stat-card-min-w: 300px;   /* narrowest a stat card may get on a wide screen */
+    --stat-card-min-w: 350px;   /* narrowest a stat card may get on a wide screen */
     --stat-card-min-h: 130px;   /* shortest stat card height on a wide screen */
     --navy: #1F2A44;
     --navy-light: #2B3A5C;
