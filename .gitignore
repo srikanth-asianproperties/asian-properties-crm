@@ -34,3 +34,13 @@ __pycache__/
 /rclone-v1.74.3-windows-amd64/
 /cloudflared-windows-amd64.msi
 _backup_staging/
+
+# Secrets and live data - never commit
+.env.*
+*.env.bak
+*.bak
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+backups/
