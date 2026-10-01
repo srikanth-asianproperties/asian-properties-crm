@@ -1,8 +1,13 @@
-{# leads_list.html (v0.14) — top filter bar removed per Srikanth's spec.
+{# leads_list.html (v0.15) — top filter bar removed per Srikanth's spec.
    Header is now just "Leads (N)" + Add lead. Filter/Search/Fields
    moved to the bottom icon bar (_leads_list_actionbar.html) — Filter
    and Search open dedicated full-screen panels; Fields stays an
    in-place popover, just relocated.
+
+   v0.15 (2026-10-01) — Tighter cards. Gap between cards 8px -> 3px on phones, 12px -> 6px in the laptop grid;
+   card padding 14x16 -> 5x12; inner column gap 12px -> 10px with the two columns centred vertically; tighter
+   line heights/margins. Three named settings on .lc2-list (--lc2-gap, --lc2-pad-y, --lc2-pad-x) plus
+   --lc2-gap-wide for the grid. Markup, fields and base.html untouched.
 
    v0.14 (2026-10-01) — Sell.do-style card: score ring (SVG, arc = score / score_ring_max, capped at
    full), stage pill under it, "#no / name / Label: value" lines on the right (row.list_lines built in
@@ -66,20 +71,27 @@
 .score-badge.score-hot  { background:var(--red); }
 .score-badge.score-warm { background:#E0A030; }
 .score-badge.score-cold { background:var(--ink-soft); }
-.lc2-list{ --lead-card-min-w: 340px; }
-.lc2-card{ display:flex; gap:12px; align-items:flex-start; border-radius:12px; padding:14px 16px; }
+.lc2-list{
+  --lead-card-min-w: 340px;
+  --lc2-gap: 3px;        /* space BETWEEN cards on phones */
+  --lc2-gap-wide: 6px;   /* space between cards in the laptop grid */
+  --lc2-pad-y: 5px;      /* space inside a card, top and bottom */
+  --lc2-pad-x: 12px;     /* space inside a card, left and right */
+}
+.lead-card-list.lc2-list{ gap: var(--lc2-gap); }
+.lc2-card{ display:flex; gap:10px; align-items:center; border-radius:12px; padding: var(--lc2-pad-y) var(--lc2-pad-x); }
 .lc2-card .lead-card-stretch{ border-radius:12px; }
 .lc2-left{ width:84px; flex:0 0 84px; display:flex; flex-direction:column; align-items:center; text-align:center; }
-.lc2-ring{ position:relative; width:52px; height:52px; margin-bottom:8px; }
+.lc2-ring{ position:relative; width:52px; height:52px; margin-bottom:4px; }
 .lc2-ring-num{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:600; color:var(--ink); }
 .lc2-stage{ font-size:11px; padding:2px 8px; }
 .lc2-body{ flex:1; min-width:0; }
-.lc2-no{ color:var(--blue); font-size:13px; font-weight:600; }
-.lc2-name{ font-size:16px; font-weight:700; overflow-wrap:anywhere; margin-bottom:2px; }
-.lc2-line{ font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+.lc2-no{ color:var(--blue); font-size:13px; font-weight:600; line-height:1.3; }
+.lc2-name{ font-size:16px; font-weight:700; overflow-wrap:anywhere; line-height:1.3; margin-bottom:0; }
+.lc2-line{ font-size:13px; line-height:1.35; overflow-wrap:anywhere; }
 .lc2-lbl{ color:var(--ink-soft); } .lc2-val{ color:var(--ink); }
 @media (min-width:700px){
-  .lead-card-list.lc2-list{ display:grid; grid-template-columns:repeat(auto-fill, minmax(var(--lead-card-min-w), 1fr)); gap:12px; }
+  .lead-card-list.lc2-list{ display:grid; grid-template-columns:repeat(auto-fill, minmax(var(--lead-card-min-w), 1fr)); gap: var(--lc2-gap-wide); }
 }
 </style>
 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
