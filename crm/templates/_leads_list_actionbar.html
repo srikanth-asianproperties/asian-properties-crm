@@ -1,4 +1,4 @@
-{# _leads_list_actionbar.html (v0.11) — bottom icon bar for the leads
+{# _leads_list_actionbar.html (v0.12) — bottom icon bar for the leads
    list page, replacing the old inline top filter form. Filter/Search
    link through to dedicated screens, carrying every currently-active
    filter forward as query params so nothing gets silently reset.
@@ -12,6 +12,10 @@
    <button> is invalid HTML and would make a checkbox click also
    bubble up as a button click, toggling the popover shut the instant
    you tried to check something.
+
+   v0.12 (2026-10-01) — Fields popover: options grouped (field_groups / field_labels from app.py v0.93,
+   flat fallback if not passed), scrollable, and ONE "Apply" button replaces the old reload-on-every-tick
+   (submitFieldsChange() used to navigate on each checkbox change, which is unusable with 20 options).
 
    v0.11 (2026-09-21) — score_band (app.py v0.81) carried forward on both links.
 
@@ -41,14 +45,27 @@
     Fields
   </button>
 
-  <div id="fieldsPopover" class="fields-popover">
-    <div style="font-size:12px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:8px;">Show columns</div>
+  <div id="fieldsPopover" class="fields-popover" style="max-height:min(60vh, 420px); overflow-y:auto;">
+    <div style="font-size:12px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:8px;">Show on each lead</div>
+    {% if field_groups %}
+    {% for group_label, keys in field_groups %}
+    <div style="font-size:11px; font-weight:600; color:var(--ink-soft); margin:10px 0 2px;">{{ group_label }}</div>
+    {% for f in keys %}
+    <label style="display:flex; align-items:center; gap:8px; padding:4px 0; font-size:14px; cursor:pointer;">
+      <input type="checkbox" name="fields" value="{{ f }}" {% if f in active_fields %}checked{% endif %}>
+      {{ (field_labels or {}).get(f) or f|capitalize }}
+    </label>
+    {% endfor %}
+    {% endfor %}
+    {% else %}
     {% for f in all_fields %}
-    <label style="display:flex; align-items:center; gap:8px; padding:5px 0; font-size:14px; cursor:pointer;">
-      <input type="checkbox" name="fields" value="{{ f }}" {% if f in active_fields %}checked{% endif %} onchange="submitFieldsChange()">
+    <label style="display:flex; align-items:center; gap:8px; padding:4px 0; font-size:14px; cursor:pointer;">
+      <input type="checkbox" name="fields" value="{{ f }}" {% if f in active_fields %}checked{% endif %}>
       {{ f|capitalize }}
     </label>
     {% endfor %}
+    {% endif %}
+    <button type="button" class="btn btn-primary" style="width:100%; margin-top:10px; position:sticky; bottom:0;" onclick="submitFieldsChange()">Apply</button>
   </div>
 </div>
 
@@ -91,10 +108,8 @@ document.addEventListener('click', function(e){
   }
 });
 
-// Re-submits the current URL with the updated `fields` selection the
-// moment a checkbox is toggled — same "instant apply" feel; Filter/
-// Search still need their own explicit submit since those are full
-// screens, but Fields is a lightweight in-place toggle.
+// Re-submits the current URL with the ticked `fields` selection — runs once,
+// when the Apply button is pressed (v0.12; was on every checkbox change).
 function submitFieldsChange(){
   var params = new URLSearchParams(window.location.search);
   params.set('fields_submitted', '1');

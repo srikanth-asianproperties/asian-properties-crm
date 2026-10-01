@@ -1,8 +1,15 @@
-{# leads_list.html (v0.13) — top filter bar removed per Srikanth's spec.
+{# leads_list.html (v0.14) — top filter bar removed per Srikanth's spec.
    Header is now just "Leads (N)" + Add lead. Filter/Search/Fields
    moved to the bottom icon bar (_leads_list_actionbar.html) — Filter
    and Search open dedicated full-screen panels; Fields stays an
    in-place popover, just relocated.
+
+   v0.14 (2026-10-01) — Sell.do-style card: score ring (SVG, arc = score / score_ring_max, capped at
+   full), stage pill under it, "#no / name / Label: value" lines on the right (row.list_lines built in
+   app.py v0.93 from the new Fields catalog). NO phone line / tel: link any more. Laptop (>=700px)
+   shows the list as an auto-fill grid; setting --lead-card-min-w (340px) in this template. All new CSS
+   uses new .lc2-* classes — base.html's .lead-card rules are untouched. Old score-badge removed from
+   the card markup (its CSS is left in place).
 
    v0.13 (2026-09-21) — "Filters active" also checks filters.score_band
    (app.py v0.81).
@@ -59,6 +66,21 @@
 .score-badge.score-hot  { background:var(--red); }
 .score-badge.score-warm { background:#E0A030; }
 .score-badge.score-cold { background:var(--ink-soft); }
+.lc2-list{ --lead-card-min-w: 340px; }
+.lc2-card{ display:flex; gap:12px; align-items:flex-start; border-radius:12px; padding:14px 16px; }
+.lc2-card .lead-card-stretch{ border-radius:12px; }
+.lc2-left{ width:84px; flex:0 0 84px; display:flex; flex-direction:column; align-items:center; text-align:center; }
+.lc2-ring{ position:relative; width:52px; height:52px; margin-bottom:8px; }
+.lc2-ring-num{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:600; color:var(--ink); }
+.lc2-stage{ font-size:11px; padding:2px 8px; }
+.lc2-body{ flex:1; min-width:0; }
+.lc2-no{ color:var(--blue); font-size:13px; font-weight:600; }
+.lc2-name{ font-size:16px; font-weight:700; overflow-wrap:anywhere; margin-bottom:2px; }
+.lc2-line{ font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+.lc2-lbl{ color:var(--ink-soft); } .lc2-val{ color:var(--ink); }
+@media (min-width:700px){
+  .lead-card-list.lc2-list{ display:grid; grid-template-columns:repeat(auto-fill, minmax(var(--lead-card-min-w), 1fr)); gap:12px; }
+}
 </style>
 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
   <h2 style="margin:0;">Leads <span style="color:var(--ink-soft); font-weight:400; font-size:16px;">({{ result.total }})</span></h2>
@@ -82,38 +104,27 @@
 {% endif %}
 
 {% if result.rows %}
-<div class="lead-card-list" style="margin-bottom:16px;">
+<div class="lead-card-list lc2-list" style="margin-bottom:16px;">
   {% for lead in result.rows %}
-  <div class="lead-card">
+  {% set pct = [100, [0, ((lead.lead_score or 0) / score_ring_max * 100)]|max]|min %}
+  <div class="lead-card lc2-card">
     <a href="{{ url_for('lead_detail', cls_id=lead.cls_id) }}" class="lead-card-stretch" aria-label="View {{ lead.full_name or 'lead' }}"></a>
-    <div class="lead-card-head">
-      <span class="lead-card-no">#{{ lead.crm_lead_no or '—' }}</span>
-      <span class="lead-card-name">{{ lead.full_name or '(no name)' }}</span>
-      <span class="score-badge score-{{ lead.lead_score_band|lower }}" title="Lead score: {{ lead.lead_score }}">
-        {{ lead.lead_score }}
-      </span>
-      <span class="badge stage-{{ (lead.current_stage or 'other')|replace(' ', '') }}">
-        {{ lead.current_stage or 'Unknown' }}
-      </span>
+    <div class="lc2-left">
+      <div class="lc2-ring" title="Lead score {{ lead.lead_score }} ({{ lead.lead_score_band }})" aria-label="Lead score {{ lead.lead_score }} ({{ lead.lead_score_band }})">
+        <svg viewBox="0 0 52 52" width="52" height="52" aria-hidden="true">
+          <circle cx="26" cy="26" r="21" fill="none" stroke="#D6E6FB" stroke-width="4"/>
+          <circle cx="26" cy="26" r="21" fill="none" stroke="var(--blue)" stroke-width="4" stroke-linecap="round" pathLength="100" stroke-dasharray="{{ pct|round(1) }} 100" transform="rotate(-90 26 26)"/>
+        </svg>
+        <span class="lc2-ring-num">{{ lead.lead_score }}</span>
+      </div>
+      <span class="badge lc2-stage stage-{{ (lead.current_stage or 'other')|replace(' ', '') }}">{{ lead.current_stage or 'Unknown' }}</span>
     </div>
-    <div class="lead-card-grid">
-      {% if 'phone' in active_fields and lead.phone_norm %}
-      <span class="lc-field"><span class="lc-label">Ph</span>
-        <a href="tel:+91{{ lead.phone_norm }}" class="lead-card-phone">{{ lead.phone_norm|fmt_phone }}</a>
-      </span>
-      {% endif %}
-      {% if 'project' in active_fields %}
-      <span class="lc-field"><span class="lc-label">Project</span> {{ lead.project_bucket }}</span>
-      {% endif %}
-      {% if 'owner' in active_fields %}
-      <span class="lc-field"><span class="lc-label">Owner</span> {{ lead.lead_owner or '—' }}</span>
-      {% endif %}
-      {% if 'source' in active_fields %}
-      <span class="lc-field"><span class="lc-label">Source</span> {{ lead.source or '—' }}</span>
-      {% endif %}
-      {% if 'updated' in active_fields and lead.age_days is not none %}
-      <span class="lc-field"><span class="lc-label">Age</span> {{ lead.age_days }}d</span>
-      {% endif %}
+    <div class="lc2-body">
+      <div class="lc2-no">#{{ lead.crm_lead_no or '—' }}</div>
+      <div class="lc2-name">{{ lead.full_name or '(no name)' }}</div>
+      {% for label, value, is_link in lead.list_lines %}
+      <div class="lc2-line"><span class="lc2-lbl">{{ label }}:</span> <span class="lc2-val">{{ value }}</span></div>
+      {% endfor %}
     </div>
   </div>
   {% endfor %}
