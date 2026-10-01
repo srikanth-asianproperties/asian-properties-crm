@@ -1,4 +1,7 @@
-<!-- base.html v0.31 — Finance drawer links (Marketing / Bookings / Rates / Costs / P&L) consolidated
+<!-- base.html v0.32 — Fix garbled Finances drawer arrow: the ::after content was saved as a control
+     character (U+0015) followed by the letters "B8" instead of an arrow. Replaced with a CSS-drawn
+     chevron (no special characters): right-pointing closed, down-pointing open.
+     base.html v0.31 — Finance drawer links (Marketing / Bookings / Rates / Costs / P&L) consolidated
      into ONE collapsible admin-only "Finances" group (native <details>, no JS; open + highlighted on any
      finance page). Cosmetic only — every finance route still enforces admin itself.
      base.html v0.30 — Finance F2: two more admin-only drawer links, "Finance — Costs" and
@@ -358,8 +361,10 @@
     cursor: pointer; list-style: none;
   }
   .drawer-group > summary::-webkit-details-marker{ display: none; }
-  .drawer-group > summary::after{ content: "B8"; transition: transform .15s; }
-  .drawer-group[open] > summary::after{ transform: rotate(90deg); }
+  .drawer-group > summary::after{ content: ""; width: 7px; height: 7px;
+     border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft);
+     transform: rotate(-45deg); transition: transform .15s; margin-right: 4px; flex-shrink: 0; }
+  .drawer-group[open] > summary::after{ transform: rotate(45deg); }
   .drawer-group > summary:hover{ background: var(--paper); }
   .drawer-group.active > summary{ color: var(--blue); font-weight: 600; }
   .drawer-sublink{ padding-left: 36px; font-size: 14px; }
