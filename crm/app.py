@@ -2,7 +2,7 @@
 =============================================================
 app.py — Asian Properties CRM (APX) | v0.1 Viewer
 =============================================================
-Version : 0.93
+Version : 0.94
 Author  : Built for Asian Properties / Srikanth
 
 WHAT THIS IS
@@ -110,6 +110,8 @@ DEPLOYMENT — run APX as an unattended service (v0.1.5)
   "never fail silently" rule your other CLS scripts already follow.
 
 CHANGELOG
+v0.94 (2026-10-01) — DEFAULT_LIST_FIELDS (leads list, no explicit Fields choice) = Project, Owner, Age.
+  Nothing else changed; explicit ?fields=... choices work as before.
 v0.93 (2026-10-01) — Leads list fields catalog. NO new routes, no role/scoping change. phone REMOVED from
   the Fields options (old ?fields=phone bookmarks are silently ignored by the existing whitelist). New
   config LIST_FIELD_GROUPS / LIST_FIELD_LABELS / LIST_EXTRA_FIELDS / SCORE_RING_MAX; ALL_LIST_FIELDS is
@@ -4262,7 +4264,7 @@ LIST_FIELD_LABELS = {
     "funding": "Funding", "campaign": "Campaign", "ad": "Ad", "email": "Email",
 }
 ALL_LIST_FIELDS = [k for _, keys in LIST_FIELD_GROUPS for k in keys]
-DEFAULT_LIST_FIELDS = ["received", "project", "owner", "source", "updated"]
+DEFAULT_LIST_FIELDS = ["project", "owner", "updated"]
 LIST_EXTRA_FIELDS = {"next_followup", "next_visit", "last_activity", "last_note"}
 SCORE_RING_MAX = 100
 
