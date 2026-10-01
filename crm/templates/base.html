@@ -1,4 +1,8 @@
-<!-- base.html v0.36 — Nav drawer scrolls when taller than the screen. Root cause: .nav-drawer was fixed +
+<!-- base.html v0.37 — (1) The head layout script now also writes a tiny cookie apx_view = "desk" or "mobile"
+     (only that word, no personal data) so the server can pick sensible default list columns per layout.
+     (2) Sidebar: .nav-drawer gets overflow-x:hidden (v0.36 showed a horizontal scrollbar) and the user email /
+     footer version line now wrap instead of being clipped.
+     base.html v0.36 — Nav drawer scrolls when taller than the screen. Root cause: .nav-drawer was fixed +
      flex column with no overflow setting, so an open Finances group clipped the bottom links. Base rule now
      has overflow-y:auto, overscroll-behavior:contain, safe-area bottom padding; children keep their height.
      html.desk .nav-drawer unchanged (inherits the scrolling).
@@ -215,16 +219,19 @@
 (function(){
   try{
     var root = document.documentElement;
+    function setView(){ try{ document.cookie = 'apx_view=' + (root.classList.contains('desk') ? 'desk' : 'mobile')
+        + '; path=/; max-age=31536000; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : ''); }catch(e){} }
     if (root.classList.contains('layout-desk')){
       root.classList.add('desk');
     } else if (root.classList.contains('layout-auto')){
       var mq = window.matchMedia('(min-width: {{ desk_min_width_px }}px)');
-      var apply = function(e){ root.classList.toggle('desk', e.matches); };
+      var apply = function(e){ root.classList.toggle('desk', e.matches); setView(); };
       apply(mq);
       if (mq.addEventListener) mq.addEventListener('change', apply);
       else if (mq.addListener) mq.addListener(apply); // older Safari/WebView
     }
     // layout-mobile: never adds .desk.
+    setView();
   } catch(e){}
 })();
 </script>
@@ -354,6 +361,7 @@
     flex-direction: column;
     box-shadow: 2px 0 12px rgba(0,0,0,0.15);
     overflow-y: auto;
+    overflow-x: hidden;
     overscroll-behavior: contain;          /* scrolling the menu must not scroll the page behind it */
     -webkit-overflow-scrolling: touch;
     padding-bottom: env(safe-area-inset-bottom, 0px);
@@ -390,6 +398,8 @@
   .drawer-group > summary:hover{ background: var(--paper); }
   .drawer-group.active > summary{ color: var(--blue); font-weight: 600; }
   .drawer-sublink{ padding-left: 36px; font-size: 14px; }
+  .drawer-user > div:last-child{ min-width: 0; overflow-wrap: anywhere; }
+  .drawer-footer{ overflow-wrap: anywhere; }
   .drawer-footer{ margin-top: auto; padding: 16px 20px; font-size: 12px; color: var(--ink-soft); }
 
   /* Sell.do-style bottom action bar — used on lead detail, and now also
