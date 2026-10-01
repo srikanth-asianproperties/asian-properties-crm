@@ -1,4 +1,6 @@
-{# finance_marketing.html (v1.6, 2026-09-30) — F1.5: funnel Bookings (headline, project/campaign tables,
+{# finance_marketing.html (v1.7, 2026-10-01) — the long top note (Cohort basis ... Unqualified/Lost columns) moved into a
+   collapsed "How to read these numbers" <details> block at the bottom of the page; text unchanged. Display only.
+   v1.6 (2026-09-30) — F1.5: funnel Bookings (headline, project/campaign tables,
    percentages, cost per booking) exclude cancelled, void and under-review deals (cls_db v2.118); a small
    "N booking(s) excluded" line under the funnel when N > 0; note explains what a Booking is.
    v1.5 — F3b: "Commission & Marketing ROI" cards (basis A = deals
@@ -49,6 +51,8 @@
   .fin-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 14px; background: var(--card); }
   .fin-card h4 { margin: 0 0 4px; font-size: 14px; }
   .fin-note { font-size: 12px; color: var(--ink-soft); margin-top: 8px; line-height: 1.5; }
+  .fin-howto { margin-top: 18px; }
+  .fin-howto > summary { cursor: pointer; font-size: 13px; color: var(--ink-soft); }
   .fin-banner { margin-top: 14px; padding: 10px 14px; border-radius: 8px; font-size: 13px; border: 1px solid var(--line); background: var(--paper); }
   .fin-banner.warn { border-color: #d9a400; background: #fff8e1; color: #6b4e00; }
   .fin-tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--paper); border: 1px solid var(--line); color: var(--ink-soft); margin-left: 6px; }
@@ -80,29 +84,6 @@
     <button type="submit" class="btn" style="flex:0 0 auto;">Apply</button>
   </div>
 </form>
-
-<p class="fin-note">
-  Showing {{ filters.date_from }} to {{ filters.date_to }}. <b>Cohort basis:</b> the leads counted here are
-  Meta leads <i>created in this date range</i>, and the qualified / site-visit / booking numbers are what those
-  same leads have become <i>so far</i> &mdash; so a recent month keeps improving as its leads move through the
-  pipeline. Spend is Meta's own reported spend for the same dates.
-  <b>Meta leads vs. new in CRM:</b> Meta counts every form submission, including the same person submitting again;
-  the CRM keeps one lead per person and marks the repeat as re-engaged. So <i>Repeat = Meta leads &minus; new in CRM</i>,
-  shown as a count and as a % of Meta leads (a high % is normal and is not a warning). Only a <b>negative</b> Repeat
-  (Meta counted fewer leads than the CRM created) is flagged &ldquo;possible missed leads &mdash; check Job A&rdquo;;
-  a dash means Meta's count isn't available. Cost per lead uses Meta's count (matches Ads Manager). Cost per qualified / visit / booking and the funnel
-  percentages use the CRM's new leads. &#8220;Qualified&#8221; = reached
-  Opportunity or later; &#8220;site visit&#8221; = a conducted visit or reached Site Visited.
-  A &#8220;booking&#8221; = a lead that reached Booked and whose deal has not been cancelled, voided or put under review (its lead moved out of
-  Booked); a booked lead with no deal record yet still counts. Cost per booking and the lead/visit &rarr; booking percentages use this count.
-  <b>Projects:</b> leads are counted under the project of the ad campaign that brought them in, even if the CRM later moved
-  them to another project. <b>Rejected (Unqualified or Lost)</b> counts leads ever marked Unqualified or Lost at any stage.
-  In the CRM these two stages hand a Naishka or Grace lead to the other project. A recent month understates the rate because
-  its leads have had less time to drop out. A lead can be both rejected (for one project) and qualified (for another).
-  <b>Passed to other project</b> (campaign table) = leads the CRM moved to another project after they were rejected.
-  The campaign table's <b>Unqualified</b> and <b>Lost</b> columns are each &ldquo;ever&rdquo; counts, and one lead can appear in both,
-  so they can add up to more than the rejected total.
-</p>
 
 {% if unassigned.total and unassigned.total > 0 %}
 <div class="fin-banner warn">
@@ -240,6 +221,32 @@
     </tbody>
   </table></div>
 </div>
+
+<details class="fin-howto">
+  <summary>How to read these numbers</summary>
+<p class="fin-note">
+  Showing {{ filters.date_from }} to {{ filters.date_to }}. <b>Cohort basis:</b> the leads counted here are
+  Meta leads <i>created in this date range</i>, and the qualified / site-visit / booking numbers are what those
+  same leads have become <i>so far</i> &mdash; so a recent month keeps improving as its leads move through the
+  pipeline. Spend is Meta's own reported spend for the same dates.
+  <b>Meta leads vs. new in CRM:</b> Meta counts every form submission, including the same person submitting again;
+  the CRM keeps one lead per person and marks the repeat as re-engaged. So <i>Repeat = Meta leads &minus; new in CRM</i>,
+  shown as a count and as a % of Meta leads (a high % is normal and is not a warning). Only a <b>negative</b> Repeat
+  (Meta counted fewer leads than the CRM created) is flagged &ldquo;possible missed leads &mdash; check Job A&rdquo;;
+  a dash means Meta's count isn't available. Cost per lead uses Meta's count (matches Ads Manager). Cost per qualified / visit / booking and the funnel
+  percentages use the CRM's new leads. &#8220;Qualified&#8221; = reached
+  Opportunity or later; &#8220;site visit&#8221; = a conducted visit or reached Site Visited.
+  A &#8220;booking&#8221; = a lead that reached Booked and whose deal has not been cancelled, voided or put under review (its lead moved out of
+  Booked); a booked lead with no deal record yet still counts. Cost per booking and the lead/visit &rarr; booking percentages use this count.
+  <b>Projects:</b> leads are counted under the project of the ad campaign that brought them in, even if the CRM later moved
+  them to another project. <b>Rejected (Unqualified or Lost)</b> counts leads ever marked Unqualified or Lost at any stage.
+  In the CRM these two stages hand a Naishka or Grace lead to the other project. A recent month understates the rate because
+  its leads have had less time to drop out. A lead can be both rejected (for one project) and qualified (for another).
+  <b>Passed to other project</b> (campaign table) = leads the CRM moved to another project after they were rejected.
+  The campaign table's <b>Unqualified</b> and <b>Lost</b> columns are each &ldquo;ever&rdquo; counts, and one lead can appear in both,
+  so they can add up to more than the rejected total.
+</p>
+</details>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
