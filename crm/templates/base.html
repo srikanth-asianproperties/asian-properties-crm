@@ -1,4 +1,8 @@
-<!-- base.html v0.35 — --stat-card-min-w 300px -> 350px so dashboard stat cards sit 3 across on laptops.
+<!-- base.html v0.36 — Nav drawer scrolls when taller than the screen. Root cause: .nav-drawer was fixed +
+     flex column with no overflow setting, so an open Finances group clipped the bottom links. Base rule now
+     has overflow-y:auto, overscroll-behavior:contain, safe-area bottom padding; children keep their height.
+     html.desk .nav-drawer unchanged (inherits the scrolling).
+     base.html v0.35 — --stat-card-min-w 300px -> 350px so dashboard stat cards sit 3 across on laptops.
      base.html v0.34 — Desk layout keeps its bottom padding. Root cause: the v0.25 html.desk main.wrap rule
      overrode the reserved space with 20px, so the position:fixed .action-bar hid the last ~60px of content
      on wide screens. New :root setting --action-bar-reserve (78px + safe-area inset) is now used by the desk
@@ -349,7 +353,12 @@
     display: flex;
     flex-direction: column;
     box-shadow: 2px 0 12px rgba(0,0,0,0.15);
+    overflow-y: auto;
+    overscroll-behavior: contain;          /* scrolling the menu must not scroll the page behind it */
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
+  .nav-drawer > *{ flex-shrink: 0; }
   .nav-drawer.open{ transform: translateX(0); }
   .drawer-user{
     display: flex; align-items: center; gap: 10px;
