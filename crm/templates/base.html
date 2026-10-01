@@ -1,4 +1,9 @@
-<!-- base.html v0.32 — Fix garbled Finances drawer arrow: the ::after content was saved as a control
+<!-- base.html v0.33 — Stat cards no longer square on wide screens. Root cause: .stat-card has a fixed
+     aspect-ratio sized for a 2-per-row phone grid, so on a laptop each card was ~575px wide and ~600px tall.
+     Added two :root settings (--stat-card-min-w 300px, --stat-card-min-h 130px) and one @media (min-width:700px)
+     block after the base rules (aspect-ratio auto, min-height, auto-fill columns). Phones (<700px) unchanged;
+     desk_dashboard.html's .desk-dash overrides still win by specificity.
+     base.html v0.32 — Fix garbled Finances drawer arrow: the ::after content was saved as a control
      character (U+0015) followed by the letters "B8" instead of an arrow. Replaced with a CSS-drawn
      chevron (no special characters): right-pointing closed, down-pointing open.
      base.html v0.31 — Finance drawer links (Marketing / Bookings / Rates / Costs / P&L) consolidated
@@ -231,6 +236,8 @@
 
 <style>
   :root{
+    --stat-card-min-w: 300px;   /* narrowest a stat card may get on a wide screen */
+    --stat-card-min-h: 130px;   /* shortest stat card height on a wide screen */
     --navy: #1F2A44;
     --navy-light: #2B3A5C;
     --paper: #F7F8FA;
@@ -532,6 +539,11 @@
     grid-template-columns: repeat(2, 1fr);
     gap: 12px;
     margin-top: 16px;
+  }
+  @media (min-width: 700px){
+    .stat-card{ aspect-ratio: auto; min-height: var(--stat-card-min-h); }
+    .stat-card-body{ padding: 18px 10px; }
+    .stat-card-grid{ grid-template-columns: repeat(auto-fill, minmax(var(--stat-card-min-w), 1fr)); }
   }
 
   .badge{
